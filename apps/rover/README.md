@@ -8,9 +8,9 @@
 [![Rust](https://img.shields.io/badge/Rust-2024-B7410E?style=flat-square)](https://github.com/fengsi/ufo/blob/main/apps/rover/Cargo.toml)
 
 `ufo-cli` is the host-side rover for UFO. It enrolls a local machine into a UFO
-fleet, long-poll claims queued operations, runs the assigned pilot CLI
-(`claude` or `codex`) in an isolated per-operation work directory, streams
-telemetry back to the control plane, and uploads a `git diff` for review.
+fleet, long-poll claims queued operations, lets the assigned pilot drive the rover in an
+isolated per-operation work directory, streams telemetry back to the Hub, and
+uploads a `git diff` for review.
 
 UFO is an MVP preview. APIs, configuration, database schema, and the rover
 protocol may change before 1.0, and migration paths are not guaranteed.
@@ -25,39 +25,46 @@ The rover is tested on macOS/Linux preview hosts. Windows is not validated yet.
 
 ## Enroll And Start
 
-Start the UFO control plane first, then create an enrollment code from the
+Start the UFO Hub first, then create an enrollment code from the
 Rovers panel.
 
 ```bash
-UFO_SERVER=http://localhost:8080 \
-UFO_ENROLLMENT_CODE=<code> \
+UFO_HUB_UPLINK=http://localhost:8080 \
+UFO_ROVER_ENROLLMENT_CODE=<code> \
 ufo rover enroll
 
 ufo rover start
 ```
 
-Registrations are stored in `~/.ufo/rovers.json`, keyed by rover id. A host can
-hold registrations for multiple fleets or servers.
+Enrollments are stored in `~/.ufo/rovers.json`, keyed by rover id. A host can
+hold enrollments for multiple fleets or servers.
 
 Useful commands:
 
 ```bash
 ufo rover list
+ufo rover status
 ufo rover remove <rover-id|prefix>
 ufo rover remove --all
 ```
 
 ## Pilots And Tags
 
-The rover auto-detects local pilot CLIs and reports capability tags such as
-`pilot:claude`, `pilot:codex`, `os:macos`, and `arch:aarch64`. UFO only lets a
-rover claim work when its tags match the queued operation.
+The rover auto-detects local pilots and reports capability tags such as
+`pilot:claude`, `pilot:codex`, `pilot:antigravity`, `pilot:cursor`,
+`pilot:copilot`, `pilot:amp`, `pilot:opencode`, `pilot:openclaw`,
+`pilot:hermes`, `pilot:pi`, `pilot:kimi`, `pilot:kiro`, `os:macos`, and
+`arch:aarch64`. UFO only lets a rover claim work when its tags match the queued
+operation.
 
 You can add user dispatch tags during enrollment:
 
 ```bash
 ufo rover enroll --tag gpu --tag region:moon
 ```
+
+Run multiple operations per enrolled rover with `ufo rover start --units N` or
+`UFO_ROVER_UNITS=N`.
 
 ## Trust Boundary
 
@@ -67,4 +74,4 @@ hosts you share with a fleet.
 
 See [README.md](https://github.com/fengsi/ufo/blob/main/README.md) and
 [SECURITY.md](https://github.com/fengsi/ufo/blob/main/SECURITY.md) for the
-full control-plane setup and trust model.
+full Hub setup and trust model.

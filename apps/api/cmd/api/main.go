@@ -1,4 +1,4 @@
-// Command api is the UFO Go control-plane server.
+// Command api is the UFO Hub server.
 package main
 
 import (
@@ -16,8 +16,8 @@ import (
 )
 
 func main() {
-	databaseURL := env("DATABASE_URL", "postgres://ufo:ufo@localhost:5432/ufo?sslmode=disable")
-	addr := env("UFO_API_ADDR", ":8080")
+	databaseURL := env("UFO_HUB_DATABASE_URL", "postgres://ufo:ufo@localhost:5432/ufo?sslmode=disable")
+	bind := env("UFO_HUB_BIND", ":8080")
 
 	ctx := context.Background()
 
@@ -37,7 +37,7 @@ func main() {
 	log.Printf("migrations applied")
 
 	// Long-poll notifier: LISTEN for run-queued notifications.
-	longPoll := time.Duration(envFloat("UFO_LONGPOLL_SECONDS", 25) * float64(time.Second))
+	longPoll := time.Duration(envFloat("UFO_HUB_LONGPOLL_SECONDS", 25) * float64(time.Second))
 	notifier := server.NewNotifier(databaseURL, "ufo_run_queued", "ufo_changed")
 	notifier.Start(ctx)
 
@@ -46,8 +46,8 @@ func main() {
 	log.Printf("claim long-poll: %s", longPoll)
 
 	// Start the lease sweeper (requeues runs whose rover went silent).
-	leaseSeconds := envFloat("UFO_RUN_LEASE_SECONDS", 30)
-	sweepInterval := time.Duration(leaseSeconds/3*float64(time.Second))
+	leaseSeconds := envFloat("UFO_HUB_RUN_LEASE_SECONDS", 30)
+	sweepInterval := time.Duration(leaseSeconds / 3 * float64(time.Second))
 	if sweepInterval < 5*time.Second {
 		sweepInterval = 5 * time.Second
 	}
@@ -55,12 +55,12 @@ func main() {
 	log.Printf("lease sweeper: lease=%.0fs interval=%s", leaseSeconds, sweepInterval)
 
 	httpSrv := &http.Server{
-		Addr:              addr,
+		Addr:              bind,
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	log.Printf("UFO API listening on %s", addr)
+	log.Printf("UFO Hub serving on %s", bind)
 	if err := httpSrv.ListenAndServe(); err != nil {
 		log.Fatalf("server: %v", err)
 	}

@@ -20,7 +20,7 @@ function seededRng(seed: string) {
   };
 }
 
-// Left-edge flames; per-op tongue shapes + timing (seeded by id).
+// Left-edge flames; per-operation tongue shapes + timing (seeded by id).
 export function Flames({ detail, seed }: { detail?: boolean; seed?: string }) {
   const r = seededRng(seed ?? "ufo");
   const tongues = Array.from({ length: 5 }, () => {

@@ -1,11 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { FolderKanban, Pencil, Plus } from "lucide-react";
+import { Pencil, Plus } from "lucide-react";
 import { useApp } from "@/components/app-provider";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { SECTION_ICONS } from "@/lib/section-icons";
 import type { Mission } from "@/lib/types";
 
 // A mission groups operations within a fleet. Its key prefixes operation codes.
@@ -26,7 +27,7 @@ export function MissionsView() {
     <div className="mx-auto max-w-3xl p-4">
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base"><FolderKanban className="size-4" /> Missions</CardTitle>
+          <CardTitle className="flex items-center gap-2 text-base"><SECTION_ICONS.missions className="size-4" /> Missions</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
           <form className="flex gap-2" onSubmit={create}>

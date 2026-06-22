@@ -37,7 +37,7 @@ jobs:
       - name: Test (incl. authz integration tests)
         working-directory: apps/api
         env:
-          UFO_TEST_DATABASE_URL: postgres://ufo:ufo@localhost:5432/ufo?sslmode=disable
+          UFO_HUB_TEST_DATABASE_URL: postgres://ufo:ufo@localhost:5432/ufo?sslmode=disable
         run: go test ./...
 
   web:
@@ -80,4 +80,4 @@ jobs:
         with:
           node-version: "26"
       - name: Lint spec
-        run: npx --yes @redocly/cli@2.32.2 lint packages/protocol/openapi.yaml
+        run: npx --yes @redocly/cli@2.34.0 lint apps/api/internal/spec/openapi.yaml

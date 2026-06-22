@@ -9,7 +9,17 @@ This repository incorporates material as listed below.
 Source: https://github.com/lobehub/lobe-icons
 
 Used in:
-- [apps/web/components/pilot-icon.tsx](apps/web/components/pilot-icon.tsx)
+- [apps/web/public/pilot-icons/claude.svg](apps/web/public/pilot-icons/claude.svg)
+- [apps/web/public/pilot-icons/codex.svg](apps/web/public/pilot-icons/codex.svg)
+- [apps/web/public/pilot-icons/antigravity.svg](apps/web/public/pilot-icons/antigravity.svg)
+- [apps/web/public/pilot-icons/cursor.svg](apps/web/public/pilot-icons/cursor.svg)
+- [apps/web/public/pilot-icons/copilot.svg](apps/web/public/pilot-icons/copilot.svg)
+- [apps/web/public/pilot-icons/amp.svg](apps/web/public/pilot-icons/amp.svg)
+- [apps/web/public/pilot-icons/opencode.svg](apps/web/public/pilot-icons/opencode.svg)
+- [apps/web/public/pilot-icons/openclaw.svg](apps/web/public/pilot-icons/openclaw.svg)
+- [apps/web/public/pilot-icons/hermes.svg](apps/web/public/pilot-icons/hermes.svg)
+- [apps/web/public/pilot-icons/kimi.svg](apps/web/public/pilot-icons/kimi.svg)
+- [apps/web/public/pilot-icons/kiro.svg](apps/web/public/pilot-icons/kiro.svg)
 
 License:
 
@@ -17,6 +27,40 @@ License:
 MIT License
 
 Copyright (c) 2023 LobeHub
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### Pi Icon
+
+Source: https://github.com/earendil-works/pi-website/blob/main/src/favicon.svg
+(vendored as a 24x24 scaled, themeable mark)
+
+Used in:
+- [apps/web/public/pilot-icons/pi.svg](apps/web/public/pilot-icons/pi.svg)
+
+License:
+
+```text
+MIT License
+
+Copyright (c) 2026 Earendil Inc. and contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -247,7 +291,6 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 ## Trademarks
 
-"Claude" and the Claude logo are trademarks of Anthropic. "OpenAI", "Codex",
-and the OpenAI logo are trademarks of OpenAI. These marks are used solely to
-identify the corresponding pilot integrations (nominative use); their owners do
-not endorse this project.
+Third-party product names, logos, and marks are trademarks or identifiers of
+their respective owners. They are used solely to identify the corresponding
+pilot integrations (nominative use); their owners do not endorse this project.

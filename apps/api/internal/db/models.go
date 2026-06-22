@@ -18,13 +18,14 @@ type Artifact struct {
 }
 
 type Comment struct {
-	ID          int64              `json:"id"`
-	PublicID    pgtype.UUID        `json:"public_id"`
-	OperationID int64              `json:"operation_id"`
-	AuthorType  string             `json:"author_type"`
-	AuthorID    pgtype.Int8        `json:"author_id"`
-	Body        string             `json:"body"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	ID              int64              `json:"id"`
+	PublicID        pgtype.UUID        `json:"public_id"`
+	OperationID     int64              `json:"operation_id"`
+	AuthorType      string             `json:"author_type"`
+	AuthorID        pgtype.Int8        `json:"author_id"`
+	AuthorPilotKind pgtype.Text        `json:"author_pilot_kind"`
+	Body            string             `json:"body"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 }
 
 type Crew struct {
@@ -36,21 +37,22 @@ type Crew struct {
 }
 
 type CrewMember struct {
-	CrewID     int64  `json:"crew_id"`
-	MemberType string `json:"member_type"`
-	MemberID   int64  `json:"member_id"`
-	Role       string `json:"role"`
+	CrewID     int64       `json:"crew_id"`
+	MemberType string      `json:"member_type"`
+	UserID     pgtype.Int8 `json:"user_id"`
+	PilotKind  pgtype.Text `json:"pilot_kind"`
+	Role       string      `json:"role"`
 }
 
 type EnrollmentCode struct {
-	ID        int64              `json:"id"`
-	PublicID  pgtype.UUID        `json:"public_id"`
-	FleetID   int64              `json:"fleet_id"`
-	Code      string             `json:"code"`
-	Label     string             `json:"label"`
-	Reusable  bool               `json:"reusable"`
-	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	ID            int64              `json:"id"`
+	PublicID      pgtype.UUID        `json:"public_id"`
+	FleetID       int64              `json:"fleet_id"`
+	CodeHash      string             `json:"code_hash"`
+	Name          string             `json:"name"`
+	RemainingUses int32              `json:"remaining_uses"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt     pgtype.Timestamptz `json:"expires_at"`
 }
 
 type Fleet struct {
@@ -90,39 +92,43 @@ type Membership struct {
 }
 
 type Mission struct {
-	ID        int64              `json:"id"`
-	PublicID  pgtype.UUID        `json:"public_id"`
-	FleetID   int64              `json:"fleet_id"`
-	Name      string             `json:"name"`
-	Key       string             `json:"key"`
-	NextSeq   int32              `json:"next_seq"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	ID           int64              `json:"id"`
+	PublicID     pgtype.UUID        `json:"public_id"`
+	FleetID      int64              `json:"fleet_id"`
+	Name         string             `json:"name"`
+	Key          string             `json:"key"`
+	NextSequence int32              `json:"next_sequence"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 }
 
 type Operation struct {
-	ID               int64              `json:"id"`
-	PublicID         pgtype.UUID        `json:"public_id"`
-	FleetID          int64              `json:"fleet_id"`
-	MissionID        int64              `json:"mission_id"`
-	Seq              int32              `json:"seq"`
-	ParentID         pgtype.Int8        `json:"parent_id"`
-	Title            string             `json:"title"`
-	Body             string             `json:"body"`
-	Status           string             `json:"status"`
-	Priority         int16              `json:"priority"`
-	AssigneeType     pgtype.Text        `json:"assignee_type"`
-	AssigneeID       pgtype.Int8        `json:"assignee_id"`
-	RequiredTags     []string           `json:"required_tags"`
-	ExcludedTags     []string           `json:"excluded_tags"`
-	StartDate        pgtype.Date        `json:"start_date"`
-	DueDate          pgtype.Date        `json:"due_date"`
-	PilotSessionID   pgtype.Text        `json:"pilot_session_id"`
-	PilotSessionKind pgtype.Text        `json:"pilot_session_kind"`
-	SessionRoverID   pgtype.Int8        `json:"session_rover_id"`
-	CreatedBy        pgtype.Int8        `json:"created_by"`
-	Archived         bool               `json:"archived"`
-	CreatedAt        pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	ID                  int64              `json:"id"`
+	PublicID            pgtype.UUID        `json:"public_id"`
+	FleetID             int64              `json:"fleet_id"`
+	MissionID           int64              `json:"mission_id"`
+	Sequence            int32              `json:"sequence"`
+	MainOperationID     pgtype.Int8        `json:"main_operation_id"`
+	Title               string             `json:"title"`
+	Body                string             `json:"body"`
+	Status              string             `json:"status"`
+	Priority            int16              `json:"priority"`
+	AssigneeType        pgtype.Text        `json:"assignee_type"`
+	AssigneeID          pgtype.Int8        `json:"assignee_id"`
+	AssigneePilotKind   pgtype.Text        `json:"assignee_pilot_kind"`
+	RequiredTags        []string           `json:"required_tags"`
+	ExcludedTags        []string           `json:"excluded_tags"`
+	StartDate           pgtype.Date        `json:"start_date"`
+	DueDate             pgtype.Date        `json:"due_date"`
+	PilotSessionID      pgtype.Text        `json:"pilot_session_id"`
+	PilotSessionKind    pgtype.Text        `json:"pilot_session_kind"`
+	PilotSessionRoverID pgtype.Int8        `json:"pilot_session_rover_id"`
+	Orchestrating       bool               `json:"orchestrating"`
+	Archived            bool               `json:"archived"`
+	CreatedBy           pgtype.Int8        `json:"created_by"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
+	StartedAt           pgtype.Timestamptz `json:"started_at"`
+	FinishedAt          pgtype.Timestamptz `json:"finished_at"`
 }
 
 type OperationLabel struct {
@@ -136,15 +142,6 @@ type OperationRelation struct {
 	FleetID   int64              `json:"fleet_id"`
 	SourceID  int64              `json:"source_id"`
 	TargetID  int64              `json:"target_id"`
-	Kind      string             `json:"kind"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
-}
-
-type Pilot struct {
-	ID        int64              `json:"id"`
-	PublicID  pgtype.UUID        `json:"public_id"`
-	FleetID   int64              `json:"fleet_id"`
-	Name      string             `json:"name"`
 	Kind      string             `json:"kind"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
@@ -174,12 +171,13 @@ type Rover struct {
 	PublicID         pgtype.UUID        `json:"public_id"`
 	FleetID          int64              `json:"fleet_id"`
 	Name             string             `json:"name"`
-	Token            string             `json:"token"`
 	EnrollmentCodeID pgtype.Int8        `json:"enrollment_code_id"`
+	TokenHash        string             `json:"token_hash"`
+	Units            int32              `json:"units"`
 	Tags             []string           `json:"tags"`
 	AutoTags         []string           `json:"auto_tags"`
-	LastSeenAt       pgtype.Timestamptz `json:"last_seen_at"`
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	LastSeenAt       pgtype.Timestamptz `json:"last_seen_at"`
 }
 
 type Run struct {
@@ -189,7 +187,6 @@ type Run struct {
 	OperationID     int64              `json:"operation_id"`
 	MissionID       pgtype.Int8        `json:"mission_id"`
 	RoverID         pgtype.Int8        `json:"rover_id"`
-	PilotID         pgtype.Int8        `json:"pilot_id"`
 	RequiredRoverID pgtype.Int8        `json:"required_rover_id"`
 	Pilot           string             `json:"pilot"`
 	Command         string             `json:"command"`
@@ -197,9 +194,9 @@ type Run struct {
 	SessionID       pgtype.Text        `json:"session_id"`
 	NeedsInput      bool               `json:"needs_input"`
 	RequestedStatus string             `json:"requested_status"`
-	HeartbeatAt     pgtype.Timestamptz `json:"heartbeat_at"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	HeartbeatAt     pgtype.Timestamptz `json:"heartbeat_at"`
 }
 
 type RunEvent struct {
@@ -213,7 +210,7 @@ type RunEvent struct {
 type RunMessage struct {
 	ID        int64              `json:"id"`
 	RunID     int64              `json:"run_id"`
-	Seq       int32              `json:"seq"`
+	Sequence  int32              `json:"sequence"`
 	Type      string             `json:"type"`
 	Tool      pgtype.Text        `json:"tool"`
 	Content   pgtype.Text        `json:"content"`
@@ -223,10 +220,10 @@ type RunMessage struct {
 }
 
 type Session struct {
-	Token     string             `json:"token"`
+	TokenHash string             `json:"token_hash"`
 	UserID    int64              `json:"user_id"`
-	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
 }
 
 type Signal struct {

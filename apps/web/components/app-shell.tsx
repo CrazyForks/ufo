@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useTheme } from "next-themes";
+import { Moon, Sun } from "lucide-react";
 import { useApp } from "@/components/app-provider";
 import { AppSidebar } from "@/components/app-sidebar";
 import { Board } from "@/components/board";
@@ -13,6 +15,7 @@ import { RoversView } from "@/components/views/rovers-view";
 import { MembersView } from "@/components/views/members-view";
 import { SettingsView } from "@/components/views/settings-view";
 import { InviteBanner } from "@/components/invite-banner";
+import { Button } from "@/components/ui/button";
 import { appPath, parseAppPath, type Section } from "@/lib/routes";
 
 const TITLE: Record<Section, string> = {
@@ -41,6 +44,7 @@ function FireDefs() {
 
 export function AppShell() {
   const app = useApp();
+  const { theme, resolvedTheme, setTheme } = useTheme();
   const [section, setSection] = useState<Section>(() =>
     typeof window === "undefined" ? "operations" : parseAppPath(window.location.pathname).section,
   );
@@ -51,7 +55,7 @@ export function AppShell() {
 
   useEffect(() => {
     const initialRoute = parseAppPath(window.location.pathname);
-    if (initialRoute.operationId) app.openOp(initialRoute.operationId);
+    if (initialRoute.operationId) app.openOperation(initialRoute.operationId);
 
     const onPop = () => {
       const route = parseAppPath(window.location.pathname);
@@ -59,7 +63,7 @@ export function AppShell() {
         app.switchFleet(route.fleetId);
       }
       setSection(route.section);
-      app.openOp(route.operationId);
+      app.openOperation(route.operationId);
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
@@ -67,34 +71,49 @@ export function AppShell() {
   }, []);
 
   useEffect(() => {
-    const path = appPath(app.fleet, section, app.selectedOp);
+    const path = appPath(app.fleet, section, app.selectedOperation);
     if (window.location.pathname !== path) window.history.replaceState(null, "", path);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [section, app.selectedOp, app.fleet]);
+  }, [section, app.selectedOperation, app.fleet]);
+  const darkNow = resolvedTheme === "dark" || theme === "console-dark";
+  const toggleTheme = () => {
+    if (theme?.startsWith("console-")) {
+      setTheme(darkNow ? "console-light" : "console-dark");
+    } else {
+      setTheme(darkNow ? "light" : "dark");
+    }
+  };
 
   return (
-    <div className="flex h-svh overflow-hidden">
+    <div className="ufo-shell flex h-svh overflow-hidden">
       <FireDefs />
       <AppSidebar section={section} setSection={setSection} />
       <div className="relative flex min-w-0 flex-1 flex-col">
-        <header className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
-          <h1 className="text-sm font-semibold">{TITLE[section]}</h1>
-          <div className="flex items-center gap-2">
-            {section === "operations" && <NewOperationDialog />}
-            <SignalsMenu />
-          </div>
-        </header>
-        <InviteBanner />
-        <main className="min-h-0 flex-1 overflow-hidden">
-          {section === "operations" && <Board />}
-          {section === "missions" && <MissionsView />}
-          {section === "crews" && <CrewsView />}
-          {section === "rovers" && <RoversView />}
-          {section === "members" && <MembersView />}
-          {section === "settings" && <SettingsView />}
-        </main>
-        {/* Operation detail is a centered full-page view over this column (sidebar stays). */}
-        <OperationDetail />
+        {app.selectedOperation != null ? (
+          <OperationDetail />
+        ) : (
+          <>
+            <header className="ufo-topbar flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
+              <h1 className="text-sm font-semibold">{TITLE[section]}</h1>
+              <div className="flex items-center gap-2">
+                {section === "operations" && <NewOperationDialog />}
+                <SignalsMenu />
+                <Button variant="ghost" size="icon-sm" onClick={toggleTheme} title="Toggle theme">
+                  {darkNow ? <Sun /> : <Moon />}
+                </Button>
+              </div>
+            </header>
+            <InviteBanner />
+            <main className="ufo-main min-h-0 flex-1 overflow-hidden">
+              {section === "operations" && <Board />}
+              {section === "missions" && <MissionsView />}
+              {section === "crews" && <CrewsView />}
+              {section === "rovers" && <RoversView />}
+              {section === "members" && <MembersView />}
+              {section === "settings" && <SettingsView />}
+            </main>
+          </>
+        )}
       </div>
     </div>
   );

@@ -12,10 +12,10 @@ export default function Page() {
 
   useEffect(() => {
     (async () => {
-      const me = await fetch("/api/me");
+      const me = await fetch("/api/v1/me");
       if (me.status === 401) { window.location.href = "/login"; return; }
       const user = (await me.json()) as User;
-      const fleets = (await getJSON<Fleet[]>("/api/fleets")) ?? [];
+      const fleets = (await getJSON<Fleet[]>("/api/v1/fleets")) ?? [];
       const route = parseAppPath(window.location.pathname);
       const fromUrl = fleets.find((f) => f.id === route.fleetId)?.id;
       const saved = localStorage.getItem("ufo.fleet") ?? "";

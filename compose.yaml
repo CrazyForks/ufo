@@ -24,11 +24,12 @@ services:
       dockerfile: apps/api/Dockerfile
     container_name: ufo-api
     environment:
-      DATABASE_URL: postgres://ufo:ufo@postgres:5432/ufo?sslmode=disable
-      UFO_API_ADDR: ":8080"
-      UFO_RUN_LEASE_SECONDS: ${UFO_RUN_LEASE_SECONDS:-30}
-      UFO_LONGPOLL_SECONDS: ${UFO_LONGPOLL_SECONDS:-25}
-      UFO_WEB_ORIGIN: http://localhost:3000,http://127.0.0.1:3000
+      UFO_HUB_DATABASE_URL: postgres://ufo:ufo@postgres:5432/ufo?sslmode=disable
+      UFO_HUB_BIND: ":8080"
+      UFO_HUB_RUN_LEASE_SECONDS: ${UFO_HUB_RUN_LEASE_SECONDS:-30}
+      UFO_HUB_LONGPOLL_SECONDS: ${UFO_HUB_LONGPOLL_SECONDS:-25}
+      UFO_HUB_MAX_SUB_OPERATIONS: ${UFO_HUB_MAX_SUB_OPERATIONS:-8}
+      UFO_HUB_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:
@@ -41,18 +42,19 @@ services:
       retries: 10
     develop:
       watch:
-        - action: rebuild
+        - action: sync+restart
           path: ./apps/api
+          target: /src/apps/api
         - action: rebuild
-          path: ./db/migrations
+          path: ./apps/api/go.mod
 
   web:
     build:
       context: apps/web
       dockerfile: Dockerfile
-      args:
-        API_PROXY_TARGET: http://api:8080
     container_name: ufo-web
+    environment:
+      UFO_HUB_UPLINK: http://api:8080
     depends_on:
       api:
         condition: service_healthy
@@ -60,8 +62,14 @@ services:
       - "127.0.0.1:3000:3000"
     develop:
       watch:
-        - action: rebuild
+        - action: sync
           path: ./apps/web
+          target: /app
+          ignore:
+            - node_modules/
+            - .next/
+        - action: rebuild
+          path: ./apps/web/package.json
 
 volumes:
   data:

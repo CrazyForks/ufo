@@ -14,7 +14,7 @@ import { initials } from "@/lib/labels";
 export function MembersView() {
   const app = useApp();
   const personal = app.fleets.find((f) => f.id === app.fleet)?.kind === "personal";
-  const manager = (app.myRole === "owner" || app.myRole === "admin") && !personal;
+  const canAdministerFleet = (app.myRole === "owner" || app.myRole === "admin") && !personal;
   const [email, setEmail] = useState("");
   const [role, setRole] = useState("member");
 
@@ -48,7 +48,7 @@ export function MembersView() {
               ) : (
                 <Badge variant="secondary">{m.role}</Badge>
               )}
-              {manager && m.role !== "owner" && m.id !== app.user.id && (
+              {canAdministerFleet && m.role !== "owner" && m.id !== app.user.id && (
                 <Button variant="ghost" size="icon-sm" onClick={() => app.removeFleetMember(m.id)}><Trash2 /></Button>
               )}
             </div>
@@ -60,7 +60,7 @@ export function MembersView() {
         <p className="text-sm text-muted-foreground">This is your personal fleet — it&apos;s just you. Create a group fleet to invite teammates.</p>
       )}
 
-      {manager && (
+      {canAdministerFleet && (
         <Card>
           <CardHeader><CardTitle className="flex items-center gap-2 text-base"><UserPlus className="size-4" /> Invite</CardTitle></CardHeader>
           <CardContent className="space-y-3">

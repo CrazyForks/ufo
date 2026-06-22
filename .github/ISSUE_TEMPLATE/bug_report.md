@@ -18,7 +18,7 @@ What you expected to happen instead.
 **Environment**
 - Component: web / api / rover
 - OS + version:
-- Pilot kind (if relevant): claude / codex
+- Pilot kind (if relevant):
 - Commit / version:
 
 **Logs / screenshots**

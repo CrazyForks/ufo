@@ -3,7 +3,7 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ExternalLink } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, hideFlowControlFlags } from "@/lib/utils";
 
 // GitHub-flavored Markdown for comments and pilot output. Raw HTML is rendered as text.
 export function Markdown({ children, className }: { children: string; className?: string }) {
@@ -27,7 +27,7 @@ export function Markdown({ children, className }: { children: string; className?
           ),
         }}
       >
-        {children}
+        {hideFlowControlFlags(children)}
       </ReactMarkdown>
     </div>
   );

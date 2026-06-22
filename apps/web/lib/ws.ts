@@ -13,7 +13,7 @@ export class WSClient {
 
   constructor(fleet: string) {
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    this.url = `${proto}://${location.host}/api/ws?fleet=${fleet}`;
+    this.url = `${proto}://${location.host}/api/v1/ws?fleet=${fleet}`;
   }
 
   onEvent(h: EventHandler) {

@@ -39,9 +39,11 @@ export function useVisibleStatuses() {
 }
 
 // Card properties that can be shown/hidden on board cards + list rows.
-export const CARD_PROPS = ["priority", "description", "assignee", "dates", "mission", "labels", "sub"] as const;
+export const CARD_PROPS = ["priority", "description", "assignee", "dates", "mission", "labels", "subOperationProgress"] as const;
 export type CardProp = (typeof CARD_PROPS)[number];
 export type ViewMode = "board" | "list" | "swimlane";
+export type TimeFormat = "12h" | "24h";
+export type CommsOrder = "oldest_top" | "oldest_bottom";
 
 export const SORTS = ["created_desc", "created_asc", "priority", "due", "title"] as const;
 export type SortKey = (typeof SORTS)[number];
@@ -52,10 +54,12 @@ export const SORT_LABEL: Record<SortKey, string> = {
 const CP_KEY = "ufo.cardProps";
 const MODE_KEY = "ufo.boardMode";
 const SORT_KEY = "ufo.boardSort";
+const TIME_KEY = "ufo.timeFormat";
+const COMMS_ORDER_KEY = "ufo.commsOrder";
 
 // Order loaded operations within a column/lane. Default (created_desc) is the
 // native fetch order; the rest sort the currently-loaded set client-side.
-export function sortOps(items: Operation[], sort: SortKey): Operation[] {
+export function sortOperations(items: Operation[], sort: SortKey): Operation[] {
   const a = [...items];
   switch (sort) {
     case "created_asc":
@@ -113,4 +117,40 @@ export function useBoardDisplay() {
   };
 
   return { cardProps, toggleProp, mode, setMode, sort, setSort };
+}
+
+export function useTimeFormat() {
+  const [timeFormat, setTimeFormatState] = useState<TimeFormat>("24h");
+  useEffect(() => {
+    const saved = localStorage.getItem(TIME_KEY);
+    if (saved === "12h" || saved === "24h") setTimeFormatState(saved);
+  }, []);
+  const setTimeFormat = (next: TimeFormat) => {
+    setTimeFormatState(next);
+    try { localStorage.setItem(TIME_KEY, next); } catch { /* ignore */ }
+  };
+  return { timeFormat, setTimeFormat };
+}
+
+export function formatTimestamp(value: string, timeFormat: TimeFormat) {
+  return new Date(value).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: timeFormat === "12h",
+  });
+}
+
+export function useCommsOrder() {
+  const [commsOrder, setCommsOrderState] = useState<CommsOrder>("oldest_top");
+  useEffect(() => {
+    const saved = localStorage.getItem(COMMS_ORDER_KEY);
+    if (saved === "oldest_top" || saved === "oldest_bottom") setCommsOrderState(saved);
+  }, []);
+  const setCommsOrder = (next: CommsOrder) => {
+    setCommsOrderState(next);
+    try { localStorage.setItem(COMMS_ORDER_KEY, next); } catch { /* ignore */ }
+  };
+  return { commsOrder, setCommsOrder };
 }

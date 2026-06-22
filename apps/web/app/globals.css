@@ -111,11 +111,461 @@
   --sidebar-border: oklch(1 0 0 / 12%);
 }
 
+:is(.console-light, .console-system) {
+  --radius: 0.1875rem;
+  --background: oklch(0.982 0.004 255);
+  --foreground: oklch(0.16 0.022 265);
+  --card: oklch(0.998 0.002 255 / 88%);
+  --card-foreground: oklch(0.18 0.024 260);
+  --popover: oklch(0.998 0.002 255 / 96%);
+  --popover-foreground: oklch(0.18 0.024 260);
+  --primary: oklch(0.42 0.1 258);
+  --primary-foreground: oklch(0.98 0.005 250);
+  --secondary: oklch(0.94 0.006 255);
+  --secondary-foreground: oklch(0.2 0.028 260);
+  --muted: oklch(0.95 0.005 255);
+  --muted-foreground: oklch(0.45 0.022 255);
+  --accent: oklch(0.92 0.018 252);
+  --accent-foreground: oklch(0.2 0.03 260);
+  --destructive: oklch(0.6 0.19 25);
+  --destructive-foreground: oklch(0.98 0.01 25);
+  --border: oklch(0.66 0.02 255 / 30%);
+  --input: oklch(0.66 0.02 255 / 34%);
+  --ring: oklch(0.58 0.13 250);
+  --brand: oklch(0.5 0.105 258);
+  --brand-foreground: oklch(0.98 0.005 250);
+  --success: oklch(0.55 0.15 150);
+  --warning: oklch(0.7 0.16 80);
+  --info: oklch(0.58 0.12 250);
+  --sidebar: oklch(0.972 0.004 255 / 88%);
+  --sidebar-foreground: oklch(0.18 0.028 255);
+  --sidebar-accent: oklch(0.92 0.016 252);
+  --sidebar-accent-foreground: oklch(0.2 0.032 255);
+  --sidebar-border: oklch(0.66 0.02 255 / 28%);
+}
+
+:is(.console-dark) {
+  --radius: 0.1875rem;
+  --background: oklch(0.13 0.02 265);
+  --foreground: oklch(0.92 0.018 245);
+  --card: oklch(0.19 0.024 260 / 84%);
+  --card-foreground: oklch(0.92 0.018 245);
+  --popover: oklch(0.17 0.024 260 / 94%);
+  --popover-foreground: oklch(0.92 0.018 245);
+  --primary: oklch(0.72 0.16 250);
+  --primary-foreground: oklch(0.12 0.025 260);
+  --secondary: oklch(0.24 0.035 248);
+  --secondary-foreground: oklch(0.9 0.025 185);
+  --muted: oklch(0.24 0.03 248);
+  --muted-foreground: oklch(0.72 0.035 210);
+  --accent: oklch(0.27 0.05 250);
+  --accent-foreground: oklch(0.94 0.018 245);
+  --destructive: oklch(0.68 0.18 25);
+  --destructive-foreground: oklch(0.98 0.01 25);
+  --border: oklch(0.72 0.07 250 / 24%);
+  --input: oklch(0.72 0.07 250 / 28%);
+  --ring: oklch(0.72 0.16 250);
+  --brand: oklch(0.72 0.16 250);
+  --brand-foreground: oklch(0.12 0.025 260);
+  --success: oklch(0.75 0.16 150);
+  --warning: oklch(0.82 0.16 85);
+  --info: oklch(0.7 0.16 250);
+  --sidebar: oklch(0.115 0.024 265 / 88%);
+  --sidebar-foreground: oklch(0.9 0.018 245);
+  --sidebar-accent: oklch(0.22 0.045 250);
+  --sidebar-accent-foreground: oklch(0.94 0.018 245);
+  --sidebar-border: oklch(0.72 0.07 250 / 22%);
+}
+
+@media (prefers-color-scheme: dark) {
+  .console-system {
+    --radius: 0.1875rem;
+    --background: oklch(0.13 0.02 265);
+    --foreground: oklch(0.92 0.018 245);
+    --card: oklch(0.19 0.024 260 / 84%);
+    --card-foreground: oklch(0.92 0.018 245);
+    --popover: oklch(0.17 0.024 260 / 94%);
+    --popover-foreground: oklch(0.92 0.018 245);
+    --primary: oklch(0.72 0.16 250);
+    --primary-foreground: oklch(0.12 0.025 260);
+    --secondary: oklch(0.24 0.035 248);
+    --secondary-foreground: oklch(0.9 0.025 185);
+    --muted: oklch(0.24 0.03 248);
+    --muted-foreground: oklch(0.72 0.035 210);
+    --accent: oklch(0.27 0.05 250);
+    --accent-foreground: oklch(0.94 0.018 245);
+    --destructive: oklch(0.68 0.18 25);
+    --destructive-foreground: oklch(0.98 0.01 25);
+    --border: oklch(0.72 0.07 250 / 24%);
+    --input: oklch(0.72 0.07 250 / 28%);
+    --ring: oklch(0.72 0.16 250);
+    --brand: oklch(0.72 0.16 250);
+    --brand-foreground: oklch(0.12 0.025 260);
+    --success: oklch(0.75 0.16 150);
+    --warning: oklch(0.82 0.16 85);
+    --info: oklch(0.7 0.16 250);
+    --sidebar: oklch(0.115 0.024 265 / 88%);
+    --sidebar-foreground: oklch(0.9 0.018 245);
+    --sidebar-accent: oklch(0.22 0.045 250);
+    --sidebar-accent-foreground: oklch(0.94 0.018 245);
+    --sidebar-border: oklch(0.72 0.07 250 / 22%);
+  }
+}
+
+:is(.console-light, .console-dark, .console-system) body {
+  background:
+    radial-gradient(circle at 82% 10%, color-mix(in oklch, var(--brand) 14%, transparent), transparent 32rem),
+    radial-gradient(circle at 16% 88%, color-mix(in oklch, var(--brand) 7%, transparent), transparent 26rem),
+    linear-gradient(135deg, color-mix(in oklch, var(--brand) 4%, transparent), transparent 36rem),
+    var(--background);
+}
+
+:is(.console-light, .console-dark, .console-system) body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, color-mix(in oklch, var(--brand) 5%, transparent) 1px, transparent 1px),
+    linear-gradient(0deg, color-mix(in oklch, var(--brand) 4%, transparent) 1px, transparent 1px);
+  background-size: 120px 120px;
+  mask-image: radial-gradient(circle at 76% 16%, black, transparent 68%);
+  opacity: 0.42;
+}
+
+:is(.console-light, .console-dark, .console-system) body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  pointer-events: none;
+  background: radial-gradient(circle at 82% 10%, color-mix(in oklch, white 22%, transparent), transparent 24rem);
+  mix-blend-mode: overlay;
+  opacity: 0.22;
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.bg-card, .bg-popover, .bg-sidebar, [role="dialog"], [role="menu"], [role="listbox"]) {
+  border-color: color-mix(in oklch, var(--brand) 34%, var(--border));
+  backdrop-filter: blur(18px) saturate(1.35);
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklch, white 18%, transparent),
+    0 18px 60px color-mix(in oklch, black 12%, transparent),
+    0 0 0 1px color-mix(in oklch, var(--brand) 7%, transparent);
+}
+
+:is(.console-light, .console-dark, .console-system) :where(
+  button,
+  input,
+  textarea,
+  [role="button"],
+  [role="combobox"],
+  [role="dialog"],
+  [role="menu"],
+  [role="listbox"],
+  .bg-card,
+  .bg-popover,
+  .bg-muted,
+  .ufo-column,
+  .ufo-operation-card,
+  .ufo-list,
+  .ufo-segmented
+) {
+  border-radius: 0.1875rem;
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.bg-card, .bg-popover, [role="dialog"], [role="menu"], [role="listbox"], .ufo-column, .ufo-operation-card) {
+  background-image:
+    linear-gradient(135deg, color-mix(in oklch, white 18%, transparent), transparent 36%),
+    linear-gradient(315deg, color-mix(in oklch, var(--brand) 7%, transparent) 0 0.35rem, transparent 0.35rem);
+}
+
+:is(.console-light, .console-dark, .console-system) :where(
+  button,
+  [role="button"],
+  input,
+  textarea,
+  [role="combobox"],
+  [role="dialog"],
+  [role="menu"],
+  [role="listbox"],
+  .bg-card,
+  .bg-popover,
+  .bg-sidebar,
+  .bg-muted,
+  .bg-background
+) {
+  border-color: color-mix(in oklch, var(--brand) 28%, var(--border));
+}
+
+:is(.console-light, .console-dark, .console-system) :where(button, [role="button"], [role="combobox"]) {
+  letter-spacing: 0.01em;
+  box-shadow: inset 0 1px 0 color-mix(in oklch, white 14%, transparent);
+}
+
+:is(.console-light, .console-dark, .console-system) :where(input, textarea, [role="combobox"]) {
+  background:
+    linear-gradient(135deg, color-mix(in oklch, var(--brand) 7%, transparent), transparent 38%),
+    color-mix(in oklch, var(--background) 84%, var(--card));
+}
+
+:is(.console-light, .console-dark, .console-system) :where(input[type="checkbox"]) {
+  accent-color: var(--brand);
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.bg-primary, .bg-brand) {
+  background-image: linear-gradient(135deg, color-mix(in oklch, white 18%, transparent), transparent 34%);
+  box-shadow: 0 0 24px color-mix(in oklch, var(--brand) 18%, transparent);
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-shell) {
+  position: relative;
+  z-index: 1;
+  background: transparent;
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-topbar) {
+  position: relative;
+  overflow: hidden;
+  background:
+    linear-gradient(90deg, color-mix(in oklch, var(--brand) 9%, transparent), transparent 46%),
+    color-mix(in oklch, var(--background) 76%, var(--card));
+  backdrop-filter: blur(18px) saturate(1.25);
+  box-shadow: 0 1px 0 color-mix(in oklch, var(--brand) 22%, transparent);
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-topbar)::before {
+  content: "";
+  position: absolute;
+  left: 11rem;
+  right: 9rem;
+  top: -2.8rem;
+  height: 5.5rem;
+  border: 1px solid color-mix(in oklch, var(--brand) 28%, transparent);
+  border-radius: 50%;
+  opacity: 0.28;
+  transform: skewX(-22deg);
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-topbar)::after {
+  content: "";
+  position: absolute;
+  right: 1.25rem;
+  bottom: 0.45rem;
+  width: 4.5rem;
+  height: 0.55rem;
+  background:
+    radial-gradient(circle, color-mix(in oklch, var(--brand) 70%, white) 0 1px, transparent 1.4px) left/14px 100% repeat-x;
+  opacity: 0.36;
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-topbar h1, .ufo-column-title, .ufo-board-toolbar) {
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-sidebar) {
+  position: relative;
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, color-mix(in oklch, var(--brand) 9%, transparent), transparent 18rem),
+    color-mix(in oklch, var(--sidebar) 90%, var(--background));
+  backdrop-filter: blur(20px) saturate(1.25);
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-sidebar)::before {
+  content: "";
+  position: absolute;
+  inset: 4.25rem 0.5rem auto;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--brand), transparent);
+  opacity: 0.28;
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-sidebar)::after {
+  content: "";
+  position: absolute;
+  bottom: 4.75rem;
+  left: 0.6rem;
+  width: 0.5rem;
+  height: 7rem;
+  background:
+    radial-gradient(circle, color-mix(in oklch, var(--brand) 68%, white) 0 1px, transparent 1.4px) top/100% 16px repeat-y,
+    linear-gradient(color-mix(in oklch, var(--brand) 24%, transparent), transparent);
+  opacity: 0.38;
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-mark) {
+  position: relative;
+  border-radius: 0.125rem;
+  box-shadow: 0 0 28px color-mix(in oklch, var(--brand) 24%, transparent);
+  clip-path: polygon(10% 0, 100% 0, 90% 100%, 0 100%);
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-mark)::after {
+  content: "";
+  position: absolute;
+  left: 28%;
+  right: 28%;
+  bottom: -7px;
+  height: 9px;
+  background: linear-gradient(to bottom, color-mix(in oklch, var(--brand) 55%, transparent), transparent);
+  clip-path: polygon(35% 0, 65% 0, 100% 100%, 0 100%);
+  opacity: 0.72;
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-nav) {
+  border: 1px solid transparent;
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-nav:hover, .ufo-nav.bg-sidebar-accent) {
+  border-color: color-mix(in oklch, var(--brand) 34%, transparent);
+  box-shadow: inset 3px 0 0 var(--brand), 0 0 18px color-mix(in oklch, var(--brand) 12%, transparent);
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-board, .ufo-main) {
+  background: transparent;
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-board-toolbar) {
+  position: relative;
+  z-index: 1;
+  padding-bottom: 0.25rem;
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-segmented) {
+  background: color-mix(in oklch, var(--background) 90%, var(--brand));
+  backdrop-filter: blur(12px);
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-kanban, .ufo-lanes) {
+  background:
+    radial-gradient(circle at 16% 24%, color-mix(in oklch, var(--brand) 7%, transparent), transparent 18rem),
+    linear-gradient(180deg, transparent, color-mix(in oklch, var(--background) 88%, black));
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-column) {
+  position: relative;
+  background:
+    radial-gradient(circle at 1rem 1rem, color-mix(in oklch, var(--brand) 45%, white) 0 1.3px, transparent 1.7px),
+    linear-gradient(180deg, color-mix(in oklch, var(--brand) 7%, transparent), transparent 7rem),
+    color-mix(in oklch, var(--card) 82%, var(--background));
+  border-color: color-mix(in oklch, var(--brand) 20%, var(--border));
+  backdrop-filter: blur(14px) saturate(1.2);
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklch, white 18%, transparent),
+    inset 6px -6px 0 -5px color-mix(in oklch, var(--brand) 20%, var(--border)),
+    0 18px 56px color-mix(in oklch, black 9%, transparent);
+  clip-path: polygon(0 0, calc(100% - 6px) 0, 100% 6px, 100% 100%, 6px 100%, 0 calc(100% - 6px));
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-column)::before {
+  content: "";
+  position: absolute;
+  left: 0.6rem;
+  right: 0.6rem;
+  top: 0.45rem;
+  height: 2px;
+  background:
+    radial-gradient(circle, var(--brand) 0 1px, transparent 1.5px) left/16px 2px repeat-x,
+    linear-gradient(90deg, transparent, color-mix(in oklch, var(--brand) 38%, transparent), transparent);
+  opacity: 0.32;
+  pointer-events: none;
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-column-title) {
+  color: color-mix(in oklch, var(--foreground) 72%, var(--brand));
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-operation-card) {
+  background:
+    linear-gradient(135deg, color-mix(in oklch, var(--brand) 8%, transparent), transparent 44%),
+    color-mix(in oklch, var(--card) 94%, var(--background));
+  border-color: color-mix(in oklch, var(--brand) 18%, var(--border));
+  backdrop-filter: blur(12px) saturate(1.15);
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklch, white 18%, transparent),
+    inset 5px -5px 0 -4px color-mix(in oklch, var(--brand) 18%, var(--border)),
+    0 10px 32px color-mix(in oklch, black 8%, transparent);
+  clip-path: polygon(0 0, calc(100% - 5px) 0, 100% 5px, 100% 100%, 5px 100%, 0 calc(100% - 5px));
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-operation-card)::before {
+  content: "";
+  position: absolute;
+  right: 0.55rem;
+  top: 0.55rem;
+  width: 1.8rem;
+  height: 0.45rem;
+  background:
+    radial-gradient(circle, color-mix(in oklch, var(--brand) 68%, white) 0 1px, transparent 1.4px) right/10px 100% repeat-x;
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-operation-card)::after {
+  content: "";
+  position: absolute;
+  inset: auto 0.65rem 0.55rem auto;
+  width: 2.25rem;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--brand));
+  opacity: 0.28;
+  pointer-events: none;
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-operation-card:hover) {
+  box-shadow: inset 0 1px 0 color-mix(in oklch, white 16%, transparent), 0 0 0 1px color-mix(in oklch, var(--brand) 26%, transparent), 0 14px 32px color-mix(in oklch, black 16%, transparent);
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-list) {
+  background:
+    linear-gradient(90deg, color-mix(in oklch, var(--brand) 8%, transparent), transparent 18rem),
+    var(--card);
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.rounded-full:not(.size-2):not(.size-3):not(.size-4):not(.size-5):not(.size-6):not(.size-7)) {
+  border-radius: 0.25rem;
+}
+
+:is(.console-light, .console-dark, .console-system) ::selection {
+  background: color-mix(in oklch, var(--brand) 38%, transparent);
+}
+
+:is(.console-light, .console-dark, .console-system) ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+:is(.console-light, .console-dark, .console-system) ::-webkit-scrollbar-thumb {
+  background: color-mix(in oklch, var(--brand) 36%, var(--border));
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+.console-dark body {
+  background:
+    radial-gradient(circle at 82% 10%, color-mix(in oklch, var(--brand) 15%, transparent), transparent 32rem),
+    radial-gradient(circle at 16% 88%, color-mix(in oklch, var(--brand) 8%, transparent), transparent 26rem),
+    linear-gradient(135deg, color-mix(in oklch, var(--brand) 5%, transparent), transparent 36rem),
+    var(--background);
+}
+
+@media (prefers-color-scheme: dark) {
+  .console-system body {
+    background:
+      radial-gradient(circle at 82% 10%, color-mix(in oklch, var(--brand) 15%, transparent), transparent 32rem),
+      radial-gradient(circle at 16% 88%, color-mix(in oklch, var(--brand) 8%, transparent), transparent 26rem),
+      linear-gradient(135deg, color-mix(in oklch, var(--brand) 5%, transparent), transparent 36rem),
+      var(--background);
+  }
+}
+
 .bg-board {
   background-color: var(--background);
 }
 
-/* Urgent ops: flames up the left edge. */
+/* Urgent operations: flames up the left edge. */
 .ufo-fire {
   position: absolute;
   left: -3px;
@@ -131,8 +581,16 @@
   filter: url(#ufo-fire) blur(1.4px) brightness(1.07) contrast(1.22) saturate(1.18);
 }
 .dark .ufo-flames,
-.dark .ufo-sparks {
+.dark .ufo-sparks,
+.console-dark .ufo-flames,
+.console-dark .ufo-sparks {
   mix-blend-mode: screen;
+}
+@media (prefers-color-scheme: dark) {
+  .console-system .ufo-flames,
+  .console-system .ufo-sparks {
+    mix-blend-mode: screen;
+  }
 }
 .ufo-flames i {
   position: absolute;
@@ -187,6 +645,7 @@
   animation: ufo-spark 1600ms linear infinite;
 }
 .dark .ufo-sparks b { background: #fde047; box-shadow: 0 0 4px 1px rgba(249, 115, 22, 0.9); }
+:is(.console-light, .console-dark, .console-system) .ufo-sparks b { background: #7dd3fc; box-shadow: 0 0 5px 1px rgba(45, 212, 191, 0.9); }
 .ufo-sparks b:nth-child(1) { bottom: 30%; left: 30%; animation-delay: 0ms; }
 .ufo-sparks b:nth-child(2) { bottom: 20%; left: 55%; animation-delay: 560ms; }
 .ufo-sparks b:nth-child(3) { bottom: 40%; left: 20%; animation-delay: 1080ms; }
@@ -222,6 +681,7 @@
 }
 .ufo-flyflame { color: #f97316; }
 .dark .ufo-flyflame { color: #fb923c; }
+:is(.console-light, .console-dark, .console-system) .ufo-flyflame { color: #22d3ee; }
 
 @keyframes ufo-spin { to { transform: rotate(360deg); } }
 @keyframes ufo-spin-rev { to { transform: rotate(-360deg); } }
@@ -291,5 +751,362 @@
     background-color: var(--background);
     color: var(--foreground);
     font-family: var(--font-sans);
+  }
+}
+
+/* Console theme: warm mono neutrals, hard edges, low glow. */
+:is(.console-light, .console-system) {
+  --radius: 0.25rem;
+  --background: hsl(0 11% 96%);
+  --foreground: hsl(0 5% 12%);
+  --card: hsl(0 8% 94%);
+  --card-foreground: hsl(0 5% 12%);
+  --popover: hsl(0 11% 96%);
+  --popover-foreground: hsl(0 5% 12%);
+  --primary: hsl(0 5% 12%);
+  --primary-foreground: hsl(0 20% 99%);
+  --secondary: hsl(0 8% 93%);
+  --secondary-foreground: hsl(0 5% 12%);
+  --muted: hsl(0 8% 93%);
+  --muted-foreground: hsl(0 1% 39%);
+  --accent: hsl(0 5% 86%);
+  --accent-foreground: hsl(0 5% 12%);
+  --destructive: hsl(6 72% 46%);
+  --destructive-foreground: hsl(0 20% 99%);
+  --border: hsl(30 2% 81%);
+  --input: hsl(30 2% 81%);
+  --ring: hsl(0 5% 28%);
+  --brand: hsl(0 5% 18%);
+  --brand-foreground: hsl(0 11% 96%);
+  --success: hsl(122 45% 38%);
+  --warning: hsl(43 74% 48%);
+  --info: hsl(0 1% 39%);
+  --sidebar: hsl(0 11% 96%);
+  --sidebar-foreground: hsl(0 5% 12%);
+  --sidebar-accent: hsl(0 8% 91%);
+  --sidebar-accent-foreground: hsl(0 5% 12%);
+  --sidebar-border: hsl(0 100% 3% / 12%);
+}
+
+.console-dark {
+  --radius: 0.25rem;
+  --background: hsl(0 9% 7%);
+  --foreground: hsl(0 15% 94%);
+  --card: hsl(0 6% 10%);
+  --card-foreground: hsl(0 15% 94%);
+  --popover: hsl(0 6% 10%);
+  --popover-foreground: hsl(0 15% 94%);
+  --primary: hsl(0 15% 94%);
+  --primary-foreground: hsl(0 9% 7%);
+  --secondary: hsl(0 6% 15%);
+  --secondary-foreground: hsl(0 15% 94%);
+  --muted: hsl(0 6% 15%);
+  --muted-foreground: hsl(0 4% 71%);
+  --accent: hsl(0 5% 22%);
+  --accent-foreground: hsl(0 15% 94%);
+  --destructive: hsl(6 74% 58%);
+  --destructive-foreground: hsl(0 9% 7%);
+  --border: hsl(0 3% 28%);
+  --input: hsl(0 3% 28%);
+  --ring: hsl(0 5% 74%);
+  --brand: hsl(0 15% 88%);
+  --brand-foreground: hsl(0 9% 7%);
+  --success: hsl(122 42% 56%);
+  --warning: hsl(43 86% 62%);
+  --info: hsl(0 4% 71%);
+  --sidebar: hsl(0 9% 7%);
+  --sidebar-foreground: hsl(0 15% 94%);
+  --sidebar-accent: hsl(0 6% 15%);
+  --sidebar-accent-foreground: hsl(0 15% 94%);
+  --sidebar-border: hsl(0 4% 23%);
+}
+
+@media (prefers-color-scheme: dark) {
+  .console-system {
+    --background: hsl(0 9% 7%);
+    --foreground: hsl(0 15% 94%);
+    --card: hsl(0 6% 10%);
+    --card-foreground: hsl(0 15% 94%);
+    --popover: hsl(0 6% 10%);
+    --popover-foreground: hsl(0 15% 94%);
+    --primary: hsl(0 15% 94%);
+    --primary-foreground: hsl(0 9% 7%);
+    --secondary: hsl(0 6% 15%);
+    --secondary-foreground: hsl(0 15% 94%);
+    --muted: hsl(0 6% 15%);
+    --muted-foreground: hsl(0 4% 71%);
+    --accent: hsl(0 5% 22%);
+    --accent-foreground: hsl(0 15% 94%);
+    --destructive: hsl(6 74% 58%);
+    --destructive-foreground: hsl(0 9% 7%);
+    --border: hsl(0 3% 28%);
+    --input: hsl(0 3% 28%);
+    --ring: hsl(0 5% 74%);
+    --brand: hsl(0 15% 88%);
+    --brand-foreground: hsl(0 9% 7%);
+    --success: hsl(122 42% 56%);
+    --warning: hsl(43 86% 62%);
+    --info: hsl(0 4% 71%);
+    --sidebar: hsl(0 9% 7%);
+    --sidebar-foreground: hsl(0 15% 94%);
+    --sidebar-accent: hsl(0 6% 15%);
+    --sidebar-accent-foreground: hsl(0 15% 94%);
+    --sidebar-border: hsl(0 4% 23%);
+  }
+}
+
+:is(.console-light, .console-dark, .console-system) body {
+  background: var(--background);
+  font-family: var(--font-mono);
+}
+
+:is(.console-light, .console-dark, .console-system) body::before {
+  background:
+    linear-gradient(90deg, color-mix(in hsl, var(--border) 55%, transparent) 1px, transparent 1px),
+    linear-gradient(0deg, color-mix(in hsl, var(--border) 55%, transparent) 1px, transparent 1px);
+  background-size: 24px 24px;
+  mask-image: none;
+  opacity: 0.16;
+}
+
+:is(.console-light, .console-dark, .console-system) body::after {
+  display: none;
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.bg-card, .bg-popover, .bg-sidebar, [role="dialog"], [role="menu"], [role="listbox"]) {
+  border-color: var(--border);
+  backdrop-filter: none;
+  box-shadow: none;
+}
+
+:is(.console-light, .console-dark, .console-system) :where(
+  button,
+  input,
+  textarea,
+  [role="button"],
+  [role="combobox"],
+  [role="dialog"],
+  [role="menu"],
+  [role="listbox"],
+  .bg-card,
+  .bg-popover,
+  .bg-sidebar,
+  .bg-muted,
+  .ufo-column,
+  .ufo-operation-card,
+  .ufo-list,
+  .ufo-segmented
+) {
+  border-radius: var(--radius);
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.bg-card, .bg-popover, [role="dialog"], [role="menu"], [role="listbox"], .ufo-column, .ufo-operation-card) {
+  background-image: none;
+}
+
+:is(.console-light, .console-dark, .console-system) :where(
+  button,
+  [role="button"],
+  input,
+  textarea,
+  [role="combobox"],
+  [role="dialog"],
+  [role="menu"],
+  [role="listbox"],
+  .bg-card,
+  .bg-popover,
+  .bg-sidebar,
+  .bg-muted,
+  .bg-background
+) {
+  border-color: var(--border);
+}
+
+:is(.console-light, .console-dark, .console-system) :where(button, [role="button"], [role="combobox"]) {
+  letter-spacing: 0;
+  box-shadow: none;
+}
+
+:is(.console-light, .console-dark, .console-system) :where(input, textarea, [role="combobox"]) {
+  background: var(--background);
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.bg-primary, .bg-brand) {
+  background-image: none;
+  box-shadow: none;
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-topbar) {
+  background: var(--background);
+  backdrop-filter: none;
+  box-shadow: none;
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-topbar)::before,
+:is(.console-light, .console-dark, .console-system) :where(.ufo-topbar)::after,
+:is(.console-light, .console-dark, .console-system) :where(.ufo-sidebar)::before,
+:is(.console-light, .console-dark, .console-system) :where(.ufo-sidebar)::after,
+:is(.console-light, .console-dark, .console-system) :where(.ufo-mark)::after,
+:is(.console-light, .console-dark, .console-system) :where(.ufo-column)::before,
+:is(.console-light, .console-dark, .console-system) :where(.ufo-operation-card)::before,
+:is(.console-light, .console-dark, .console-system) :where(.ufo-operation-card)::after {
+  display: none;
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-topbar h1, .ufo-column-title, .ufo-board-toolbar) {
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-sidebar) {
+  border-right-color: transparent;
+  background: var(--sidebar);
+  backdrop-filter: none;
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-sidebar-collapsed) {
+  border-right-color: var(--sidebar-border);
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-mark) {
+  border-radius: 0;
+  box-shadow: none;
+  clip-path: none;
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-nav:hover, .ufo-nav.bg-sidebar-accent) {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-nav.bg-sidebar-accent) {
+  background: color-mix(in hsl, var(--foreground) 10%, transparent);
+  color: var(--foreground);
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-segmented, .ufo-kanban, .ufo-lanes, .ufo-list) {
+  background: var(--background);
+  backdrop-filter: none;
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-column, .ufo-operation-card) {
+  background: var(--card);
+  border-color: var(--border);
+  backdrop-filter: none;
+  box-shadow: none;
+  clip-path: none;
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-operation-card:hover) {
+  box-shadow: 0 0 0 2px var(--brand);
+}
+
+:root {
+  --run-log-thinking: oklch(0.68 0.16 75);
+  --run-log-text: oklch(0.52 0.18 255);
+  --run-log-tool-use: oklch(0.55 0.2 300);
+  --run-log-tool-result: oklch(0.56 0.16 145);
+  --run-log-error: oklch(0.58 0.22 25);
+}
+
+.dark {
+  --run-log-thinking: oklch(0.72 0.11 80);
+  --run-log-text: oklch(0.68 0.1 230);
+  --run-log-tool-use: oklch(0.7 0.12 300);
+  --run-log-tool-result: oklch(0.7 0.1 145);
+  --run-log-error: oklch(0.67 0.13 25);
+}
+
+:is(.console-light, .console-system) {
+  --run-log-thinking: hsl(43 86% 46%);
+  --run-log-text: hsl(188 72% 42%);
+  --run-log-tool-use: hsl(262 62% 55%);
+  --run-log-tool-result: hsl(122 42% 40%);
+  --run-log-error: hsl(6 74% 50%);
+}
+
+.console-dark {
+  --run-log-thinking: hsl(43 62% 56%);
+  --run-log-text: hsl(188 48% 52%);
+  --run-log-tool-use: hsl(262 48% 60%);
+  --run-log-tool-result: hsl(122 30% 50%);
+  --run-log-error: hsl(6 54% 54%);
+}
+
+@media (prefers-color-scheme: dark) {
+  .console-system {
+    --run-log-thinking: hsl(43 62% 56%);
+    --run-log-text: hsl(188 48% 52%);
+    --run-log-tool-use: hsl(262 48% 60%);
+    --run-log-tool-result: hsl(122 30% 50%);
+    --run-log-error: hsl(6 54% 54%);
+  }
+}
+
+.ufo-run-log-segment {
+  opacity: 1;
+}
+
+.ufo-run-log-segment[data-type="thinking"] { background: var(--run-log-thinking); }
+.ufo-run-log-segment[data-type="text"] { background: var(--run-log-text); }
+.ufo-run-log-segment[data-type="tool_use"] { background: var(--run-log-tool-use); }
+.ufo-run-log-segment[data-type="tool_result"] { background: var(--run-log-tool-result); }
+.ufo-run-log-segment[data-type="error"] { background: var(--run-log-error); }
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-run-log-bar) {
+  background: color-mix(in hsl, var(--foreground) 12%, transparent);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+:is(.console-light, .console-dark, .console-system) :where(.ufo-column-title) {
+  color: var(--foreground);
+}
+
+:is(.console-light, .console-dark, .console-system) ::selection {
+  background: var(--brand);
+  color: var(--brand-foreground);
+}
+
+:is(.console-light, .console-dark, .console-system) ::-webkit-scrollbar-thumb {
+  background: var(--border);
+}
+
+:is(.console-light, .console-dark, .console-system) .ufo-sparks b {
+  background: var(--warning);
+  box-shadow: none;
+}
+
+:is(.console-light, .console-dark, .console-system) .ufo-flyflame {
+  color: var(--warning);
+}
+
+.ufo-pilot-icon {
+  flex: none;
+}
+
+.ufo-pilot-icon-light-outline {
+  filter:
+    drop-shadow(0 0 0.45px rgb(0 0 0))
+    drop-shadow(0 0 1px rgb(0 0 0 / 0.55))
+    drop-shadow(0 0.75px 1px rgb(0 0 0 / 0.35));
+}
+
+.dark .ufo-pilot-icon-monochrome,
+.console-dark .ufo-pilot-icon-monochrome {
+  filter: invert(1);
+}
+
+.dark .ufo-pilot-icon-light-outline,
+.console-dark .ufo-pilot-icon-light-outline {
+  filter: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  .console-system .ufo-pilot-icon-monochrome {
+    filter: invert(1);
+  }
+
+  .console-system .ufo-pilot-icon-light-outline {
+    filter: none;
   }
 }

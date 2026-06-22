@@ -6,19 +6,29 @@ import { useApp } from "@/components/app-provider";
 import { PilotIcon } from "@/components/pilot-icon";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { cn } from "@/lib/utils";
+import { cn, hideFlowControlFlags } from "@/lib/utils";
 import { pilotLabel } from "@/lib/labels";
 import { TYPE_META, elapsed, toolSummary } from "@/lib/timeline";
-import type { Run, RunMessage } from "@/lib/types";
+import { useTimeFormat, type TimeFormat } from "@/lib/view";
+import type { Run, RunEvent, RunMessage } from "@/lib/types";
 
 const ACTIVE = new Set(["queued", "claimed", "starting", "running"]);
+
+function logTime(value: string, timeFormat: TimeFormat) {
+  return new Date(value).toLocaleTimeString(undefined, {
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: timeFormat === "12h",
+  });
+}
 
 // "Telemetry" = the rover-streamed, step-by-step record of what the pilot did.
 export function TelemetryDialog({ run, open, onOpenChange }: { run: Run | null; open: boolean; onOpenChange: (o: boolean) => void }) {
   const app = useApp();
+  const { timeFormat } = useTimeFormat();
   const detail = run && app.runDetail?.run.id === run.id ? app.runDetail : null;
+  const liveRun = detail?.run ?? run;
   const msgs = detail?.messages ?? [];
-  const active = run ? ACTIVE.has(run.state) : false;
+  const events = detail?.events ?? [];
+  const active = liveRun ? ACTIVE.has(liveRun.state) : false;
   const bottomRef = useRef<HTMLDivElement>(null);
   const rowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
 
@@ -26,20 +36,19 @@ export function TelemetryDialog({ run, open, onOpenChange }: { run: Run | null; 
     if (open && active) bottomRef.current?.scrollIntoView({ block: "end" });
   }, [open, active, msgs.length]);
 
-  const duration = run
+  const duration = liveRun
     ? active
-      ? elapsed(run.created_at, Date.now())
-      : elapsed(run.created_at, new Date(run.updated_at).getTime())
+      ? elapsed(liveRun.created_at, Date.now())
+      : elapsed(liveRun.created_at, new Date(liveRun.updated_at).getTime())
     : "";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[80vh] w-full max-w-2xl flex-col">
         <DialogHeader className="mb-0">
-          <DialogTitle className="flex items-center gap-2 text-base">
+          <DialogTitle className="flex items-center gap-2 pr-8 text-base">
             {active && <Loader2 className="size-4 animate-spin text-info" />}
             Telemetry — run #{run?.id}
-            {run?.pilot && <span className="flex items-center gap-1.5 text-sm font-normal text-muted-foreground"><PilotIcon kind={run.pilot} /> {pilotLabel(run.pilot)}</span>}
             {duration && <span className="ml-auto text-xs font-normal tabular-nums text-muted-foreground">{duration}</span>}
           </DialogTitle>
         </DialogHeader>
@@ -50,13 +59,19 @@ export function TelemetryDialog({ run, open, onOpenChange }: { run: Run | null; 
           {msgs.length === 0 && (
             <p className="text-sm text-muted-foreground">{active ? "Waiting for the pilot to report…" : "No telemetry for this run."}</p>
           )}
+          {events.length > 0 && (
+            <div className="space-y-1.5 rounded-md border border-border bg-muted/30 p-2">
+              <p className="text-xs font-semibold text-muted-foreground">Run events</p>
+              {events.map((e, i) => <RunEventRow key={`${e.created_at}-${i}`} event={e} timeFormat={timeFormat} />)}
+            </div>
+          )}
           {msgs.map((m) => (
-            <div key={m.seq} ref={(el) => { if (el) rowRefs.current.set(m.seq, el); }}>
-              <TelemetryRow m={m} />
+            <div key={m.sequence} ref={(el) => { if (el) rowRefs.current.set(m.sequence, el); }}>
+              <TelemetryRow m={m} pilot={run?.pilot} timeFormat={timeFormat} />
             </div>
           ))}
           {active && (
-            <div className="flex items-center gap-1.5 text-xs text-info"><Loader2 className="size-3 animate-spin" /> running…</div>
+            <div className="flex items-center gap-1.5 text-xs text-info"><Loader2 className="size-3 animate-spin" /> Running</div>
           )}
           {detail?.artifacts.map((a) => (
             <div key={a.name}>
@@ -83,20 +98,21 @@ export function TelemetryDialog({ run, open, onOpenChange }: { run: Run | null; 
 // A horizontal bar of segments (consecutive same-type runs coalesced), width by
 // share of the timeline — click to jump to that part.
 function TimelineBar({ msgs, rowRefs }: { msgs: RunMessage[]; rowRefs: React.MutableRefObject<Map<number, HTMLDivElement>> }) {
-  const segs: { seq: number; type: RunMessage["type"]; count: number }[] = [];
+  const segs: { sequence: number; type: RunMessage["type"]; count: number }[] = [];
   for (const m of msgs) {
     const last = segs[segs.length - 1];
     if (last && last.type === m.type) last.count++;
-    else segs.push({ seq: m.seq, type: m.type, count: 1 });
+    else segs.push({ sequence: m.sequence, type: m.type, count: 1 });
   }
   return (
-    <div className="mt-3 flex h-2 gap-0.5 overflow-hidden rounded">
+    <div className="ufo-run-log-bar mt-3 flex h-2.5 gap-0.5 overflow-hidden rounded">
       {segs.map((s) => (
         <button
-          key={s.seq}
+          key={s.sequence}
           title={`${TYPE_META[s.type].label}${s.count > 1 ? ` ×${s.count}` : ""}`}
-          onClick={() => rowRefs.current.get(s.seq)?.scrollIntoView({ behavior: "smooth", block: "center" })}
-          className={cn("h-full min-w-[3px] opacity-70 transition-opacity hover:opacity-100", TYPE_META[s.type].dot)}
+          onClick={() => rowRefs.current.get(s.sequence)?.scrollIntoView({ behavior: "smooth", block: "center" })}
+          data-type={s.type}
+          className={cn("ufo-run-log-segment h-full min-w-[4px] opacity-80 transition-opacity hover:opacity-100", TYPE_META[s.type].dot)}
           style={{ width: `${(s.count / msgs.length) * 100}%` }}
         />
       ))}
@@ -104,18 +120,45 @@ function TimelineBar({ msgs, rowRefs }: { msgs: RunMessage[]; rowRefs: React.Mut
   );
 }
 
-function TelemetryRow({ m }: { m: RunMessage }) {
+function RunEventRow({ event, timeFormat }: { event: RunEvent; timeFormat: TimeFormat }) {
+  const bad = event.kind === "error" || event.message.includes("failed") || event.message.includes("blocked");
+  return (
+    <div className="flex gap-2 text-xs">
+      <span className="flex h-4 shrink-0 items-center">
+        <span className={cn("size-1.5 rounded-full", bad ? "bg-destructive" : "bg-muted-foreground")} />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="shrink-0 font-medium text-muted-foreground">{event.kind}</span>
+          <span className="ml-auto shrink-0 text-[11px] tabular-nums text-muted-foreground">{logTime(event.created_at, timeFormat)}</span>
+        </div>
+        <span className={cn("whitespace-pre-wrap break-words", bad ? "text-destructive" : "text-foreground")}>{hideFlowControlFlags(event.message)}</span>
+      </div>
+    </div>
+  );
+}
+
+function TelemetryRow({ m, pilot, timeFormat }: { m: RunMessage; pilot?: string; timeFormat: TimeFormat }) {
   const meta = TYPE_META[m.type];
   const summary = m.type === "tool_use" ? toolSummary(m.input) : "";
-  const label = m.type === "tool_use" ? (m.tool ?? "Tool") : meta.label;
+  const label = m.type === "tool_use" ? ((m.tool ?? "Tool").replace(/^\w/, (c) => c.toUpperCase())) : m.type === "text" && pilot ? (
+    <span className="inline-flex items-center gap-1.5"><PilotIcon kind={pilot} size={13} /> {pilotLabel(pilot)}</span>
+  ) : meta.label;
+  const dotOffset = m.type === "text" ? "" : "translate-y-px";
+  const content = m.content ? hideFlowControlFlags(m.content) : "";
 
   return (
     <div className="flex gap-2.5">
-      <span className={cn("mt-1.5 size-2 shrink-0 rounded-full", meta.dot)} />
+      <span className="flex h-4 shrink-0 items-center">
+        <span className={cn("size-2 rounded-full", dotOffset, meta.dot)} />
+      </span>
       <div className="min-w-0 flex-1">
-        <span className={cn("text-xs font-semibold", meta.text)}>{label}</span>
-        {(m.type === "text" || m.type === "thinking" || m.type === "error") && m.content && (
-          <p className={cn("whitespace-pre-wrap break-words text-sm", meta.text)}>{m.content}</p>
+        <div className="flex items-center gap-2">
+          <span className={cn("text-xs font-semibold", meta.text)}>{label}</span>
+          <span className="ml-auto text-[11px] tabular-nums text-muted-foreground">{logTime(m.created_at, timeFormat)}</span>
+        </div>
+        {(m.type === "text" || m.type === "thinking" || m.type === "error") && content.trim() && (
+          <p className={cn("whitespace-pre-wrap break-words text-sm", meta.text)}>{content}</p>
         )}
         {m.type === "tool_use" && (
           <>

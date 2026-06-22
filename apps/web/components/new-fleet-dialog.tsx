@@ -1,13 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Plus } from "lucide-react";
 import { useApp } from "@/components/app-provider";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 
-export function NewFleetDialog() {
+export function NewFleetDialog({ trigger }: { trigger?: ReactNode }) {
   const app = useApp();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
@@ -26,7 +26,7 @@ export function NewFleetDialog() {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button variant="ghost" size="icon-sm" title="New fleet"><Plus /></Button>
+        {trigger ?? <Button variant="ghost" size="icon-sm" title="New fleet"><Plus /></Button>}
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>

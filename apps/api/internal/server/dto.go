@@ -52,14 +52,11 @@ func toFleetDTO(f db.Fleet) fleetDTO {
 	return fleetDTO{ID: uuidStr(f.PublicID), Name: f.Name, Kind: f.Kind}
 }
 
+// pilotDTO is a pilot kind with the count of fleet rovers it can drive.
 type pilotDTO struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Kind string `json:"kind"`
-}
-
-func toPilotDTO(a db.Pilot) pilotDTO {
-	return pilotDTO{ID: uuidStr(a.PublicID), Name: a.Name, Kind: a.Kind}
+	Kind   string `json:"kind"`
+	Rovers int    `json:"rovers"` // rovers in the fleet this pilot can drive
+	Online bool   `json:"online"` // at least one of those is online
 }
 
 type missionDTO struct {
@@ -73,28 +70,19 @@ func toMissionDTO(m db.Mission) missionDTO {
 }
 
 type enrollmentCodeDTO struct {
-	ID        string             `json:"id"`
-	Code      string             `json:"code"`
-	Label     string             `json:"label"`
-	Reusable  bool               `json:"reusable"`
-	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	ID            string             `json:"id"`
+	Code          string             `json:"code"`
+	Name          string             `json:"name"`
+	RemainingUses int32              `json:"remaining_uses"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt     pgtype.Timestamptz `json:"expires_at"`
 }
 
 func toEnrollmentCodeDTO(t db.EnrollmentCode) enrollmentCodeDTO {
 	return enrollmentCodeDTO{
-		ID: uuidStr(t.PublicID), Code: t.Code, Label: t.Label, Reusable: t.Reusable,
-		ExpiresAt: t.ExpiresAt, CreatedAt: t.CreatedAt,
+		ID: uuidStr(t.PublicID), Code: "•••••", Name: t.Name, RemainingUses: t.RemainingUses,
+		CreatedAt: t.CreatedAt, ExpiresAt: t.ExpiresAt,
 	}
-}
-
-// maskToken keeps a short identifying prefix so a listing can show which token is
-// which without exposing the usable secret.
-func maskToken(token string) string {
-	if len(token) <= 6 {
-		return "••••"
-	}
-	return token[:6] + "…"
 }
 
 type memberDTO struct {
@@ -160,30 +148,35 @@ func toArtifactDTO(a db.Artifact) artifactDTO {
 // ---- DTOs with FK references (need public id expansion) ----
 
 type operationDTO struct {
-	ID           string             `json:"id"`
-	Title        string             `json:"title"`
-	Body         string             `json:"body"`
-	Status       string             `json:"status"`
-	MissionID    string             `json:"mission_id"`
-	Seq          int32              `json:"seq"`
-	Priority     int16              `json:"priority"`
-	AssigneeType *string            `json:"assignee_type"`
-	AssigneeID   *string            `json:"assignee_id"`
-	RequiredTags []string           `json:"required_tags"`
-	ExcludedTags []string           `json:"excluded_tags"`
-	Labels       []labelDTO         `json:"labels"`
-	Reactions    []reactionDTO      `json:"reactions"`
-	Sub          subProgress        `json:"sub"`
-	StartDate    *string            `json:"start_date"`
-	DueDate      *string            `json:"due_date"`
-	ParentID     *string            `json:"parent_id"`
-	CreatedBy    *string            `json:"created_by"`
-	Archived     bool               `json:"archived"`
-	CreatedAt    pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+	ID                   string               `json:"id"`
+	Title                string               `json:"title"`
+	Body                 string               `json:"body"`
+	Status               string               `json:"status"`
+	ActiveRunState       string               `json:"active_run_state"`
+	MissionID            string               `json:"mission_id"`
+	Sequence             int32                `json:"sequence"`
+	Priority             int16                `json:"priority"`
+	AssigneeType         *string              `json:"assignee_type"`
+	AssigneeID           *string              `json:"assignee_id"`         // user/crew public id
+	AssigneePilotKind    *string              `json:"assignee_pilot_kind"` // when assignee_type=pilot
+	RequiredTags         []string             `json:"required_tags"`
+	ExcludedTags         []string             `json:"excluded_tags"`
+	Labels               []labelDTO           `json:"labels"`
+	Reactions            []reactionDTO        `json:"reactions"`
+	SubOperationProgress subOperationProgress `json:"sub_operation_progress"`
+	StartDate            *string              `json:"start_date"`
+	DueDate              *string              `json:"due_date"`
+	MainOperationID      *string              `json:"main_operation_id"`
+	Orchestrating        bool                 `json:"orchestrating"`
+	Archived             bool                 `json:"archived"`
+	CreatedBy            *string              `json:"created_by"`
+	CreatedAt            pgtype.Timestamptz   `json:"created_at"`
+	UpdatedAt            pgtype.Timestamptz   `json:"updated_at"`
+	StartedAt            pgtype.Timestamptz   `json:"started_at"`
+	FinishedAt           pgtype.Timestamptz   `json:"finished_at"`
 }
 
-type subProgress struct {
+type subOperationProgress struct {
 	Total int64 `json:"total"`
 	Done  int64 `json:"done"`
 }
@@ -198,7 +191,7 @@ func toLabelDTO(l db.Label) labelDTO {
 	return labelDTO{ID: uuidStr(l.PublicID), Name: l.Name, Color: l.Color}
 }
 
-type prDTO struct {
+type pullRequestDTO struct {
 	ID     string `json:"id"`
 	URL    string `json:"url"`
 	Title  string `json:"title"`
@@ -206,8 +199,8 @@ type prDTO struct {
 	Number *int32 `json:"number"`
 }
 
-func toPRDTO(p db.PullRequest) prDTO {
-	d := prDTO{ID: uuidStr(p.PublicID), URL: p.Url, Title: p.Title, State: p.State}
+func toPullRequestDTO(p db.PullRequest) pullRequestDTO {
+	d := pullRequestDTO{ID: uuidStr(p.PublicID), URL: p.Url, Title: p.Title, State: p.State}
 	if p.Number.Valid {
 		n := p.Number.Int32
 		d.Number = &n
@@ -215,20 +208,20 @@ func toPRDTO(p db.PullRequest) prDTO {
 	return d
 }
 
-// opRefDTO is a compact operation reference (relations, search) — enough for the
-// web to render the code (mission_id + seq) and a status icon.
-type opRefDTO struct {
+// operationReferenceDTO is a compact operation reference (relations, search) — enough for the
+// web to render the code (mission_id + sequence) and a status icon.
+type operationReferenceDTO struct {
 	ID        string `json:"id"`
 	Title     string `json:"title"`
 	Status    string `json:"status"`
-	Seq       int32  `json:"seq"`
+	Sequence  int32  `json:"sequence"`
 	MissionID string `json:"mission_id"`
 }
 
 type relationDTO struct {
-	ID        string   `json:"id"`
-	Kind      string   `json:"kind"` // blocks | blocked_by | relates | duplicate | duplicated_by
-	Operation opRefDTO `json:"operation"`
+	ID        string                `json:"id"`
+	Kind      string                `json:"kind"` // blocks | blocked_by | relates | duplicate | duplicated_by
+	Operation operationReferenceDTO `json:"operation"`
 }
 
 // relationKind maps the stored (kind, direction) to the display-facing kind.
@@ -253,13 +246,13 @@ func toRelationDTOs(rows []db.ListRelationsForOperationRow) []relationDTO {
 	out := make([]relationDTO, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, relationDTO{
-			ID:   uuidStr(r.RelID),
+			ID:   uuidStr(r.RelationID),
 			Kind: relationKind(r.Kind, r.Outgoing),
-			Operation: opRefDTO{
-				ID:        uuidStr(r.OpID),
+			Operation: operationReferenceDTO{
+				ID:        uuidStr(r.OperationPublicID),
 				Title:     r.Title,
 				Status:    r.Status,
-				Seq:       r.Seq,
+				Sequence:  r.Sequence,
 				MissionID: uuidStr(r.MissionID),
 			},
 		})
@@ -275,12 +268,13 @@ type reactionDTO struct {
 }
 
 type commentDTO struct {
-	ID         string             `json:"id"`
-	AuthorType string             `json:"author_type"`
-	AuthorID   *string            `json:"author_id"`
-	Body       string             `json:"body"`
-	Reactions  []reactionDTO      `json:"reactions"`
-	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+	ID              string             `json:"id"`
+	AuthorType      string             `json:"author_type"`
+	AuthorID        *string            `json:"author_id"`         // user public id
+	AuthorPilotKind *string            `json:"author_pilot_kind"` // when author_type=pilot
+	Body            string             `json:"body"`
+	Reactions       []reactionDTO      `json:"reactions"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 }
 
 func dateStr(d pgtype.Date) *string {
@@ -303,7 +297,7 @@ type runDTO struct {
 
 type crewMemberDTO struct {
 	MemberType string `json:"member_type"`
-	MemberID   string `json:"member_id"`
+	MemberID   string `json:"member_id"` // user public id, or pilot kind
 	Role       string `json:"role"`
 }
 
@@ -326,9 +320,9 @@ type signalDTO struct {
 
 // runMessageDTO serializes a transcript message with input as raw JSON (the db
 // row stores jsonb as []byte, which would otherwise marshal as base64). No own
-// id — the client orders by seq.
+// id — the client orders by sequence.
 type runMessageDTO struct {
-	Seq       int32           `json:"seq"`
+	Sequence  int32           `json:"sequence"`
 	Type      string          `json:"type"`
 	Tool      string          `json:"tool,omitempty"`
 	Content   string          `json:"content,omitempty"`
@@ -338,7 +332,7 @@ type runMessageDTO struct {
 }
 
 func toRunMessageDTO(m db.RunMessage) runMessageDTO {
-	d := runMessageDTO{Seq: m.Seq, Type: m.Type, CreatedAt: m.CreatedAt.Time}
+	d := runMessageDTO{Sequence: m.Sequence, Type: m.Type, CreatedAt: m.CreatedAt.Time}
 	if m.Tool.Valid {
 		d.Tool = m.Tool.String
 	}
@@ -379,22 +373,6 @@ func (s *Server) mapUsers(ctx context.Context, ids []int64) map[int64]string {
 		return out
 	}
 	rows, err := s.q.PublicIDsForUsers(ctx, ids)
-	if err != nil {
-		return out
-	}
-	for _, r := range rows {
-		out[r.ID] = uuidStr(r.PublicID)
-	}
-	return out
-}
-
-func (s *Server) mapPilots(ctx context.Context, ids []int64) map[int64]string {
-	out := map[int64]string{}
-	ids = dedupeIDs(ids)
-	if len(ids) == 0 {
-		return out
-	}
-	rows, err := s.q.PublicIDsForPilots(ctx, ids)
 	if err != nil {
 		return out
 	}
@@ -452,16 +430,15 @@ func (s *Server) mapOperations(ctx context.Context, ids []int64) map[int64]strin
 	return out
 }
 
-// polyUUID resolves a polymorphic (type, id) reference to its public id.
-func polyUUID(typ string, id pgtype.Int8, users, pilots, crews map[int64]string) string {
+// polyUUID resolves a polymorphic (type, id) reference to its public id. Pilots
+// are referenced by kind, not id, so they're handled separately.
+func polyUUID(typ string, id pgtype.Int8, users, crews map[int64]string) string {
 	if !id.Valid {
 		return ""
 	}
 	switch typ {
 	case "user":
 		return users[id.Int64]
-	case "pilot":
-		return pilots[id.Int64]
 	case "crew":
 		return crews[id.Int64]
 	}
@@ -478,12 +455,12 @@ func strPtr(s string) *string {
 // ---- list builders ----
 
 func (s *Server) operationDTOs(ctx context.Context, ops []db.Operation) []operationDTO {
-	var mIDs, uIDs, aIDs, cIDs, parentIDs, creatorIDs, opIDs []int64
+	var mIDs, uIDs, cIDs, mainOperationIDs, creatorIDs, opIDs []int64
 	for _, o := range ops {
 		mIDs = append(mIDs, o.MissionID)
 		opIDs = append(opIDs, o.ID)
-		if o.ParentID.Valid {
-			parentIDs = append(parentIDs, o.ParentID.Int64)
+		if o.MainOperationID.Valid {
+			mainOperationIDs = append(mainOperationIDs, o.MainOperationID.Int64)
 		}
 		if o.CreatedBy.Valid {
 			creatorIDs = append(creatorIDs, o.CreatedBy.Int64)
@@ -492,8 +469,6 @@ func (s *Server) operationDTOs(ctx context.Context, ops []db.Operation) []operat
 			switch o.AssigneeType.String {
 			case "user":
 				uIDs = append(uIDs, o.AssigneeID.Int64)
-			case "pilot":
-				aIDs = append(aIDs, o.AssigneeID.Int64)
 			case "crew":
 				cIDs = append(cIDs, o.AssigneeID.Int64)
 			}
@@ -501,19 +476,19 @@ func (s *Server) operationDTOs(ctx context.Context, ops []db.Operation) []operat
 	}
 	mMap := s.mapMissions(ctx, mIDs)
 	uMap := s.mapUsers(ctx, uIDs)
-	aMap := s.mapPilots(ctx, aIDs)
 	cMap := s.mapCrews(ctx, cIDs)
-	parentMap := s.mapOperations(ctx, parentIDs)
+	mainOperationMap := s.mapOperations(ctx, mainOperationIDs)
 	creatorMap := s.mapUsers(ctx, creatorIDs)
-	labelMap := s.labelsForOps(ctx, opIDs)
-	subMap := s.subProgress(ctx, opIDs)
+	labelMap := s.labelsForOperations(ctx, opIDs)
+	subOperationProgressMap := s.subOperationProgress(ctx, opIDs)
+	activeRunStateMap := s.activeRunStates(ctx, opIDs)
 	out := make([]operationDTO, 0, len(ops))
 	for _, o := range ops {
 		d := operationDTO{
-			ID: uuidStr(o.PublicID), Title: o.Title, Body: o.Body, Status: o.Status,
-			MissionID: mMap[o.MissionID], Seq: o.Seq, Priority: o.Priority, Archived: o.Archived, CreatedAt: o.CreatedAt, UpdatedAt: o.UpdatedAt,
+			ID: uuidStr(o.PublicID), Title: o.Title, Body: o.Body, Status: o.Status, ActiveRunState: activeRunStateMap[o.ID],
+			MissionID: mMap[o.MissionID], Sequence: o.Sequence, Priority: o.Priority, Orchestrating: o.Orchestrating, Archived: o.Archived, CreatedAt: o.CreatedAt, UpdatedAt: o.UpdatedAt, StartedAt: o.StartedAt, FinishedAt: o.FinishedAt,
 			RequiredTags: o.RequiredTags, ExcludedTags: o.ExcludedTags,
-			Labels: labelMap[o.ID], Sub: subMap[o.ID],
+			Labels: labelMap[o.ID], SubOperationProgress: subOperationProgressMap[o.ID],
 			StartDate: dateStr(o.StartDate), DueDate: dateStr(o.DueDate),
 		}
 		if d.Labels == nil {
@@ -522,10 +497,13 @@ func (s *Server) operationDTOs(ctx context.Context, ops []db.Operation) []operat
 		d.Reactions = []reactionDTO{} // populated only in the detail view
 		if o.AssigneeType.Valid {
 			d.AssigneeType = strPtr(o.AssigneeType.String)
-			d.AssigneeID = strPtr(polyUUID(o.AssigneeType.String, o.AssigneeID, uMap, aMap, cMap))
+			d.AssigneeID = strPtr(polyUUID(o.AssigneeType.String, o.AssigneeID, uMap, cMap))
 		}
-		if o.ParentID.Valid {
-			d.ParentID = strPtr(parentMap[o.ParentID.Int64])
+		if o.AssigneePilotKind.Valid {
+			d.AssigneePilotKind = strPtr(o.AssigneePilotKind.String)
+		}
+		if o.MainOperationID.Valid {
+			d.MainOperationID = strPtr(mainOperationMap[o.MainOperationID.Int64])
 		}
 		if o.CreatedBy.Valid {
 			d.CreatedBy = strPtr(creatorMap[o.CreatedBy.Int64])
@@ -535,7 +513,7 @@ func (s *Server) operationDTOs(ctx context.Context, ops []db.Operation) []operat
 	return out
 }
 
-func (s *Server) labelsForOps(ctx context.Context, ids []int64) map[int64][]labelDTO {
+func (s *Server) labelsForOperations(ctx context.Context, ids []int64) map[int64][]labelDTO {
 	out := map[int64][]labelDTO{}
 	ids = dedupeIDs(ids)
 	if len(ids) == 0 {
@@ -551,20 +529,36 @@ func (s *Server) labelsForOps(ctx context.Context, ids []int64) map[int64][]labe
 	return out
 }
 
-func (s *Server) subProgress(ctx context.Context, ids []int64) map[int64]subProgress {
-	out := map[int64]subProgress{}
+func (s *Server) subOperationProgress(ctx context.Context, ids []int64) map[int64]subOperationProgress {
+	out := map[int64]subOperationProgress{}
 	ids = dedupeIDs(ids)
 	if len(ids) == 0 {
 		return out
 	}
-	rows, err := s.q.SubOpProgress(ctx, ids)
+	rows, err := s.q.SubOperationProgress(ctx, ids)
 	if err != nil {
 		return out
 	}
 	for _, r := range rows {
-		if r.ParentID.Valid {
-			out[r.ParentID.Int64] = subProgress{Total: r.Total, Done: r.Done}
+		if r.MainOperationID.Valid {
+			out[r.MainOperationID.Int64] = subOperationProgress{Total: r.Total, Done: r.Done}
 		}
+	}
+	return out
+}
+
+func (s *Server) activeRunStates(ctx context.Context, ids []int64) map[int64]string {
+	out := map[int64]string{}
+	ids = dedupeIDs(ids)
+	if len(ids) == 0 {
+		return out
+	}
+	rows, err := s.q.ActiveRunStatesForOperations(ctx, ids)
+	if err != nil {
+		return out
+	}
+	for _, r := range rows {
+		out[r.OperationID] = r.State
 	}
 	return out
 }
@@ -574,20 +568,14 @@ func (s *Server) operationDTO(ctx context.Context, o db.Operation) operationDTO 
 }
 
 func (s *Server) commentDTOs(ctx context.Context, cs []db.Comment, userID int64) []commentDTO {
-	var uIDs, aIDs, cIDs []int64
+	var uIDs, cIDs []int64
 	for _, c := range cs {
 		cIDs = append(cIDs, c.ID)
-		if c.AuthorID.Valid {
-			switch c.AuthorType {
-			case "user":
-				uIDs = append(uIDs, c.AuthorID.Int64)
-			case "pilot":
-				aIDs = append(aIDs, c.AuthorID.Int64)
-			}
+		if c.AuthorID.Valid && c.AuthorType == "user" {
+			uIDs = append(uIDs, c.AuthorID.Int64)
 		}
 	}
 	uMap := s.mapUsers(ctx, uIDs)
-	aMap := s.mapPilots(ctx, aIDs)
 	reMap := s.reactionsForTargets(ctx, "comment", cIDs, userID)
 	out := make([]commentDTO, 0, len(cs))
 	for _, c := range cs {
@@ -595,7 +583,10 @@ func (s *Server) commentDTOs(ctx context.Context, cs []db.Comment, userID int64)
 		if d.Reactions == nil {
 			d.Reactions = []reactionDTO{}
 		}
-		d.AuthorID = strPtr(polyUUID(c.AuthorType, c.AuthorID, uMap, aMap, nil))
+		d.AuthorID = strPtr(polyUUID(c.AuthorType, c.AuthorID, uMap, nil))
+		if c.AuthorPilotKind.Valid {
+			d.AuthorPilotKind = strPtr(c.AuthorPilotKind.String)
+		}
 		out = append(out, d)
 	}
 	return out
@@ -636,21 +627,20 @@ func (s *Server) runDTOs(ctx context.Context, rs []db.Run) []runDTO {
 }
 
 func (s *Server) crewMemberDTOs(ctx context.Context, ms []db.CrewMember) []crewMemberDTO {
-	var uIDs, aIDs []int64
+	var uIDs []int64
 	for _, m := range ms {
-		switch m.MemberType {
-		case "user":
-			uIDs = append(uIDs, m.MemberID)
-		case "pilot":
-			aIDs = append(aIDs, m.MemberID)
+		if m.MemberType == "user" && m.UserID.Valid {
+			uIDs = append(uIDs, m.UserID.Int64)
 		}
 	}
 	uMap := s.mapUsers(ctx, uIDs)
-	aMap := s.mapPilots(ctx, aIDs)
 	out := make([]crewMemberDTO, 0, len(ms))
 	for _, m := range ms {
-		id := pgtype.Int8{Int64: m.MemberID, Valid: true}
-		out = append(out, crewMemberDTO{MemberType: m.MemberType, MemberID: polyUUID(m.MemberType, id, uMap, aMap, nil), Role: m.Role})
+		ref := m.PilotKind.String // pilot member: the kind is the ref
+		if m.MemberType == "user" {
+			ref = polyUUID("user", m.UserID, uMap, nil)
+		}
+		out = append(out, crewMemberDTO{MemberType: m.MemberType, MemberID: ref, Role: m.Role})
 	}
 	return out
 }

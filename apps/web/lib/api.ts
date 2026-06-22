@@ -1,4 +1,4 @@
-// Thin fetch helpers over the same-origin /api proxy. All UI calls are
+// Thin fetch helpers over the same-origin /api/v1 facade. All UI calls are
 // fleet-scoped via ?fleet=<id> (membership-checked server-side).
 
 export async function getJSON<T>(path: string): Promise<T | null> {
@@ -9,6 +9,22 @@ export async function getJSON<T>(path: string): Promise<T | null> {
 export async function postJSON(path: string, body?: unknown): Promise<Response> {
   return fetch(path, {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: body == null ? undefined : JSON.stringify(body),
+  });
+}
+
+export async function patchJSON(path: string, body?: unknown): Promise<Response> {
+  return fetch(path, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: body == null ? undefined : JSON.stringify(body),
+  });
+}
+
+export async function putJSON(path: string, body?: unknown): Promise<Response> {
+  return fetch(path, {
+    method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: body == null ? undefined : JSON.stringify(body),
   });

@@ -1,17 +1,17 @@
 import type { Pilot, Comment, Crew, Member, Mission, Operation } from "@/lib/types";
 
-// Display id: <mission key>-<per-mission seq>, e.g. MSJ-123.
-export function opCode(op: Operation, missions: Mission[]): string {
-  const key = missions.find((m) => m.id === op.mission_id)?.key ?? "OP";
-  return `${key}-${op.seq}`;
+// Display id: <mission key>-<per-mission sequence>, e.g. MSJ-123.
+export function operationCode(operation: Operation, missions: Mission[]): string {
+  const key = missions.find((m) => m.id === operation.mission_id)?.key ?? "MISSION";
+  return `${key}-${operation.sequence}`;
 }
 
-export function assigneeLabel(op: Operation, user: { id: string }, pilots: Pilot[], crews: Crew[], members: Member[] = []): string {
-  if (!op.assignee_type) return "Unassigned";
-  if (op.assignee_type === "user") return memberName(op.assignee_id, user, members);
-  if (op.assignee_type === "pilot") return pilots.find((a) => a.id === op.assignee_id)?.name ?? "Pilot";
-  if (op.assignee_type === "crew") return crews.find((c) => c.id === op.assignee_id)?.name ?? "Crew";
-  return op.assignee_type;
+export function assigneeLabel(operation: Operation, user: { id: string }, _pilots: Pilot[], crews: Crew[], members: Member[] = []): string {
+  if (!operation.assignee_type) return "Unassigned";
+  if (operation.assignee_type === "user") return memberName(operation.assignee_id, user, members);
+  if (operation.assignee_type === "pilot") return pilotLabel(operation.assignee_pilot_kind ?? "");
+  if (operation.assignee_type === "crew") return crews.find((c) => c.id === operation.assignee_id)?.name ?? "Crew";
+  return operation.assignee_type;
 }
 
 function memberName(id: string | null, user: { id: string }, members: Member[]): string {
@@ -20,29 +20,40 @@ function memberName(id: string | null, user: { id: string }, members: Member[]):
   return m ? m.name || m.email : "User";
 }
 
-export function assigneeHasPilot(op: Operation, crews: Crew[] = []): boolean {
-  if (op.assignee_type === "pilot") return true;
-  if (op.assignee_type !== "crew") return false;
+export function assigneeHasPilot(operation: Operation, crews: Crew[] = []): boolean {
+  if (operation.assignee_type === "pilot") return true;
+  if (operation.assignee_type !== "crew") return false;
   return crews
-    .find((c) => c.id === op.assignee_id)
+    .find((c) => c.id === operation.assignee_id)
     ?.members?.some((m) => m.member_type === "pilot") ?? false;
 }
 
-export function opAssigneeValue(op: Operation, user: { id: string }): string {
-  if (op.assignee_type === "user" && op.assignee_id === user.id) return "me";
-  if (op.assignee_type) return `${op.assignee_type}:${op.assignee_id}`;
+export function operationAssigneeValue(operation: Operation, user: { id: string }): string {
+  if (operation.assignee_type === "user" && operation.assignee_id === user.id) return "me";
+  if (operation.assignee_type === "pilot") return `pilot:${operation.assignee_pilot_kind}`;
+  if (operation.assignee_type) return `${operation.assignee_type}:${operation.assignee_id}`;
   return "";
 }
 
-export function commentAuthor(c: Comment, userId: string, pilots: Pilot[]): string {
+export function commentAuthor(c: Comment, userId: string, _pilots: Pilot[]): string {
   if (c.author_type === "user") return c.author_id === userId ? "You" : "User";
-  if (c.author_type === "pilot") return pilots.find((a) => a.id === c.author_id)?.name ?? "Pilot";
+  if (c.author_type === "pilot") return pilotLabel(c.author_pilot_kind ?? "");
   return "System";
 }
 
 const PILOT_LABELS: Record<string, string> = {
-  claude: "Claude",
+  claude: "Claude Code",
   codex: "Codex",
+  antigravity: "Antigravity",
+  cursor: "Cursor Agent",
+  copilot: "GitHub Copilot",
+  amp: "Amp Code",
+  opencode: "OpenCode",
+  openclaw: "OpenClaw",
+  hermes: "Hermes",
+  pi: "Pi",
+  kimi: "Kimi",
+  kiro: "Kiro",
 };
 
 export function pilotLabel(pilot: string): string {

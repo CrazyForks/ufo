@@ -17,12 +17,13 @@ UFO can run generated work on your machines, so the trust boundary matters:
 
 - **A fleet is a trust boundary.** Any member of a fleet can cause **code
   execution on that fleet's connected rovers** by assigning an operation to a
-  `Claude` / `Codex` pilot. The `Claude` adapter runs with
-  `--permission-mode bypassPermissions` and `Codex` runs `exec` unattended.
+  pilot. Built-in pilots include Claude Code, Codex, Antigravity, Cursor Agent,
+  GitHub Copilot, Amp Code, OpenCode, OpenClaw, Hermes, Pi, Kimi, and Kiro; they
+  run unattended with broad local permissions.
   **Only invite people you trust with shell access to your rover hosts.**
 - **Rovers run as the host user.** Pilot-driven commands use the privileges of
   the account that started the rover. Use a dedicated low-privilege user,
-  container, or isolated machine. Per-operation work dirs under `~/.ufo`
+  container, or isolated machine. Per-operation work directories under `~/.ufo`
   organize files; they are **not** a security sandbox.
 - **Enrollment codes and connection tokens are bearer credentials.** Enrollment codes are
   shown **once** at creation; the listing only shows a masked prefix. Creating,
@@ -32,11 +33,11 @@ UFO can run generated work on your machines, so the trust boundary matters:
 - **Local dev defaults are not production-safe.** `compose.yaml` ships throwaway
   PostgreSQL credentials and binds to localhost. Change them and put the API
   behind TLS before exposing it.
-- **Do not disable TLS verification for pilot CLIs.** On hosts behind a
+- **Do not disable TLS verification for pilots.** On hosts behind a
   TLS-inspecting proxy, install the proxy CA in the host trust store instead.
 
 ## Scope
 
-The control plane is multi-instance-safe and fleet-scopes every query, but UFO
-does **not** sandbox pilot execution — that is the operator's responsibility per
+The Hub is multi-instance-safe and fleet-scopes every query, but UFO
+does **not** sandbox pilot execution — that is the host owner's responsibility per
 the trust model above.

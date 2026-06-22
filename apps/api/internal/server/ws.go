@@ -91,7 +91,7 @@ func (s *Server) wsConnect(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// SameSite=Lax doesn't cover the WS upgrade, so check Origin ourselves.
+	// SameSite=Lax doesn't cover the WebSocket upgrade, so check Origin ourselves.
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool { return s.originAllowed(r, r.Header.Get("Origin")) },
 	}
@@ -129,7 +129,9 @@ func (s *Server) wsConnect(w http.ResponseWriter, r *http.Request) {
 	// deadline fresh and detect close.
 	conn.SetReadLimit(512)
 	_ = conn.SetReadDeadline(time.Now().Add(wsPongWait))
-	conn.SetPongHandler(func(string) error { return conn.SetReadDeadline(time.Now().Add(wsPongWait)) })
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(wsPongWait))
+	})
 	for {
 		if _, _, err := conn.ReadMessage(); err != nil {
 			break

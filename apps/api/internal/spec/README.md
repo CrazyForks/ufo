@@ -1,8 +1,10 @@
-# packages/protocol
+# OpenAPI spec
 
-[`openapi.yaml`](openapi.yaml) is the **source of truth** for the UFO
-control-plane HTTP API — the contract shared by the Go server (`apps/api`), the
-web client (`apps/web`), and the Rust rover (`apps/rover`).
+[`openapi.yaml`](openapi.yaml) is the **source of truth** for the UFO Hub HTTP
+API — the contract shared by the Go server (`apps/api`), the web client
+(`apps/web`), and the Rust rover (`apps/rover`). It is **embedded** into the Hub
+binary (`spec.go`) and served at `/openapi.yaml`; the RFC 9727 catalog at
+`/.well-known/api-catalog` points to it.
 
 This is a preview protocol with no compatibility guarantee. Endpoints, payloads,
 authentication behavior, and rover interactions may change without notice.
@@ -18,17 +20,17 @@ follow-up.
 
 ```bash
 # lint the spec
-npx --yes @redocly/cli@2.32.2 lint packages/protocol/openapi.yaml
+npx --yes @redocly/cli@2.34.0 lint apps/api/internal/spec/openapi.yaml
 
 # preview docs locally
-npx --yes @redocly/cli@2.32.2 preview-docs packages/protocol/openapi.yaml
+npx --yes @redocly/cli@2.34.0 preview-docs apps/api/internal/spec/openapi.yaml
 ```
 
 ## Planned codegen (follow-up)
 
 ```bash
 # TypeScript types for the web client
-npx openapi-typescript packages/protocol/openapi.yaml -o apps/web/lib/api-types.ts
+npx openapi-typescript apps/api/internal/spec/openapi.yaml -o apps/web/lib/api-types.ts
 
 # Rust client for the rover (e.g. via progenitor or openapi-generator)
 # Go server types (e.g. via oapi-codegen)

@@ -26,7 +26,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en" suppressHydrationWarning className={`${inter.variable} ${geistMono.variable}`}>
       <body className="min-h-svh bg-background text-foreground antialiased">
-        <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
+        <ThemeProvider attribute="class" defaultTheme="system" enableSystem themes={["light", "dark", "console-light", "console-dark", "console-system"]} disableTransitionOnChange>
           {children}
           <Toaster position="bottom-right" />
         </ThemeProvider>
