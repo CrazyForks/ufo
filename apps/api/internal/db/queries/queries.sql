@@ -115,7 +115,7 @@ SELECT * FROM invitations WHERE fleet_id = $1 AND status = 'pending' ORDER BY id
 
 -- Pending invitations addressed to an email (across fleets), with fleet name.
 -- name: InvitationsForEmail :many
-SELECT i.*, f.name AS fleet_name, f.public_id AS fleet_public_id
+SELECT i.public_id, i.role, i.invitee_email, f.name AS fleet_name, f.public_id AS fleet_public_id
 FROM invitations i JOIN fleets f ON f.id = i.fleet_id
 WHERE i.invitee_email = $1 AND i.status = 'pending' AND i.expires_at > now()
 ORDER BY i.id DESC;
@@ -663,7 +663,7 @@ ORDER BY r.id;
 
 -- Typeahead for linking operations: match title or numeric sequence, newest first.
 -- name: SearchOperations :many
-SELECT o.*, m.public_id AS mission_public_id, m.key AS mission_key
+SELECT o.public_id, o.title, o.status, o.sequence, m.public_id AS mission_id
 FROM operations o JOIN missions m ON m.id = o.mission_id
 WHERE o.fleet_id = $1
   AND (o.title ILIKE '%' || $2 || '%' OR cast(o.sequence AS text) = $2)

@@ -1,11 +1,11 @@
 # ufo-cli
 
-[![GitHub](https://img.shields.io/badge/GitHub-fengsi%2Fufo-181717?style=flat-square&logo=github)](https://github.com/fengsi/ufo)
-[![CI](https://img.shields.io/github/actions/workflow/status/fengsi/ufo/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/fengsi/ufo/actions/workflows/ci.yml)
-[![crates.io](https://img.shields.io/crates/v/ufo-cli?style=flat-square)](https://crates.io/crates/ufo-cli)
-[![License](https://img.shields.io/crates/l/ufo-cli?style=flat-square)](https://github.com/fengsi/ufo/blob/main/LICENSE)
-[![Preview](https://img.shields.io/badge/status-preview-blue?style=flat-square)](https://github.com/fengsi/ufo/blob/main/CHANGELOG.md)
-[![Rust](https://img.shields.io/badge/Rust-2024-B7410E?style=flat-square)](https://github.com/fengsi/ufo/blob/main/apps/rover/Cargo.toml)
+[![GitHub](https://img.shields.io/badge/GitHub-fengsi%2Fufo-181717?logo=github&style=for-the-badge)](https://github.com/fengsi/ufo)
+[![Build](https://img.shields.io/github/actions/workflow/status/fengsi/ufo/ci.yml?logo=github&style=for-the-badge)](https://github.com/fengsi/ufo/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/ufo-cli?style=for-the-badge)](https://crates.io/crates/ufo-cli)
+[![License](https://img.shields.io/crates/l/ufo-cli?style=for-the-badge)](https://github.com/fengsi/ufo/blob/main/LICENSE)
+[![Status](https://img.shields.io/badge/status-preview-blue?style=for-the-badge)](https://github.com/fengsi/ufo/blob/main/CHANGELOG.md)
+[![Rust](https://img.shields.io/badge/Rust-2024-B7410E?logo=rust&style=for-the-badge)](https://github.com/fengsi/ufo/blob/main/apps/rover/Cargo.toml)
 
 `ufo-cli` is the host-side rover for UFO. It enrolls a local machine into a UFO
 fleet, long-poll claims queued operations, lets the assigned pilot drive the rover in an

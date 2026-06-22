@@ -381,7 +381,7 @@ function compactActivityComments(comments: Comment[]) {
 function runForPilotComment(c: Comment, runs: Run[]) {
   if (c.author_type !== "pilot" || !c.author_pilot_kind) return null;
   const at = new Date(c.created_at).getTime();
-  // ponytail: timestamp match; store comment.run_id if overlapping same-pilot runs need exact links.
+  // Nearest preceding run by the same pilot.
   return runs
     .filter((r) => r.pilot === c.author_pilot_kind && new Date(r.created_at).getTime() <= at)
     .sort((a, b) => b.created_at.localeCompare(a.created_at))[0] ?? null;

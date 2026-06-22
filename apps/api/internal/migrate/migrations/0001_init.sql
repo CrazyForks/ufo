@@ -164,11 +164,11 @@ CREATE TABLE operations (
     pilot_session_rover_id bigint,
     orchestrating          boolean NOT NULL DEFAULT FALSE,
     archived               boolean NOT NULL DEFAULT FALSE,
+    started_at             timestamptz,
+    finished_at            timestamptz,
     created_by             bigint,
     created_at             timestamptz NOT NULL DEFAULT now(),
     updated_at             timestamptz NOT NULL DEFAULT now(),
-    started_at             timestamptz,
-    finished_at            timestamptz,
     CONSTRAINT operations_assignee_check CHECK (
         (assignee_type IS NULL AND assignee_id IS NULL AND assignee_pilot_kind IS NULL)
         OR (assignee_type = 'pilot' AND assignee_pilot_kind IS NOT NULL AND assignee_id IS NULL)
@@ -399,7 +399,7 @@ ALTER TABLE signals ADD CONSTRAINT signals_fleet_id_fkey FOREIGN KEY (fleet_id) 
 ALTER TABLE signals ADD CONSTRAINT signals_operation_id_fkey FOREIGN KEY (operation_id) REFERENCES operations (id) ON DELETE CASCADE;
 ALTER TABLE signals ADD CONSTRAINT signals_recipient_user_id_fkey FOREIGN KEY (recipient_user_id) REFERENCES users (id) ON DELETE CASCADE;
 
--- ============================ realtime: LISTEN/NOTIFY ============================
+-- ============================ real-time: LISTEN/NOTIFY ============================
 -- Triggers fan typed JSON ({"t":<kind>,"fleet":<id>}) on 'ufo_changed' for the UI,
 -- and a fleet id on 'ufo_run_queued' to wake idle rover long-polls.
 

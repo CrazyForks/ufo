@@ -243,7 +243,7 @@ func (q *Queries) ArchiveSignal(ctx context.Context, arg ArchiveSignalParams) er
 const assignOperation = `-- name: AssignOperation :one
 UPDATE operations SET assignee_type = $3, assignee_id = $4, assignee_pilot_kind = $5, updated_at = now()
 WHERE id = $1 AND fleet_id = $2
-RETURNING id, public_id, fleet_id, mission_id, sequence, main_operation_id, title, body, status, priority, assignee_type, assignee_id, assignee_pilot_kind, required_tags, excluded_tags, start_date, due_date, pilot_session_id, pilot_session_kind, pilot_session_rover_id, orchestrating, archived, created_by, created_at, updated_at, started_at, finished_at
+RETURNING id, public_id, fleet_id, mission_id, sequence, main_operation_id, title, body, status, priority, assignee_type, assignee_id, assignee_pilot_kind, required_tags, excluded_tags, start_date, due_date, pilot_session_id, pilot_session_kind, pilot_session_rover_id, orchestrating, archived, started_at, finished_at, created_by, created_at, updated_at
 `
 
 type AssignOperationParams struct {
@@ -286,11 +286,11 @@ func (q *Queries) AssignOperation(ctx context.Context, arg AssignOperationParams
 		&i.PilotSessionRoverID,
 		&i.Orchestrating,
 		&i.Archived,
+		&i.StartedAt,
+		&i.FinishedAt,
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.StartedAt,
-		&i.FinishedAt,
 	)
 	return i, err
 }
@@ -797,7 +797,7 @@ const createOperation = `-- name: CreateOperation :one
 
 INSERT INTO operations (fleet_id, title, body, mission_id, assignee_type, assignee_id, status, sequence, required_tags, excluded_tags, priority, main_operation_id, start_date, due_date, created_by, assignee_pilot_kind, started_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, CASE WHEN $7 = 'in_progress' THEN now() ELSE NULL END)
-RETURNING id, public_id, fleet_id, mission_id, sequence, main_operation_id, title, body, status, priority, assignee_type, assignee_id, assignee_pilot_kind, required_tags, excluded_tags, start_date, due_date, pilot_session_id, pilot_session_kind, pilot_session_rover_id, orchestrating, archived, created_by, created_at, updated_at, started_at, finished_at
+RETURNING id, public_id, fleet_id, mission_id, sequence, main_operation_id, title, body, status, priority, assignee_type, assignee_id, assignee_pilot_kind, required_tags, excluded_tags, start_date, due_date, pilot_session_id, pilot_session_kind, pilot_session_rover_id, orchestrating, archived, started_at, finished_at, created_by, created_at, updated_at
 `
 
 type CreateOperationParams struct {
@@ -863,11 +863,11 @@ func (q *Queries) CreateOperation(ctx context.Context, arg CreateOperationParams
 		&i.PilotSessionRoverID,
 		&i.Orchestrating,
 		&i.Archived,
+		&i.StartedAt,
+		&i.FinishedAt,
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.StartedAt,
-		&i.FinishedAt,
 	)
 	return i, err
 }
@@ -1664,7 +1664,7 @@ func (q *Queries) GetMissionIDByPublicID(ctx context.Context, arg GetMissionIDBy
 }
 
 const getOperation = `-- name: GetOperation :one
-SELECT id, public_id, fleet_id, mission_id, sequence, main_operation_id, title, body, status, priority, assignee_type, assignee_id, assignee_pilot_kind, required_tags, excluded_tags, start_date, due_date, pilot_session_id, pilot_session_kind, pilot_session_rover_id, orchestrating, archived, created_by, created_at, updated_at, started_at, finished_at FROM operations WHERE id = $1 AND fleet_id = $2
+SELECT id, public_id, fleet_id, mission_id, sequence, main_operation_id, title, body, status, priority, assignee_type, assignee_id, assignee_pilot_kind, required_tags, excluded_tags, start_date, due_date, pilot_session_id, pilot_session_kind, pilot_session_rover_id, orchestrating, archived, started_at, finished_at, created_by, created_at, updated_at FROM operations WHERE id = $1 AND fleet_id = $2
 `
 
 type GetOperationParams struct {
@@ -1698,11 +1698,11 @@ func (q *Queries) GetOperation(ctx context.Context, arg GetOperationParams) (Ope
 		&i.PilotSessionRoverID,
 		&i.Orchestrating,
 		&i.Archived,
+		&i.StartedAt,
+		&i.FinishedAt,
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.StartedAt,
-		&i.FinishedAt,
 	)
 	return i, err
 }
@@ -1937,24 +1937,18 @@ func (q *Queries) Heartbeat(ctx context.Context, arg HeartbeatParams) (int64, er
 }
 
 const invitationsForEmail = `-- name: InvitationsForEmail :many
-SELECT i.id, i.public_id, i.fleet_id, i.inviter_id, i.invitee_email, i.role, i.status, i.created_at, i.expires_at, f.name AS fleet_name, f.public_id AS fleet_public_id
+SELECT i.public_id, i.role, i.invitee_email, f.name AS fleet_name, f.public_id AS fleet_public_id
 FROM invitations i JOIN fleets f ON f.id = i.fleet_id
 WHERE i.invitee_email = $1 AND i.status = 'pending' AND i.expires_at > now()
 ORDER BY i.id DESC
 `
 
 type InvitationsForEmailRow struct {
-	ID            int64              `json:"id"`
-	PublicID      pgtype.UUID        `json:"public_id"`
-	FleetID       int64              `json:"fleet_id"`
-	InviterID     int64              `json:"inviter_id"`
-	InviteeEmail  string             `json:"invitee_email"`
-	Role          string             `json:"role"`
-	Status        string             `json:"status"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
-	ExpiresAt     pgtype.Timestamptz `json:"expires_at"`
-	FleetName     string             `json:"fleet_name"`
-	FleetPublicID pgtype.UUID        `json:"fleet_public_id"`
+	PublicID      pgtype.UUID `json:"public_id"`
+	Role          string      `json:"role"`
+	InviteeEmail  string      `json:"invitee_email"`
+	FleetName     string      `json:"fleet_name"`
+	FleetPublicID pgtype.UUID `json:"fleet_public_id"`
 }
 
 // Pending invitations addressed to an email (across fleets), with fleet name.
@@ -1968,15 +1962,9 @@ func (q *Queries) InvitationsForEmail(ctx context.Context, inviteeEmail string) 
 	for rows.Next() {
 		var i InvitationsForEmailRow
 		if err := rows.Scan(
-			&i.ID,
 			&i.PublicID,
-			&i.FleetID,
-			&i.InviterID,
-			&i.InviteeEmail,
 			&i.Role,
-			&i.Status,
-			&i.CreatedAt,
-			&i.ExpiresAt,
+			&i.InviteeEmail,
 			&i.FleetName,
 			&i.FleetPublicID,
 		); err != nil {
@@ -2380,7 +2368,7 @@ func (q *Queries) ListMissions(ctx context.Context, fleetID int64) ([]Mission, e
 }
 
 const listOperations = `-- name: ListOperations :many
-SELECT id, public_id, fleet_id, mission_id, sequence, main_operation_id, title, body, status, priority, assignee_type, assignee_id, assignee_pilot_kind, required_tags, excluded_tags, start_date, due_date, pilot_session_id, pilot_session_kind, pilot_session_rover_id, orchestrating, archived, created_by, created_at, updated_at, started_at, finished_at FROM operations WHERE fleet_id = $1 ORDER BY id DESC
+SELECT id, public_id, fleet_id, mission_id, sequence, main_operation_id, title, body, status, priority, assignee_type, assignee_id, assignee_pilot_kind, required_tags, excluded_tags, start_date, due_date, pilot_session_id, pilot_session_kind, pilot_session_rover_id, orchestrating, archived, started_at, finished_at, created_by, created_at, updated_at FROM operations WHERE fleet_id = $1 ORDER BY id DESC
 `
 
 func (q *Queries) ListOperations(ctx context.Context, fleetID int64) ([]Operation, error) {
@@ -2415,11 +2403,11 @@ func (q *Queries) ListOperations(ctx context.Context, fleetID int64) ([]Operatio
 			&i.PilotSessionRoverID,
 			&i.Orchestrating,
 			&i.Archived,
+			&i.StartedAt,
+			&i.FinishedAt,
 			&i.CreatedBy,
 			&i.CreatedAt,
 			&i.UpdatedAt,
-			&i.StartedAt,
-			&i.FinishedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -2432,7 +2420,7 @@ func (q *Queries) ListOperations(ctx context.Context, fleetID int64) ([]Operatio
 }
 
 const listOperationsByStatus = `-- name: ListOperationsByStatus :many
-SELECT id, public_id, fleet_id, mission_id, sequence, main_operation_id, title, body, status, priority, assignee_type, assignee_id, assignee_pilot_kind, required_tags, excluded_tags, start_date, due_date, pilot_session_id, pilot_session_kind, pilot_session_rover_id, orchestrating, archived, created_by, created_at, updated_at, started_at, finished_at FROM operations
+SELECT id, public_id, fleet_id, mission_id, sequence, main_operation_id, title, body, status, priority, assignee_type, assignee_id, assignee_pilot_kind, required_tags, excluded_tags, start_date, due_date, pilot_session_id, pilot_session_kind, pilot_session_rover_id, orchestrating, archived, started_at, finished_at, created_by, created_at, updated_at FROM operations
 WHERE fleet_id = $1 AND status = $2
   AND ($3::bigint = 0 OR mission_id = $3)
   AND ($4::bigint = 0 OR id < $4)
@@ -2511,11 +2499,11 @@ func (q *Queries) ListOperationsByStatus(ctx context.Context, arg ListOperations
 			&i.PilotSessionRoverID,
 			&i.Orchestrating,
 			&i.Archived,
+			&i.StartedAt,
+			&i.FinishedAt,
 			&i.CreatedBy,
 			&i.CreatedAt,
 			&i.UpdatedAt,
-			&i.StartedAt,
-			&i.FinishedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -2894,7 +2882,7 @@ func (q *Queries) ListSignals(ctx context.Context, arg ListSignalsParams) ([]Sig
 }
 
 const listSubOperations = `-- name: ListSubOperations :many
-SELECT id, public_id, fleet_id, mission_id, sequence, main_operation_id, title, body, status, priority, assignee_type, assignee_id, assignee_pilot_kind, required_tags, excluded_tags, start_date, due_date, pilot_session_id, pilot_session_kind, pilot_session_rover_id, orchestrating, archived, created_by, created_at, updated_at, started_at, finished_at FROM operations WHERE main_operation_id = $1 ORDER BY id
+SELECT id, public_id, fleet_id, mission_id, sequence, main_operation_id, title, body, status, priority, assignee_type, assignee_id, assignee_pilot_kind, required_tags, excluded_tags, start_date, due_date, pilot_session_id, pilot_session_kind, pilot_session_rover_id, orchestrating, archived, started_at, finished_at, created_by, created_at, updated_at FROM operations WHERE main_operation_id = $1 ORDER BY id
 `
 
 func (q *Queries) ListSubOperations(ctx context.Context, mainOperationID pgtype.Int8) ([]Operation, error) {
@@ -2929,11 +2917,11 @@ func (q *Queries) ListSubOperations(ctx context.Context, mainOperationID pgtype.
 			&i.PilotSessionRoverID,
 			&i.Orchestrating,
 			&i.Archived,
+			&i.StartedAt,
+			&i.FinishedAt,
 			&i.CreatedBy,
 			&i.CreatedAt,
 			&i.UpdatedAt,
-			&i.StartedAt,
-			&i.FinishedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -3326,7 +3314,7 @@ func (q *Queries) RoverLastSeen(ctx context.Context, id int64) (pgtype.Timestamp
 }
 
 const searchOperations = `-- name: SearchOperations :many
-SELECT o.id, o.public_id, o.fleet_id, o.mission_id, o.sequence, o.main_operation_id, o.title, o.body, o.status, o.priority, o.assignee_type, o.assignee_id, o.assignee_pilot_kind, o.required_tags, o.excluded_tags, o.start_date, o.due_date, o.pilot_session_id, o.pilot_session_kind, o.pilot_session_rover_id, o.orchestrating, o.archived, o.created_by, o.created_at, o.updated_at, o.started_at, o.finished_at, m.public_id AS mission_public_id, m.key AS mission_key
+SELECT o.public_id, o.title, o.status, o.sequence, m.public_id AS mission_id
 FROM operations o JOIN missions m ON m.id = o.mission_id
 WHERE o.fleet_id = $1
   AND (o.title ILIKE '%' || $2 || '%' OR cast(o.sequence AS text) = $2)
@@ -3340,35 +3328,11 @@ type SearchOperationsParams struct {
 }
 
 type SearchOperationsRow struct {
-	ID                  int64              `json:"id"`
-	PublicID            pgtype.UUID        `json:"public_id"`
-	FleetID             int64              `json:"fleet_id"`
-	MissionID           int64              `json:"mission_id"`
-	Sequence            int32              `json:"sequence"`
-	MainOperationID     pgtype.Int8        `json:"main_operation_id"`
-	Title               string             `json:"title"`
-	Body                string             `json:"body"`
-	Status              string             `json:"status"`
-	Priority            int16              `json:"priority"`
-	AssigneeType        pgtype.Text        `json:"assignee_type"`
-	AssigneeID          pgtype.Int8        `json:"assignee_id"`
-	AssigneePilotKind   pgtype.Text        `json:"assignee_pilot_kind"`
-	RequiredTags        []string           `json:"required_tags"`
-	ExcludedTags        []string           `json:"excluded_tags"`
-	StartDate           pgtype.Date        `json:"start_date"`
-	DueDate             pgtype.Date        `json:"due_date"`
-	PilotSessionID      pgtype.Text        `json:"pilot_session_id"`
-	PilotSessionKind    pgtype.Text        `json:"pilot_session_kind"`
-	PilotSessionRoverID pgtype.Int8        `json:"pilot_session_rover_id"`
-	Orchestrating       bool               `json:"orchestrating"`
-	Archived            bool               `json:"archived"`
-	CreatedBy           pgtype.Int8        `json:"created_by"`
-	CreatedAt           pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
-	StartedAt           pgtype.Timestamptz `json:"started_at"`
-	FinishedAt          pgtype.Timestamptz `json:"finished_at"`
-	MissionPublicID     pgtype.UUID        `json:"mission_public_id"`
-	MissionKey          string             `json:"mission_key"`
+	PublicID  pgtype.UUID `json:"public_id"`
+	Title     string      `json:"title"`
+	Status    string      `json:"status"`
+	Sequence  int32       `json:"sequence"`
+	MissionID pgtype.UUID `json:"mission_id"`
 }
 
 // Typeahead for linking operations: match title or numeric sequence, newest first.
@@ -3382,35 +3346,11 @@ func (q *Queries) SearchOperations(ctx context.Context, arg SearchOperationsPara
 	for rows.Next() {
 		var i SearchOperationsRow
 		if err := rows.Scan(
-			&i.ID,
 			&i.PublicID,
-			&i.FleetID,
-			&i.MissionID,
-			&i.Sequence,
-			&i.MainOperationID,
 			&i.Title,
-			&i.Body,
 			&i.Status,
-			&i.Priority,
-			&i.AssigneeType,
-			&i.AssigneeID,
-			&i.AssigneePilotKind,
-			&i.RequiredTags,
-			&i.ExcludedTags,
-			&i.StartDate,
-			&i.DueDate,
-			&i.PilotSessionID,
-			&i.PilotSessionKind,
-			&i.PilotSessionRoverID,
-			&i.Orchestrating,
-			&i.Archived,
-			&i.CreatedBy,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.StartedAt,
-			&i.FinishedAt,
-			&i.MissionPublicID,
-			&i.MissionKey,
+			&i.Sequence,
+			&i.MissionID,
 		); err != nil {
 			return nil, err
 		}

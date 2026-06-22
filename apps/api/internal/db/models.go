@@ -124,11 +124,11 @@ type Operation struct {
 	PilotSessionRoverID pgtype.Int8        `json:"pilot_session_rover_id"`
 	Orchestrating       bool               `json:"orchestrating"`
 	Archived            bool               `json:"archived"`
+	StartedAt           pgtype.Timestamptz `json:"started_at"`
+	FinishedAt          pgtype.Timestamptz `json:"finished_at"`
 	CreatedBy           pgtype.Int8        `json:"created_by"`
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
-	StartedAt           pgtype.Timestamptz `json:"started_at"`
-	FinishedAt          pgtype.Timestamptz `json:"finished_at"`
 }
 
 type OperationLabel struct {

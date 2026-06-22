@@ -537,7 +537,8 @@ func (s *Server) deleteFleet(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-const roverOnlineWindow = 60 * time.Second
+// UFO_HUB_ROVER_ONLINE_WINDOW_SECONDS: max gap since last_seen before a rover is offline.
+var roverOnlineWindow = time.Duration(envInt("UFO_HUB_ROVER_ONLINE_WINDOW_SECONDS", 60)) * time.Second
 
 type roverDTO struct {
 	ID         string   `json:"id"`
@@ -2132,7 +2133,7 @@ func (s *Server) searchOperations(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]operationReferenceDTO, 0, len(rows))
 	for _, o := range rows {
-		out = append(out, operationReferenceDTO{ID: uuidStr(o.PublicID), Title: o.Title, Status: o.Status, Sequence: o.Sequence, MissionID: uuidStr(o.MissionPublicID)})
+		out = append(out, operationReferenceDTO{ID: uuidStr(o.PublicID), Title: o.Title, Status: o.Status, Sequence: o.Sequence, MissionID: uuidStr(o.MissionID)})
 	}
 	writeJSON(w, http.StatusOK, out)
 }

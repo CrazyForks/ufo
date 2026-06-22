@@ -1252,10 +1252,15 @@ fn first_line(s: &str) -> &str {
     s.lines().next().unwrap_or("")
 }
 
-/// Renew the run's lease every 5s, returning if the hub says ownership was lost.
+/// Renew the run's lease (UFO_ROVER_HEARTBEAT_SECONDS, default 5), returning if the hub says ownership was lost.
 async fn heartbeat(client: &Client, hub: &str, token: &str, run_id: &str) -> Result<()> {
+    let interval = std::env::var("UFO_ROVER_HEARTBEAT_SECONDS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(5);
     loop {
-        sleep(Duration::from_secs(5)).await;
+        sleep(Duration::from_secs(interval)).await;
         match client
             .put(hub_url(hub, format!("rover/runs/{run_id}/heartbeat")))
             .bearer_auth(token)
@@ -1532,7 +1537,6 @@ async fn process_event(
         Some("item.completed") => {
             if let Some(item) = v.get("item") {
                 match item.get("type").and_then(|x| x.as_str()) {
-                    // External Codex JSON uses this literal for assistant output.
                     Some("agent_message") => {
                         if let Some(t) = item.get("text").and_then(|x| x.as_str()) {
                             *message = t.to_string();
@@ -1960,8 +1964,7 @@ async fn default_name() -> String {
             host = h;
         }
     }
-    // Suffix so multiple enrollments on one host aren't indistinguishable;
-    // the hub id is the stable key, but a distinct name helps in the list/UI.
+    // Suffix to distinguish multiple enrollments on one host.
     let suffix = format!(
         "{:05x}",
         chrono::Local::now().timestamp_subsec_nanos() & 0xfffff

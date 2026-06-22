@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: UFO Hub API
-  version: 0.2.0
+  version: 0.2.1
   license:
     name: BSD-3-Clause
     url: https://opensource.org/license/bsd-3-clause
@@ -958,15 +958,8 @@ paths:
                 read: { type: boolean }
                 archived: { type: boolean }
       responses:
-        "200":
+        "204":
           description: Updated
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [name]
-                properties:
-                  name: { type: string }
 
   /v1/ws:
     get:
@@ -1377,7 +1370,6 @@ components:
       type: object
       properties:
         id: { type: string, format: uuid }
-        fleet_id: { type: string, format: uuid }
         code: { type: string }
         name: { type: string }
         remaining_uses: { type: integer, minimum: 1, maximum: 1000 }
@@ -1425,22 +1417,22 @@ components:
         active_run_state: { type: string, enum: ["", queued, claimed, starting, running], description: "Current in-flight run state, empty when none" }
         mission_id: { type: string, format: uuid, description: The mission this operation belongs to (required) }
         sequence: { type: integer, description: Per-mission running number; displayed as <mission.key>-<sequence> }
+        priority: { type: integer, description: 0 none → 4 urgent }
         assignee_type: { type: string, enum: [pilot, user, crew], nullable: true }
         assignee_id: { type: string, format: uuid, nullable: true, description: Referenced user/crew public id (null when assignee is a pilot) }
         assignee_pilot_kind: { type: string, nullable: true, description: Pilot kind when assignee_type=pilot (e.g. codex) }
         required_tags: { type: array, items: { type: string }, description: dispatch allow list (rover must have all) }
         excluded_tags: { type: array, items: { type: string }, description: dispatch deny list (rover must have none; deny wins) }
-        priority: { type: integer, description: 0 none → 4 urgent }
         labels: { type: array, items: { $ref: "#/components/schemas/Label" } }
         reactions: { type: array, items: { $ref: "#/components/schemas/Reaction" }, description: only populated in the detail view }
         sub_operation_progress: { type: object, properties: { total: { type: integer }, done: { type: integer } }, description: sub-operation progress }
         start_date: { type: string, format: date, nullable: true, description: Planning start date }
         due_date: { type: string, format: date, nullable: true, description: Planning due date }
-        started_at: { type: string, format: date-time, nullable: true, description: Lifecycle timestamp set when work starts }
-        finished_at: { type: string, format: date-time, nullable: true, description: Lifecycle timestamp set when work reaches done/cancelled }
         main_operation_id: { type: string, format: uuid, nullable: true }
         orchestrating: { type: boolean, description: captain split this operation into sub-operations and will reconvene to reconcile them }
         archived: { type: boolean }
+        started_at: { type: string, format: date-time, nullable: true, description: Lifecycle timestamp set when work starts }
+        finished_at: { type: string, format: date-time, nullable: true, description: Lifecycle timestamp set when work reaches done/cancelled }
         created_by: { type: string, format: uuid, nullable: true }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
@@ -1492,15 +1484,12 @@ components:
       description: A team of pilots and/or humans an operation can be assigned to.
       properties:
         id: { type: string, format: uuid }
-        fleet_id: { type: string, format: uuid }
         name: { type: string }
-        created_at: { type: string, format: date-time }
         members: { type: array, items: { $ref: "#/components/schemas/CrewMember" } }
 
     CrewMember:
       type: object
       properties:
-        crew_id: { type: string, format: uuid }
         member_type: { type: string, enum: [pilot, user] }
         member_id: { type: string, description: "user public id, or pilot kind when member_type=pilot" }
         role: { type: string, enum: [captain, member] }
@@ -1538,7 +1527,6 @@ components:
       type: object
       properties:
         id: { type: string, format: uuid }
-        operation_id: { type: string, format: uuid }
         author_type: { type: string, enum: [user, pilot, system] }
         author_id: { type: string, format: uuid, nullable: true, description: user public id (null when author is a pilot/system) }
         author_pilot_kind: { type: string, nullable: true, description: pilot kind when author_type=pilot }
@@ -1572,10 +1560,8 @@ components:
       description: A grouping of operations within a fleet, with a fleet-unique operation-prefix key.
       properties:
         id: { type: string, format: uuid }
-        fleet_id: { type: string, format: uuid }
         name: { type: string }
         key: { type: string, description: Operation prefix (e.g. MSJ -> MSJ-123); unique within the fleet }
-        created_at: { type: string, format: date-time }
 
     CreateMissionRequest:
       type: object
@@ -1590,19 +1576,17 @@ components:
         id: { type: string, format: uuid }
         operation_id: { type: string, format: uuid }
         pilot: { type: string, pattern: "^[a-z][a-z0-9_-]{0,31}$" }
-        needs_input: { type: boolean, description: pilot ended this run awaiting a human answer }
         state:
           type: string
           enum: [queued, claimed, starting, running, blocked, succeeded, failed, canceled]
+        needs_input: { type: boolean, description: pilot ended this run awaiting a human answer }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
     RunEvent:
       type: object
-      description: Events are ordered by ascending id.
+      description: Events are ordered by insertion.
       properties:
-        id: { type: string, format: uuid }
-        run_id: { type: string, format: uuid }
         kind: { type: string }
         message: { type: string }
         created_at: { type: string, format: date-time }
@@ -1610,8 +1594,6 @@ components:
     Artifact:
       type: object
       properties:
-        id: { type: string, format: uuid }
-        run_id: { type: string, format: uuid }
         kind: { type: string, example: diff }
         name: { type: string, example: git.diff }
         content: { type: string }
@@ -1639,7 +1621,6 @@ components:
       type: object
       description: One typed transcript entry (pilot telemetry) for a run.
       properties:
-        id: { type: string, format: uuid }
         sequence: { type: integer }
         type: { type: string, enum: [text, thinking, tool_use, tool_result, error] }
         tool: { type: string }

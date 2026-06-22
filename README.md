@@ -160,10 +160,10 @@ scripts/dev.sh up
 
    ```bash
    # from the repo root (the rover crate lives in apps/rover):
-   cargo run --manifest-path apps/rover/Cargo.toml -- rover list                 # show enrollments
-   cargo run --manifest-path apps/rover/Cargo.toml -- rover status               # check hub/token/auto-tags
-   cargo run --manifest-path apps/rover/Cargo.toml -- rover remove <rover-id|prefix> # remove one enrollment
-   cargo run --manifest-path apps/rover/Cargo.toml -- rover remove --all         # remove all enrollments
+   cargo run --manifest-path apps/rover/Cargo.toml -- rover list                      # show enrollments
+   cargo run --manifest-path apps/rover/Cargo.toml -- rover status                    # check hub/token/auto-tags
+   cargo run --manifest-path apps/rover/Cargo.toml -- rover remove <rover-id|prefix>  # remove one enrollment
+   cargo run --manifest-path apps/rover/Cargo.toml -- rover remove --all              # remove all enrollments
    ```
 4. Create a mission, then an operation on the board, assign it to a pilot, and
    watch the run move `queued → claimed → running → succeeded` live, with its diff
@@ -201,11 +201,13 @@ Copy `.env.example` to `.env` to override defaults:
 | `UFO_HUB_SECURE_COOKIES` | _(unset)_ — set when serving over HTTPS | api |
 | `UFO_HUB_UPLINK` | `http://localhost:8080` | rover, web (Hub origin; clients append `/v1`) |
 | `UFO_HUB_ORIGINS` | _(unset)_ — CORS + WebSocket origin allowlist; set in production | api |
+| `UFO_HUB_ROVER_ONLINE_WINDOW_SECONDS` | `60` — seconds since last contact before a rover is offline | api |
 | `UFO_ROVER_ENROLLMENT_CODE` | _(from the Rovers panel; used by `rover enroll`)_ | rover |
 | `UFO_ROVER_CONFIG` | `~/.ufo/rovers.json` — local enrollment store | rover |
 | `UFO_ROVER_OUTPOST` | `~/.ufo` (operation work directories: `<outpost>/rovers/<rover-id>/operations/<operation-id>`) | rover |
 | `UFO_ROVER_RETRY_SECONDS` | `1` — wait after a failed claim before retrying | rover |
 | `UFO_ROVER_UNITS` | `1` — operations a rover runs at once (`--units`) | rover |
+| `UFO_ROVER_HEARTBEAT_SECONDS` | `5` — run lease-renewal interval | rover |
 
 ### Regenerating DB code
 

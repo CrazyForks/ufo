@@ -21,7 +21,7 @@ export type Operation = {
   body: string;
   status: string;
   active_run_state: string;
-  mission_id: string | null;
+  mission_id: string;
   sequence: number;
   priority: number;
   assignee_type: string | null;
@@ -37,11 +37,11 @@ export type Operation = {
   main_operation_id: string | null;
   orchestrating: boolean;
   archived: boolean;
+  started_at: string | null;
+  finished_at: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;
-  started_at: string | null;
-  finished_at: string | null;
 };
 export type Reaction = { emoji: string; count: number; mine: boolean; users: string[] };
 export type Comment = {
@@ -56,8 +56,8 @@ export type Comment = {
 export type Run = {
   id: string;
   operation_id: string;
-  state: string;
   pilot?: string;
+  state: string;
   needs_input?: boolean;
   created_at: string;
   updated_at: string;

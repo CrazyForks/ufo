@@ -7,6 +7,16 @@ All notable changes to UFO are recorded here.
 > guarantees. Changes may land without notice, and upgrading may require a
 > database reset. A migration path is not guaranteed.
 
+## [0.2.1] — 2026-06-22
+
+Cleanup release.
+
+### Real-time & reliability
+- Added tuning knobs for rover presence and run heartbeats.
+
+### Protocol & development
+- Cleaned up the API contract and web types, and trimmed internal queries.
+
 ## [0.2.0] — 2026-06-22
 
 Second public preview release.
@@ -32,7 +42,7 @@ Second public preview release.
 - Hardened crew administration: only owners/admins can create, rename, delete,
   or staff shared crews, and crew roles are limited to captain/member.
 
-### API, realtime & release
+### API, real-time & release
 - Renamed public configuration to `UFO_HUB_*` / `UFO_ROVER_*`; update old
   `.env` files and rover launch commands from 0.1.x.
 - Expanded the hand-maintained OpenAPI contract for the new board, relation,

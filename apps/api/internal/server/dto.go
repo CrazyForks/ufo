@@ -169,11 +169,11 @@ type operationDTO struct {
 	MainOperationID      *string              `json:"main_operation_id"`
 	Orchestrating        bool                 `json:"orchestrating"`
 	Archived             bool                 `json:"archived"`
+	StartedAt            pgtype.Timestamptz   `json:"started_at"`
+	FinishedAt           pgtype.Timestamptz   `json:"finished_at"`
 	CreatedBy            *string              `json:"created_by"`
 	CreatedAt            pgtype.Timestamptz   `json:"created_at"`
 	UpdatedAt            pgtype.Timestamptz   `json:"updated_at"`
-	StartedAt            pgtype.Timestamptz   `json:"started_at"`
-	FinishedAt           pgtype.Timestamptz   `json:"finished_at"`
 }
 
 type subOperationProgress struct {
@@ -288,8 +288,8 @@ func dateStr(d pgtype.Date) *string {
 type runDTO struct {
 	ID          string             `json:"id"`
 	OperationID string             `json:"operation_id"`
-	State       string             `json:"state"`
 	Pilot       string             `json:"pilot"`
+	State       string             `json:"state"`
 	NeedsInput  bool               `json:"needs_input"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
