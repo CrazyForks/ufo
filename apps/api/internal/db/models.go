@@ -9,12 +9,35 @@ import (
 )
 
 type Artifact struct {
-	ID        int64              `json:"id"`
-	RunID     int64              `json:"run_id"`
-	Kind      string             `json:"kind"`
-	Name      string             `json:"name"`
-	Content   string             `json:"content"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	ID             int64              `json:"id"`
+	PublicID       pgtype.UUID        `json:"public_id"`
+	RunID          int64              `json:"run_id"`
+	AssetID        pgtype.Int8        `json:"asset_id"`
+	Kind           string             `json:"kind"`
+	Name           string             `json:"name"`
+	Content        string             `json:"content"`
+	ContentPreview string             `json:"content_preview"`
+	ByteSize       int64              `json:"byte_size"`
+	Metadata       []byte             `json:"metadata"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
+type Asset struct {
+	ID             int64              `json:"id"`
+	PublicID       pgtype.UUID        `json:"public_id"`
+	FleetID        pgtype.Int8        `json:"fleet_id"`
+	ObjectKey      string             `json:"object_key"`
+	Filename       string             `json:"filename"`
+	ContentType    string             `json:"content_type"`
+	ByteSize       int64              `json:"byte_size"`
+	Checksums      []byte             `json:"checksums"`
+	StorageBackend string             `json:"storage_backend"`
+	State          string             `json:"state"`
+	Metadata       []byte             `json:"metadata"`
+	CreatedBy      pgtype.Int8        `json:"created_by"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+	DeletedAt      pgtype.Timestamptz `json:"deleted_at"`
 }
 
 type Comment struct {
@@ -26,6 +49,7 @@ type Comment struct {
 	AuthorPilotKind pgtype.Text        `json:"author_pilot_kind"`
 	Body            string             `json:"body"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 }
 
 type Crew struct {
@@ -34,24 +58,31 @@ type Crew struct {
 	FleetID   int64              `json:"fleet_id"`
 	Name      string             `json:"name"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
 }
 
 type CrewMember struct {
-	CrewID     int64       `json:"crew_id"`
-	MemberType string      `json:"member_type"`
-	UserID     pgtype.Int8 `json:"user_id"`
-	PilotKind  pgtype.Text `json:"pilot_kind"`
-	Role       string      `json:"role"`
+	CrewID     int64              `json:"crew_id"`
+	MemberType string             `json:"member_type"`
+	UserID     pgtype.Int8        `json:"user_id"`
+	PilotKind  pgtype.Text        `json:"pilot_kind"`
+	Role       string             `json:"role"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
 }
 
 type EnrollmentCode struct {
 	ID            int64              `json:"id"`
 	PublicID      pgtype.UUID        `json:"public_id"`
-	FleetID       int64              `json:"fleet_id"`
+	FleetID       pgtype.Int8        `json:"fleet_id"`
 	CodeHash      string             `json:"code_hash"`
+	Kind          string             `json:"kind"`
 	Name          string             `json:"name"`
 	RemainingUses int32              `json:"remaining_uses"`
+	Metadata      []byte             `json:"metadata"`
+	CreatedBy     pgtype.Int8        `json:"created_by"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 	ExpiresAt     pgtype.Timestamptz `json:"expires_at"`
 }
 
@@ -60,7 +91,9 @@ type Fleet struct {
 	PublicID  pgtype.UUID        `json:"public_id"`
 	Name      string             `json:"name"`
 	Kind      string             `json:"kind"`
+	Metadata  []byte             `json:"metadata"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
 }
 
 type Invitation struct {
@@ -72,6 +105,7 @@ type Invitation struct {
 	Role         string             `json:"role"`
 	Status       string             `json:"status"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
 	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
 }
 
@@ -82,6 +116,7 @@ type Label struct {
 	Name      string             `json:"name"`
 	Color     string             `json:"color"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
 }
 
 type Membership struct {
@@ -89,6 +124,7 @@ type Membership struct {
 	FleetID   int64              `json:"fleet_id"`
 	Role      string             `json:"role"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
 }
 
 type Mission struct {
@@ -98,7 +134,9 @@ type Mission struct {
 	Name         string             `json:"name"`
 	Key          string             `json:"key"`
 	NextSequence int32              `json:"next_sequence"`
+	Metadata     []byte             `json:"metadata"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
 }
 
 type Operation struct {
@@ -124,11 +162,12 @@ type Operation struct {
 	PilotSessionRoverID pgtype.Int8        `json:"pilot_session_rover_id"`
 	Orchestrating       bool               `json:"orchestrating"`
 	Archived            bool               `json:"archived"`
-	StartedAt           pgtype.Timestamptz `json:"started_at"`
-	FinishedAt          pgtype.Timestamptz `json:"finished_at"`
+	Metadata            []byte             `json:"metadata"`
 	CreatedBy           pgtype.Int8        `json:"created_by"`
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
+	StartedAt           pgtype.Timestamptz `json:"started_at"`
+	FinishedAt          pgtype.Timestamptz `json:"finished_at"`
 }
 
 type OperationLabel struct {
@@ -143,6 +182,7 @@ type OperationRelation struct {
 	SourceID  int64              `json:"source_id"`
 	TargetID  int64              `json:"target_id"`
 	Kind      string             `json:"kind"`
+	CreatedBy pgtype.Int8        `json:"created_by"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
@@ -154,7 +194,10 @@ type PullRequest struct {
 	Title       string             `json:"title"`
 	State       string             `json:"state"`
 	Number      pgtype.Int4        `json:"number"`
+	Metadata    []byte             `json:"metadata"`
+	CreatedBy   pgtype.Int8        `json:"created_by"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 }
 
 type Reaction struct {
@@ -166,6 +209,22 @@ type Reaction struct {
 	CreatedAt  pgtype.Timestamptz `json:"created_at"`
 }
 
+type Routine struct {
+	ID                int64              `json:"id"`
+	PublicID          pgtype.UUID        `json:"public_id"`
+	FleetID           int64              `json:"fleet_id"`
+	MissionID         int64              `json:"mission_id"`
+	Title             string             `json:"title"`
+	Body              string             `json:"body"`
+	Metadata          []byte             `json:"metadata"`
+	OperationMetadata []byte             `json:"operation_metadata"`
+	CreatedBy         pgtype.Int8        `json:"created_by"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	NextPulseAt       pgtype.Timestamptz `json:"next_pulse_at"`
+	LastPulsedAt      pgtype.Timestamptz `json:"last_pulsed_at"`
+}
+
 type Rover struct {
 	ID               int64              `json:"id"`
 	PublicID         pgtype.UUID        `json:"public_id"`
@@ -174,9 +233,11 @@ type Rover struct {
 	EnrollmentCodeID pgtype.Int8        `json:"enrollment_code_id"`
 	TokenHash        string             `json:"token_hash"`
 	Units            int32              `json:"units"`
-	Tags             []string           `json:"tags"`
 	AutoTags         []string           `json:"auto_tags"`
+	Tags             []string           `json:"tags"`
+	Metadata         []byte             `json:"metadata"`
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 	LastSeenAt       pgtype.Timestamptz `json:"last_seen_at"`
 }
 
@@ -194,6 +255,7 @@ type Run struct {
 	SessionID       pgtype.Text        `json:"session_id"`
 	NeedsInput      bool               `json:"needs_input"`
 	RequestedStatus string             `json:"requested_status"`
+	Metadata        []byte             `json:"metadata"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 	HeartbeatAt     pgtype.Timestamptz `json:"heartbeat_at"`
@@ -239,6 +301,29 @@ type Signal struct {
 	Read            bool               `json:"read"`
 	Archived        bool               `json:"archived"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+}
+
+type SourceAction struct {
+	ID            int64              `json:"id"`
+	PublicID      pgtype.UUID        `json:"public_id"`
+	FleetID       int64              `json:"fleet_id"`
+	OperationID   int64              `json:"operation_id"`
+	RunID         pgtype.Int8        `json:"run_id"`
+	RoverID       pgtype.Int8        `json:"rover_id"`
+	Kind          string             `json:"kind"`
+	State         string             `json:"state"`
+	BranchName    string             `json:"branch_name"`
+	CommitSha     string             `json:"commit_sha"`
+	BaseSha       string             `json:"base_sha"`
+	SourceHeadSha string             `json:"source_head_sha"`
+	Message       string             `json:"message"`
+	Metadata      []byte             `json:"metadata"`
+	CreatedBy     pgtype.Int8        `json:"created_by"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+	ClaimedAt     pgtype.Timestamptz `json:"claimed_at"`
+	FinishedAt    pgtype.Timestamptz `json:"finished_at"`
 }
 
 type User struct {
@@ -248,4 +333,5 @@ type User struct {
 	PasswordHash string             `json:"password_hash"`
 	Name         string             `json:"name"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
 }

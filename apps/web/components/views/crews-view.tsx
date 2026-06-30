@@ -9,14 +9,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { pilotLabel } from "@/lib/labels";
+import { pilotLabel, userLabel } from "@/lib/labels";
 import { SECTION_ICONS } from "@/lib/section-icons";
+import { cn } from "@/lib/utils";
 import type { Crew, CrewMember, Pilot } from "@/lib/types";
-
-function availability(p: Pilot): string {
-  if (p.rovers === 0) return "no rover";
-  return p.online ? `${p.rovers} online` : `${p.rovers} offline`;
-}
 
 export function CrewsView() {
   const app = useApp();
@@ -52,21 +48,68 @@ export function CrewsView() {
           <CardTitle className="flex items-center gap-2 text-base"><Bot className="size-4" /> Pilots</CardTitle>
         </CardHeader>
         <CardContent className="flex min-h-0 flex-1 flex-col space-y-3">
-          <p className="text-xs text-muted-foreground">Pilots drive your rovers. A pilot is available once it has at least one rover to drive.</p>
+          <p className="text-xs text-muted-foreground">Each pilot shows how many enrolled rovers it can start, and how many are online.</p>
+          {app.pilots.length > 0 && (
+            <div className="grid grid-cols-[minmax(0,1fr)_6.75rem] px-2 text-[9px] font-medium uppercase text-muted-foreground">
+              <span>Pilot</span>
+              <span className="grid grid-cols-[1fr_1px_1fr] items-center gap-1.5 px-1.5 text-center">
+                <span>Online</span>
+                <span aria-hidden />
+                <span>Enrolled</span>
+              </span>
+            </div>
+          )}
           <ul className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
             {app.pilots.map((p) => (
               <li key={p.kind} className="flex items-center gap-2 rounded-md px-2 py-1 text-sm">
-                <PilotIcon kind={p.kind} />
-                <span className="flex-1">{pilotLabel(p.kind)}</span>
-                <span className={p.rovers === 0 ? "text-[10px] uppercase text-destructive" : "text-[10px] uppercase text-muted-foreground"}>{availability(p)}</span>
+                <span className={cn("flex min-w-0 flex-1 items-center gap-2", p.rovers === 0 && "opacity-50")}>
+                  <PilotIcon kind={p.kind} />
+                  <span className="truncate">{pilotLabel(p.kind)}</span>
+                </span>
+                <PilotAvailability pilot={p} />
               </li>
             ))}
-            {app.pilots.length === 0 && <p className="text-sm text-muted-foreground">No pilots yet — enroll a rover for a pilot to drive.</p>}
+            {app.pilots.length === 0 && <p className="text-sm text-muted-foreground">No pilots yet. Enroll a rover to make a pilot available.</p>}
           </ul>
         </CardContent>
       </Card>
     </div>
   );
+}
+
+function PilotAvailability({ pilot }: { pilot: Pilot }) {
+  const unavailable = pilot.rovers === 0;
+  if (unavailable) {
+    return (
+      <span
+        aria-label="0 online, 0 enrolled"
+        className="inline-flex h-5 w-[6.75rem] shrink-0 items-center justify-center rounded-full border border-destructive/20 bg-destructive/5 px-1.5 text-[10px] font-medium uppercase text-destructive/75"
+      >
+        no rovers
+      </span>
+    );
+  }
+  const label = `${pilot.online_rovers} online, ${pilot.rovers} enrolled`;
+  return (
+    <span
+      aria-label={label}
+      className="inline-grid h-5 w-[6.75rem] shrink-0 grid-cols-[1fr_1px_1fr] items-center gap-1.5 rounded-full border border-border bg-muted/30 px-1.5 text-[11px] tabular-nums"
+    >
+      <span className="grid min-w-0 grid-cols-[0.375rem_1fr] items-center gap-1 font-medium text-success">
+        <span className="size-1.5 rounded-full bg-success" aria-hidden />
+        <span className="text-right">{displayCount(pilot.online_rovers)}</span>
+      </span>
+      <span className="h-3 w-px bg-border" aria-hidden />
+      <span className="grid min-w-0 grid-cols-[0.375rem_1fr] items-center gap-1 font-medium text-info">
+        <span className="size-1.5 rounded-full bg-info" aria-hidden />
+        <span className="text-right">{displayCount(pilot.rovers)}</span>
+      </span>
+    </span>
+  );
+}
+
+function displayCount(value: number) {
+  return value > 99 ? "99+" : String(value);
 }
 
 function CrewName({ id, name, canManage, onRename }: { id: string; name: string; canManage: boolean; onRename: (id: string, name: string) => void }) {
@@ -111,7 +154,8 @@ function CrewName({ id, name, canManage, onRename }: { id: string; name: string;
 function CrewCard({ crew, canManage }: { crew: Crew; canManage: boolean }) {
   const app = useApp();
   const members = crew.members ?? [];
-  const captain = members.find((m) => m.role === "captain");
+  const sortedMembers = [...members].sort((a, b) => memberTypeRank(a) - memberTypeRank(b) || Number(b.role === "captain") - Number(a.role === "captain") || memberName(a, app).localeCompare(memberName(b, app)));
+  const captain = sortedMembers.find((m) => m.role === "captain");
   const captainValue = captain ? memberValue(captain, app.user.id) : "";
 
   return (
@@ -130,7 +174,7 @@ function CrewCard({ crew, canManage }: { crew: Crew; canManage: boolean }) {
             <Select value={captainValue} onValueChange={(v) => app.addMember(crew.id, v, "captain", app.user.id)}>
               <SelectTrigger className="h-8 flex-1 text-xs"><SelectValue placeholder="Select captain" /></SelectTrigger>
               <SelectContent>
-                {members.map((m) => (
+                {sortedMembers.map((m) => (
                   <SelectItem key={`${m.member_type}${m.member_id}`} value={memberValue(m, app.user.id)}>
                     <span className="flex items-center gap-2">
                       {m.member_type === "pilot" ? <PilotIcon kind={m.member_id} /> : <UserRound className="size-4 text-muted-foreground" />}
@@ -143,13 +187,13 @@ function CrewCard({ crew, canManage }: { crew: Crew; canManage: boolean }) {
           </div>
         )}
         <ul className="space-y-1">
-          {members.map((m) => <MemberRow key={`${m.member_type}${m.member_id}`} crewId={crew.id} m={m} canManage={canManage} />)}
+          {sortedMembers.map((m) => <MemberRow key={`${m.member_type}${m.member_id}`} crewId={crew.id} m={m} canManage={canManage} />)}
         </ul>
         {canManage && (
           <Select value="" onValueChange={(v) => app.addMember(crew.id, v, "member", app.user.id)}>
             <SelectTrigger className="mt-1 h-8 text-xs"><SelectValue placeholder="+ Add a person or pilot…" /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="me">🧑 You</SelectItem>
+              <SelectItem value="me">🧑 {userLabel(app.user)}</SelectItem>
               {app.members.filter((m) => m.id !== app.user.id).map((m) => (
                 <SelectItem key={`u${m.id}`} value={`user:${m.id}`}>🧑 {m.name || m.email}</SelectItem>
               ))}
@@ -170,9 +214,13 @@ function memberValue(m: CrewMember, userId: string) {
   return m.member_type === "user" && m.member_id === userId ? "me" : `${m.member_type}:${m.member_id}`;
 }
 
+function memberTypeRank(m: CrewMember) {
+  return m.member_type === "user" ? 0 : 1;
+}
+
 function memberName(m: CrewMember, app: ReturnType<typeof useApp>) {
   if (m.member_type === "pilot") return pilotLabel(m.member_id);
-  if (m.member_id === app.user.id) return "You";
+  if (m.member_id === app.user.id) return userLabel(app.user);
   const u = app.members.find((x) => x.id === m.member_id);
   return u?.name || u?.email || "member";
 }

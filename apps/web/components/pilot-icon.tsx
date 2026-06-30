@@ -12,6 +12,7 @@ const ICONS: Record<string, PilotIconAsset> = {
   claude: { src: "/pilot-icons/claude.svg" },
   codex: { src: "/pilot-icons/codex.svg" },
   antigravity: { src: "/pilot-icons/antigravity.svg" },
+  grok: { src: "/pilot-icons/grok.svg", monochrome: true },
   cursor: { src: "/pilot-icons/cursor.svg", monochrome: true },
   copilot: { src: "/pilot-icons/copilot.svg", monochrome: true },
   amp: { src: "/pilot-icons/amp.svg" },

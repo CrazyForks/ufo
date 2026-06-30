@@ -10,7 +10,7 @@ on:
 
 jobs:
   api:
-    name: API (Go)
+    name: API
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -25,7 +25,7 @@ jobs:
           --health-cmd "pg_isready -U ufo" --health-interval 3s
           --health-timeout 3s --health-retries 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version-file: apps/api/go.mod
@@ -41,10 +41,10 @@ jobs:
         run: go test ./...
 
   web:
-    name: Web (Next.js)
+    name: Web
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
         with:
           node-version: "26"
@@ -55,29 +55,125 @@ jobs:
           npm run lint
           npm run build
 
-  rover:
-    name: Rover (Rust)
+  rover-lint:
+    name: Rover Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - name: Format, lint, test, build
+      - name: Format and lint
         working-directory: apps/rover
         run: |
           cargo fmt --check
           cargo clippy -- -D warnings
-          cargo test
-          cargo build
+
+  rover-build:
+    name: "Rover Build: [${{ matrix.target }}]"
+    runs-on: ubuntu-latest
+    container: ghcr.io/rust-cross/cargo-zigbuild:latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+          - x86_64-unknown-freebsd
+          - aarch64-unknown-linux-gnu
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-musl
+          - x86_64-unknown-linux-musl
+          - aarch64-pc-windows-gnullvm
+          - x86_64-pc-windows-gnullvm
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build target
+        shell: bash
+        working-directory: apps/rover
+        run: |
+          export PATH="/usr/local/cargo/bin:$PATH"
+          rustup target add "${{ matrix.target }}"
+          cargo zigbuild --target "${{ matrix.target }}"
+
+  rover-build-msvc:
+    name: "Rover Build (MSVC): [${{ matrix.target }}]"
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-pc-windows-msvc
+          - x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build target
+        shell: bash
+        working-directory: apps/rover
+        run: cargo build --target "${{ matrix.target }}"
+
+  rover-test:
+    name: "Rover Test: [${{ matrix.target }}]"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-26, target: aarch64-apple-darwin }
+          - { os: macos-26-intel, target: x86_64-apple-darwin }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl }
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-musl }
+          - { os: windows-11-arm, target: aarch64-pc-windows-msvc }
+          - { os: windows-2025, target: x86_64-pc-windows-msvc }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install musl tools
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Test
+        shell: bash
+        working-directory: apps/rover
+        run: cargo test --target ${{ matrix.target }}
 
   protocol:
     name: OpenAPI
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
         with:
           node-version: "26"
       - name: Lint spec
-        run: npx --yes @redocly/cli@2.34.0 lint apps/api/internal/spec/openapi.yaml
+        run: npx --yes @redocly/cli@2.35.1 lint apps/api/internal/spec/openapi.yaml
+
+  release-scripts:
+    name: Release Scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check release helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+          for script in scripts/install.sh scripts/homebrew-formula.sh scripts/check-release-version.sh scripts/smoke-install.sh; do
+            sh -n "$script"
+          done
+          version="$(awk -F '"' '/^version = / { print $2; exit }' apps/rover/Cargo.toml)"
+          scripts/check-release-version.sh "$version"
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          for target in aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu; do
+            printf '%s  %s\n' "$(printf '%s' "$target" | sha256sum | awk '{print $1}')" "ufo-$target.tar.gz" > "$tmp/ufo-$target.tar.gz.sha256"
+          done
+          scripts/homebrew-formula.sh "v${version}" "$tmp" > "$tmp/ufo-cli.rb"
+          ruby -c "$tmp/ufo-cli.rb"
+          scripts/smoke-install.sh

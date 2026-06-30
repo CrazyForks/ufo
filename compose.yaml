@@ -20,8 +20,8 @@ services:
 
   api:
     build:
-      context: .
-      dockerfile: apps/api/Dockerfile
+      context: apps/api
+      dockerfile: Dockerfile
     container_name: ufo-api
     environment:
       UFO_HUB_DATABASE_URL: postgres://ufo:ufo@postgres:5432/ufo?sslmode=disable
@@ -29,9 +29,16 @@ services:
       UFO_HUB_RUN_LEASE_SECONDS: ${UFO_HUB_RUN_LEASE_SECONDS:-30}
       UFO_HUB_LONGPOLL_SECONDS: ${UFO_HUB_LONGPOLL_SECONDS:-25}
       UFO_HUB_MAX_SUB_OPERATIONS: ${UFO_HUB_MAX_SUB_OPERATIONS:-8}
-      UFO_HUB_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+      UFO_HUB_ALLOWED_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+      UFO_HUB_WEB_URL: ${UFO_HUB_WEB_URL:-http://localhost:3000}
+      UFO_HUB_ASSET_BACKEND: local
+      UFO_HUB_ASSET_UPLOAD_MAX_BYTES: ${UFO_HUB_ASSET_UPLOAD_MAX_BYTES:-26214400}
+      UFO_HUB_ASSET_UPLOAD_ALLOWED_CONTENT_TYPES: ${UFO_HUB_ASSET_UPLOAD_ALLOWED_CONTENT_TYPES:-}
+      UFO_HUB_ASSET_SIGNED_URL_SECONDS: ${UFO_HUB_ASSET_SIGNED_URL_SECONDS:-900}
     ports:
       - "127.0.0.1:8080:8080"
+    volumes:
+      - ${HOME}/.ufo/assets:/root/.ufo/assets
     depends_on:
       postgres:
         condition: service_healthy
@@ -44,7 +51,7 @@ services:
       watch:
         - action: sync+restart
           path: ./apps/api
-          target: /src/apps/api
+          target: /src
         - action: rebuild
           path: ./apps/api/go.mod
 
@@ -54,7 +61,7 @@ services:
       dockerfile: Dockerfile
     container_name: ufo-web
     environment:
-      UFO_HUB_UPLINK: http://api:8080
+      UFO_HUB_URL: http://api:8080
     depends_on:
       api:
         condition: service_healthy

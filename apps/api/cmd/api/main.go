@@ -42,7 +42,7 @@ func main() {
 	notifier.Start(ctx)
 
 	srv := server.New(pool, longPoll, notifier)
-	srv.StartHub(ctx) // WebSocket fan-out of typed change events
+	srv.StartWebsocketBroadcasts(ctx) // WebSocket broadcasts of typed change events
 	log.Printf("claim long-poll: %s", longPoll)
 
 	// Start the lease sweeper (requeues runs whose rover went silent).
@@ -53,6 +53,13 @@ func main() {
 	}
 	srv.StartLeaseSweeper(ctx, leaseSeconds, sweepInterval)
 	log.Printf("lease sweeper: lease=%.0fs interval=%s", leaseSeconds, sweepInterval)
+
+	routineInterval := time.Duration(envFloat("UFO_HUB_ROUTINE_SCHEDULER_SECONDS", 60) * float64(time.Second))
+	if routineInterval < time.Second {
+		routineInterval = time.Second
+	}
+	srv.StartRoutineScheduler(ctx, routineInterval)
+	log.Printf("routine scheduler: interval=%s", routineInterval)
 
 	httpSrv := &http.Server{
 		Addr:              bind,

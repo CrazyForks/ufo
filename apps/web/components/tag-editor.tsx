@@ -20,7 +20,7 @@ export function TagEditor({ tags, onChange, placeholder = "add tag…" }: { tags
       {tags.map((t) => (
         <Badge key={t} variant="secondary" className="gap-1 font-mono text-[11px]">
           {t}
-          <button onClick={() => onChange(tags.filter((x) => x !== t))} className="text-muted-foreground hover:text-destructive"><X className="size-3" /></button>
+          <button type="button" onClick={() => onChange(tags.filter((x) => x !== t))} className="text-muted-foreground hover:text-destructive"><X className="size-3" /></button>
         </Badge>
       ))}
       <Input
@@ -29,7 +29,7 @@ export function TagEditor({ tags, onChange, placeholder = "add tag…" }: { tags
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === ",") { e.preventDefault(); commit(); } }}
         onBlur={commit}
         placeholder={placeholder}
-        className="h-6 w-28 border-dashed px-2 text-xs"
+        className="h-6 w-28 px-2 text-xs"
       />
     </div>
   );

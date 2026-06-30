@@ -1,8 +1,13 @@
-// Fleet-scoped live event client over WebSocket.
+// Current-user live event client over WebSocket.
 
-type EventHandler = (type: string) => void;
+export type WebSocketEvent = {
+  type: string;
+  fleetId: string;
+};
 
-export class WSClient {
+type EventHandler = (event: WebSocketEvent) => void;
+
+export class WebSocketClient {
   private url: string;
   private ws: WebSocket | null = null;
   private handlers = new Set<EventHandler>();
@@ -11,9 +16,9 @@ export class WSClient {
   private connectedOnce = false;
   private backoff = 1000;
 
-  constructor(fleet: string) {
+  constructor() {
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    this.url = `${proto}://${location.host}/api/v1/ws?fleet=${fleet}`;
+    this.url = `${proto}://${location.host}/api/v1/ws`;
   }
 
   onEvent(h: EventHandler) {
@@ -38,7 +43,9 @@ export class WSClient {
     ws.onmessage = (e) => {
       try {
         const m = JSON.parse(e.data as string);
-        if (m && typeof m.t === "string") this.handlers.forEach((h) => h(m.t));
+        if (m && typeof m.t === "string" && typeof m.fleet_id === "string") {
+          this.handlers.forEach((h) => h({ type: m.t, fleetId: m.fleet_id }));
+        }
       } catch {
         /* ignore non-JSON frames */
       }

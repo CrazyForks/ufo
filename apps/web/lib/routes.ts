@@ -1,4 +1,4 @@
-export const APP_SECTIONS = ["operations", "missions", "crews", "rovers", "members", "settings"] as const;
+export const APP_SECTIONS = ["operations", "missions", "routines", "crews", "rovers", "members", "settings"] as const;
 
 export type Section = (typeof APP_SECTIONS)[number];
 

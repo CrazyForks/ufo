@@ -10,6 +10,7 @@ apps/web/out/
 .env
 .env.*
 !.env.example
+!.env.production.example
 
 # Go
 apps/api/bin/

@@ -12,6 +12,7 @@ Used in:
 - [apps/web/public/pilot-icons/claude.svg](apps/web/public/pilot-icons/claude.svg)
 - [apps/web/public/pilot-icons/codex.svg](apps/web/public/pilot-icons/codex.svg)
 - [apps/web/public/pilot-icons/antigravity.svg](apps/web/public/pilot-icons/antigravity.svg)
+- [apps/web/public/pilot-icons/grok.svg](apps/web/public/pilot-icons/grok.svg)
 - [apps/web/public/pilot-icons/cursor.svg](apps/web/public/pilot-icons/cursor.svg)
 - [apps/web/public/pilot-icons/copilot.svg](apps/web/public/pilot-icons/copilot.svg)
 - [apps/web/public/pilot-icons/amp.svg](apps/web/public/pilot-icons/amp.svg)

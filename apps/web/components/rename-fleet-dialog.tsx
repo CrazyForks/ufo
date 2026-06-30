@@ -10,7 +10,7 @@ export function RenameFleetDialog({ fleetId, name: initialName, trigger }: { fle
   const app = useApp();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState(initialName);
-  const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (open) setName(initialName);
@@ -20,9 +20,9 @@ export function RenameFleetDialog({ fleetId, name: initialName, trigger }: { fle
     e.preventDefault();
     const next = name.trim();
     if (!next || next === initialName) return setOpen(false);
-    setBusy(true);
+    setSaving(true);
     const ok = await app.updateFleet(fleetId, next);
-    setBusy(false);
+    setSaving(false);
     if (ok) setOpen(false);
   }
 
@@ -37,7 +37,7 @@ export function RenameFleetDialog({ fleetId, name: initialName, trigger }: { fle
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Fleet name" autoFocus />
           <div className="flex justify-end gap-2 pt-1">
             <Button type="button" variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
-            <Button type="submit" disabled={busy}>{busy ? "Saving..." : "Save"}</Button>
+            <Button type="submit" disabled={saving}>{saving ? "Saving..." : "Save"}</Button>
           </div>
         </form>
       </DialogContent>

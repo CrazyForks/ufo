@@ -17,6 +17,7 @@ type NavItem = { key: Section; label: string; icon: LucideIcon };
 const NAV: NavItem[] = [
   { key: "operations", label: "Operations", icon: SECTION_ICONS.operations },
   { key: "missions", label: "Missions", icon: SECTION_ICONS.missions },
+  { key: "routines", label: "Routines", icon: SECTION_ICONS.routines },
   { key: "crews", label: "Crews", icon: SECTION_ICONS.crews },
   { key: "rovers", label: "Rovers", icon: SECTION_ICONS.rovers },
   { key: "members", label: "Members", icon: SECTION_ICONS.members },

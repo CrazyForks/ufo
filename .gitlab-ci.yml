@@ -7,7 +7,7 @@ workflow:
     - if: $CI_PIPELINE_SOURCE == "push" && ($CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "develop")
     - when: never
 
-"API (Go)":
+"API":
   stage: check
   image: golang:1.26-alpine
   services:
@@ -27,7 +27,7 @@ workflow:
     - go vet ./...
     - go test ./...
 
-"Web (Next.js)":
+"Web":
   stage: check
   image: node:26-alpine
   script:
@@ -36,20 +36,84 @@ workflow:
     - npm run lint
     - npm run build
 
-"Rover (Rust)":
+"Rover Lint":
   stage: check
-  image: rust:latest
+  image: ghcr.io/rust-cross/cargo-zigbuild:latest
   before_script:
     - rustup component add rustfmt clippy
   script:
     - cd apps/rover
     - cargo fmt --check
     - cargo clippy -- -D warnings
+
+"Rover Build":
+  stage: check
+  image: ghcr.io/rust-cross/cargo-zigbuild:latest
+  parallel:
+    matrix:
+      - TARGET:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+          - x86_64-unknown-freebsd
+          - aarch64-unknown-linux-gnu
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-musl
+          - x86_64-unknown-linux-musl
+          - aarch64-pc-windows-gnullvm
+          - x86_64-pc-windows-gnullvm
+  before_script:
+    - rustup target add "$TARGET"
+  script:
+    - cd apps/rover
+    - cargo zigbuild --target "$TARGET"
+
+"Rover Build (MSVC)":
+  stage: check
+  tags:
+    - saas-windows-medium-amd64
+  parallel:
+    matrix:
+      - TARGET:
+          - aarch64-pc-windows-msvc
+          - x86_64-pc-windows-msvc
+  before_script:
+    - Invoke-WebRequest -Uri https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
+    - .\rustup-init.exe -y --profile minimal --default-toolchain stable
+    - $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
+    - rustup target add $env:TARGET
+  script:
+    - cd apps/rover
+    - cargo build --target $env:TARGET
+
+"Rover Test":
+  stage: check
+  image: ghcr.io/rust-cross/cargo-zigbuild:latest
+  parallel:
+    matrix:
+      - TARGET:
+          - x86_64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+  before_script:
+    - if echo "$TARGET" | grep -q musl; then apt-get update && apt-get install -y musl-tools; fi
+    - rustup target add "$TARGET"
+  script:
+    - cd apps/rover
+    - cargo test --target "$TARGET"
+
+"Rover Test: [x86_64-pc-windows-msvc]":
+  stage: check
+  tags:
+    - saas-windows-medium-amd64
+  before_script:
+    - Invoke-WebRequest -Uri https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
+    - .\rustup-init.exe -y --profile minimal --default-toolchain stable
+    - $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
+  script:
+    - cd apps/rover
     - cargo test
-    - cargo build
 
 "OpenAPI":
   stage: check
   image: node:26-alpine
   script:
-    - npx --yes @redocly/cli@2.34.0 lint apps/api/internal/spec/openapi.yaml
+    - npx --yes @redocly/cli@2.35.1 lint apps/api/internal/spec/openapi.yaml

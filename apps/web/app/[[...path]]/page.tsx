@@ -3,17 +3,23 @@
 import { useEffect, useState } from "react";
 import { AppProvider } from "@/components/app-provider";
 import { AppShell } from "@/components/app-shell";
-import { getJSON } from "@/lib/api";
+import { apiFetch, getJSON } from "@/lib/api";
 import { parseAppPath } from "@/lib/routes";
 import type { Fleet, User } from "@/lib/types";
+import { storeAuthNextPath } from "../auth-ui";
 
 export default function Page() {
   const [boot, setBoot] = useState<{ user: User; fleets: Fleet[]; fleet: string } | null>(null);
 
   useEffect(() => {
     (async () => {
-      const me = await fetch("/api/v1/me");
-      if (me.status === 401) { window.location.href = "/login"; return; }
+      const me = await apiFetch("/api/v1/me");
+      if (me.status === 401) {
+        const next = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+        storeAuthNextPath(next);
+        window.location.href = "/login";
+        return;
+      }
       const user = (await me.json()) as User;
       const fleets = (await getJSON<Fleet[]>("/api/v1/fleets")) ?? [];
       const route = parseAppPath(window.location.pathname);

@@ -10,6 +10,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { initials } from "@/lib/labels";
+import { SECTION_ICONS } from "@/lib/section-icons";
 
 export function MembersView() {
   const app = useApp();
@@ -27,26 +28,26 @@ export function MembersView() {
   return (
     <div className="mx-auto max-w-3xl space-y-4 p-4">
       <Card>
-        <CardHeader><CardTitle className="text-base">Members</CardTitle></CardHeader>
+        <CardHeader><CardTitle className="flex items-center gap-2 text-base"><SECTION_ICONS.members className="size-4" /> Members</CardTitle></CardHeader>
         <CardContent className="space-y-1">
           {app.members.map((m) => (
             <div key={m.id} className="flex items-center gap-3 py-2">
               <Avatar className="size-7"><AvatarFallback>{initials(m.name || m.email)}</AvatarFallback></Avatar>
               <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium">{m.name || m.email}{m.id === app.user.id && " (you)"}</p>
+                <p className="truncate text-sm font-medium">{m.name || m.email}{m.id === app.user.id && " (Current)"}</p>
                 <p className="truncate text-xs text-muted-foreground">{m.email}</p>
               </div>
               {app.myRole === "owner" && m.id !== app.user.id ? (
                 <Select value={m.role} onValueChange={(v) => app.setMemberRole(m.id, v)}>
                   <SelectTrigger className="h-7 w-28 text-xs"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="owner">owner</SelectItem>
-                    <SelectItem value="admin">admin</SelectItem>
-                    <SelectItem value="member">member</SelectItem>
+                    <SelectItem value="owner">Owner</SelectItem>
+                    <SelectItem value="admin">Admin</SelectItem>
+                    <SelectItem value="member">Member</SelectItem>
                   </SelectContent>
                 </Select>
               ) : (
-                <Badge variant="secondary">{m.role}</Badge>
+                <Badge variant="secondary" className="capitalize">{m.role}</Badge>
               )}
               {canAdministerFleet && m.role !== "owner" && m.id !== app.user.id && (
                 <Button variant="ghost" size="icon-sm" onClick={() => app.removeFleetMember(m.id)}><Trash2 /></Button>
@@ -69,8 +70,8 @@ export function MembersView() {
               <Select value={role} onValueChange={setRole}>
                 <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="member">member</SelectItem>
-                  <SelectItem value="admin">admin</SelectItem>
+                  <SelectItem value="member">Member</SelectItem>
+                  <SelectItem value="admin">Admin</SelectItem>
                 </SelectContent>
               </Select>
               <Button type="submit">Invite</Button>
@@ -80,7 +81,7 @@ export function MembersView() {
               <div className="divide-y divide-border border-t border-border pt-2">
                 {app.fleetInvites.map((inv) => (
                   <div key={inv.id} className="flex items-center justify-between py-2 text-sm">
-                    <span>{inv.invitee_email} <Badge variant="secondary">{inv.role}</Badge> <span className="text-xs text-muted-foreground">pending</span></span>
+                    <span>{inv.invitee_email} <Badge variant="secondary" className="capitalize">{inv.role}</Badge> <span className="text-xs text-muted-foreground">Pending</span></span>
                     <Button variant="ghost" size="sm" className="text-destructive" onClick={() => app.revokeInvite(inv.id)}>Revoke</Button>
                   </div>
                 ))}

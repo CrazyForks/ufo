@@ -24,14 +24,14 @@ function seededRng(seed: string) {
 export function Flames({ detail, seed }: { detail?: boolean; seed?: string }) {
   const r = seededRng(seed ?? "ufo");
   const tongues = Array.from({ length: 5 }, () => {
-    const width = 34 + Math.round(r() * 60); // 34–94%
+    const width = 34 + Math.round(r() * 60);
     return {
       width,
       left: Math.round(r() * (100 - width)),
-      height: 60 + Math.round(r() * 40), // 60–100%
+      height: 60 + Math.round(r() * 40),
       opacity: 0.55 + r() * 0.45,
-      dur: 600 + Math.round(r() * 760), // ms
-      delay: -Math.round(r() * 1400), // ms (negative → desynced start)
+      dur: 600 + Math.round(r() * 760),
+      delay: -Math.round(r() * 1400),
     };
   });
   return (

@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import type { Metadata } from "next";
 import localFont from "next/font/local";
 import "./globals.css";
 import { ThemeProvider } from "@/components/theme-provider";
@@ -17,9 +18,9 @@ const geistMono = localFont({
   display: "swap",
 });
 
-export const metadata = {
-  title: "UFO — Unified Fleet Orchestrator",
-  description: "Assign operations to pilots, stream progress from local rovers, and review the results.",
+export const metadata: Metadata = {
+  title: "UFO: Unified Fleet Orchestrator",
+  description: "UFO web operations board.",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

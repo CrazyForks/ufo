@@ -6,18 +6,25 @@ export function operationCode(operation: Operation, missions: Mission[]): string
   return `${key}-${operation.sequence}`;
 }
 
-export function assigneeLabel(operation: Operation, user: { id: string }, _pilots: Pilot[], crews: Crew[], members: Member[] = []): string {
+type Userish = { id: string; name?: string; email?: string };
+
+export function userLabel(user: { name?: string; email?: string }): string {
+  return user.name || user.email || "User";
+}
+
+export function memberLabel(id: string | null, user: Userish, members: Member[], fallback = "User"): string {
+  if (!id) return fallback;
+  if (id === user.id) return userLabel(user);
+  const m = members.find((x) => x.id === id);
+  return m ? m.name || m.email : fallback;
+}
+
+export function assigneeLabel(operation: Operation, user: Userish, _pilots: Pilot[], crews: Crew[], members: Member[] = []): string {
   if (!operation.assignee_type) return "Unassigned";
-  if (operation.assignee_type === "user") return memberName(operation.assignee_id, user, members);
+  if (operation.assignee_type === "user") return memberLabel(operation.assignee_id, user, members);
   if (operation.assignee_type === "pilot") return pilotLabel(operation.assignee_pilot_kind ?? "");
   if (operation.assignee_type === "crew") return crews.find((c) => c.id === operation.assignee_id)?.name ?? "Crew";
   return operation.assignee_type;
-}
-
-function memberName(id: string | null, user: { id: string }, members: Member[]): string {
-  if (id === user.id) return "You";
-  const m = members.find((x) => x.id === id);
-  return m ? m.name || m.email : "User";
 }
 
 export function assigneeHasPilot(operation: Operation, crews: Crew[] = []): boolean {
@@ -35,8 +42,13 @@ export function operationAssigneeValue(operation: Operation, user: { id: string 
   return "";
 }
 
-export function commentAuthor(c: Comment, userId: string, _pilots: Pilot[]): string {
-  if (c.author_type === "user") return c.author_id === userId ? "You" : "User";
+export function operationWaitingOnSubOperations(operation: Operation): boolean {
+  const progress = operation.sub_operation_progress;
+  return operation.status === "in_progress" && operation.orchestrating && !operation.active_run_state && !!progress?.total && progress.done < progress.total;
+}
+
+export function commentAuthor(c: Comment, user: Userish, members: Member[], _pilots: Pilot[]): string {
+  if (c.author_type === "user") return memberLabel(c.author_id, user, members);
   if (c.author_type === "pilot") return pilotLabel(c.author_pilot_kind ?? "");
   return "System";
 }
@@ -45,6 +57,7 @@ const PILOT_LABELS: Record<string, string> = {
   claude: "Claude Code",
   codex: "Codex",
   antigravity: "Antigravity",
+  grok: "Grok Build",
   cursor: "Cursor Agent",
   copilot: "GitHub Copilot",
   amp: "Amp Code",
@@ -62,7 +75,7 @@ export function pilotLabel(pilot: string): string {
 
 // Priority rank (0 none -> 4 urgent) -> label + color.
 export const PRIORITY: { label: string; color: string }[] = [
-  { label: "No priority", color: "text-muted-foreground" },
+  { label: "--", color: "text-muted-foreground" },
   { label: "Low", color: "text-info" },
   { label: "Medium", color: "text-warning" },
   { label: "High", color: "text-destructive" },

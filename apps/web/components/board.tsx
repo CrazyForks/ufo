@@ -1,11 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   DndContext, DragOverlay, PointerSensor, useDraggable, useDroppable, useSensor, useSensors,
   type DragEndEvent, type DragStartEvent,
 } from "@dnd-kit/core";
-import { Clock, Columns3, Filter, LayoutGrid, List as ListIcon, Loader2, Rows3, SlidersHorizontal } from "lucide-react";
+import { CheckCircle2, CircleAlert, Clock, Columns3, Filter, LayoutGrid, List as ListIcon, Loader2, Rows3, SlidersHorizontal } from "lucide-react";
 import { useApp } from "@/components/app-provider";
 import { StatusIcon } from "@/components/status-icon";
 import { PriorityIcon } from "@/components/priority-icon";
@@ -15,11 +15,11 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
-import { getJSON } from "@/lib/api";
+import { getJSON, withFleet } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { type Operation } from "@/lib/types";
 import { ALL_STATUSES, CARD_PROPS, type CardProp, SORTS, SORT_LABEL, type SortKey, sortOperations, type ViewMode, useBoardDisplay, useVisibleStatuses } from "@/lib/view";
-import { assigneeHasPilot, assigneeLabel, initials, operationCode, pilotLabel, PRIORITY, PRIORITY_ACCENT, LABEL_COLOR } from "@/lib/labels";
+import { assigneeHasPilot, assigneeLabel, initials, operationCode, operationWaitingOnSubOperations, pilotLabel, PRIORITY, PRIORITY_ACCENT, LABEL_COLOR } from "@/lib/labels";
 import { timeAgo } from "@/lib/timeline";
 
 const TAB_KIND: Record<string, string> = { all: "", members: "user", pilots: "pilot" };
@@ -72,7 +72,7 @@ export function Board() {
 
   const fetchColumn = useCallback(
     async (status: string, before: string): Promise<Operation[]> =>
-      (await getJSON<Operation[]>(`/api/v1/operations?fleet=${app.fleet}&status=${status}&mission=${missionParam}&before=${before}&limit=${LIMIT}${filterQS}`)) ?? [],
+      (await getJSON<Operation[]>(withFleet(`/api/v1/operations?status=${status}&mission=${missionParam}&before=${before}&limit=${LIMIT}${filterQS}`, app.fleet))) ?? [],
     [app.fleet, missionParam, filterQS],
   );
 
@@ -80,9 +80,9 @@ export function Board() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const c = await getJSON<Record<string, number>>(`/api/v1/operations/counts?fleet=${app.fleet}&mission=${missionParam}${filterQS}`);
+      const c = await getJSON<Record<string, number>>(withFleet(`/api/v1/operations/counts?mission=${missionParam}${filterQS}`, app.fleet));
       if (!cancelled && c) setCounts(c);
-      const wk = await getJSON<WorkCounts>(`/api/v1/operations/working?fleet=${app.fleet}`);
+      const wk = await getJSON<WorkCounts>(withFleet("/api/v1/operations/working", app.fleet));
       if (!cancelled && wk) setWorkCounts({ ...EMPTY_WORK_COUNTS, ...wk });
       const entries = await Promise.all(
         visible.map(async (s) => {
@@ -165,7 +165,7 @@ export function Board() {
 
       <div className="ml-auto flex items-center gap-2">
         {workCounts.queued > 0 && (
-          <span className="rounded-full bg-muted px-2 py-1 text-xs font-medium text-muted-foreground">
+          <span className="rounded-full bg-warning/10 px-2 py-1 text-xs font-medium text-warning">
             {workCounts.queued} Queued
           </span>
         )}
@@ -378,11 +378,12 @@ function ListSection({ status, count, col, cardProps, onLoadMore }: { status: st
           const fire = onFire(op);
           return (
           <button key={op.id} onClick={() => app.openOperation(op.id)} className={cn("relative flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-accent/40", fire && "border-l-2 border-l-destructive")}>
+            {operationWaitingOnSubOperations(op) && <StatusIcon status={op.status} subOperations className="size-3.5 shrink-0" />}
             {cardProps.has("priority") && op.priority > 0 && <PriorityIcon level={op.priority} className="size-3.5 shrink-0" />}
             <span className="font-mono text-[10px] text-muted-foreground">{operationCode(op, app.missions)}</span>
             <span className="truncate">{op.title}</span>
             {cardProps.has("labels") && op.labels?.map((l) => <span key={l.id} className={cn("rounded-full px-1.5 text-[10px]", LABEL_COLOR[l.color] ?? LABEL_COLOR.gray)}>{l.name}</span>)}
-            {cardProps.has("subOperationProgress") && op.sub_operation_progress?.total > 0 && <span className="text-[10px] text-muted-foreground">☑ {op.sub_operation_progress.done}/{op.sub_operation_progress.total}</span>}
+            {cardProps.has("subOperationProgress") && <SubOperationProgressStrip progress={op.sub_operation_progress} compact />}
             <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">{timeAgo(op.created_at)}</span>
             {fire && <Flames seed={op.id} />}
           </button>
@@ -454,6 +455,7 @@ function CardBody({ op, cardProps = ALL_PROPS, dragging }: { op: Operation; card
   const fire = onFire(op);
   const queued = op.active_run_state === "queued";
   const working = !!op.active_run_state && !queued;
+  const waitingOnSubOperations = operationWaitingOnSubOperations(op);
   return (
     <div
       className={cn(
@@ -469,8 +471,13 @@ function CardBody({ op, cardProps = ALL_PROPS, dragging }: { op: Operation; card
           <span className="font-mono text-[11px] font-medium uppercase text-muted-foreground">{operationCode(op, app.missions)}</span>
         </span>
         <span className="flex items-center gap-1.5">
+          {waitingOnSubOperations && (
+            <span className="flex items-center gap-1 text-[11px] font-medium text-info">
+              <StatusIcon status={op.status} subOperations className="size-3" /> Sub-ops
+            </span>
+          )}
           {queued && (
-            <span className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
+            <span className="flex items-center gap-1 text-[11px] font-medium text-warning">
               <Clock className="size-3" /> Queued
             </span>
           )}
@@ -490,8 +497,8 @@ function CardBody({ op, cardProps = ALL_PROPS, dragging }: { op: Operation; card
           ))}
         </div>
       )}
-      <div className="mt-2.5 flex items-center justify-between">
-        {show("subOperationProgress") && op.sub_operation_progress?.total > 0 && <span className="text-[10px] text-muted-foreground">☑ {op.sub_operation_progress.done}/{op.sub_operation_progress.total}</span>}
+      {show("subOperationProgress") && <SubOperationProgressStrip progress={op.sub_operation_progress} />}
+      <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2">
         {show("assignee") && (op.assignee_type ? (
           <div className="flex items-center gap-1.5">
             <Avatar className="size-5">
@@ -504,10 +511,83 @@ function CardBody({ op, cardProps = ALL_PROPS, dragging }: { op: Operation; card
         ) : (
           <span className="text-xs text-muted-foreground/60">Unassigned</span>
         ))}
-        {show("dates") && op.due_date && <span className="text-[10px] text-muted-foreground">due {op.due_date.slice(5)}</span>}
+        {show("dates") && op.due_date && <span className="text-[10px] text-muted-foreground">Due {op.due_date.slice(5)}</span>}
         <span className="text-[11px] text-muted-foreground/80">{timeAgo(op.created_at)}</span>
       </div>
       {fire && <Flames seed={op.id} />}
     </div>
+  );
+}
+
+function SubOperationProgressStrip({ progress, compact = false }: { progress?: Operation["sub_operation_progress"]; compact?: boolean }) {
+  if (!progress?.total) return null;
+  const pct = progress.done === 0 ? 0 : Math.max(5, Math.round((progress.done / progress.total) * 100));
+  const pilots = progress.pilot_kinds ?? [];
+  const pills = (
+    <>
+      {progress.in_progress > 0 && <SubOperationPill className="bg-info/10 text-info" icon={<Loader2 className="size-3 animate-spin" />} label={`${progress.in_progress} Working`} compact={compact} />}
+      {progress.in_review > 0 && <SubOperationPill className="bg-warning/10 text-warning" icon={<Clock className="size-3" />} label={`${progress.in_review} Review`} compact={compact} />}
+      {progress.blocked > 0 && <SubOperationPill className="bg-destructive/10 text-destructive" icon={<CircleAlert className="size-3" />} label={`${progress.blocked} Blocked`} compact={compact} />}
+      {!compact && progress.done === progress.total && <SubOperationPill className="bg-success/10 text-success" icon={<CheckCircle2 className="size-3" />} label="All Done" />}
+    </>
+  );
+  if (compact) {
+    return (
+      <span title="Open operation details to inspect sub-operations" className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-muted/30 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+        <span className="inline-flex min-w-0 items-center gap-1.5">
+          <Rows3 className="size-3 shrink-0" />
+          <span className="shrink-0 font-medium text-foreground">Sub-ops</span>
+          <span className="shrink-0 font-mono">{progress.done}/{progress.total}</span>
+          <span className="h-1.5 w-10 shrink-0 overflow-hidden rounded-full bg-background">
+            <span className="block h-full rounded-full bg-success" style={{ width: `${pct}%` }} />
+          </span>
+          <SubOperationPilots pilots={pilots} />
+        </span>
+        <span className="inline-flex shrink-0 items-center gap-1">{pills}</span>
+      </span>
+    );
+  }
+  return (
+    <div title="Open operation details to inspect sub-operations" className="mt-2 min-w-0 space-y-1.5 rounded-md border border-border bg-muted/30 p-2 text-[10px] text-muted-foreground">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <Rows3 className="size-3 shrink-0" />
+        <span className="shrink-0 font-medium text-foreground">Sub-ops</span>
+        <span className="shrink-0 font-mono">{progress.done}/{progress.total}</span>
+        <div className="h-1.5 min-w-10 flex-1 overflow-hidden rounded-full bg-background">
+          <div className="h-full rounded-full bg-success" style={{ width: `${pct}%` }} />
+        </div>
+        <SubOperationPilots pilots={pilots} />
+      </div>
+      <div className="flex flex-wrap items-center gap-1">{pills}</div>
+    </div>
+  );
+}
+
+function SubOperationPilots({ pilots }: { pilots: string[] }) {
+  if (pilots.length === 0) return null;
+  const visible = pilots.slice(0, 3);
+  const title = pilots.map(pilotLabel).join(", ");
+  return (
+    <span title={title} className="inline-flex shrink-0 items-center gap-0.5">
+      {visible.map((kind) => (
+        <span key={kind} title={pilotLabel(kind)} className="inline-flex size-4 items-center justify-center rounded-full border border-background bg-card text-muted-foreground">
+          <PilotIcon kind={kind} size={11} />
+        </span>
+      ))}
+      {pilots.length > visible.length && (
+        <span title={title} className="inline-flex h-4 min-w-4 items-center justify-center rounded-full border border-background bg-card px-1 text-[9px] text-muted-foreground">
+          +{pilots.length - visible.length}
+        </span>
+      )}
+    </span>
+  );
+}
+
+function SubOperationPill({ className, icon, label, compact = false }: { className: string; icon: ReactNode; label: string; compact?: boolean }) {
+  return (
+    <span className={cn("inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 font-medium", className)}>
+      {icon}
+      <span>{compact ? label.split(" ")[0] : label}</span>
+    </span>
   );
 }

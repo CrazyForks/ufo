@@ -1,6 +1,8 @@
 package server
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -49,6 +51,150 @@ func TestValidPilotKind(t *testing.T) {
 	}
 	if validPilotKind("") || validPilotKind("OpenCode") || validPilotKind("../claude") || validPilotKind("-pilot") || validPilotKind(strings.Repeat("a", 33)) {
 		t.Fatal("invalid pilot kind accepted")
+	}
+}
+
+func TestRoverVersionAllowed(t *testing.T) {
+	s := &Server{minRoverVersion: "0.3.0", maxRoverVersion: "0.5.0"}
+	for _, version := range []string{"0.3.0", "v0.3.1", "0.5.0"} {
+		if !s.roverVersionAllowed(version) {
+			t.Fatalf("version %q rejected", version)
+		}
+	}
+	for _, version := range []string{"", "dev", "0.2.9", "0.5.1"} {
+		if s.roverVersionAllowed(version) {
+			t.Fatalf("version %q accepted", version)
+		}
+	}
+}
+
+func TestNewDefaultsToCurrentRoverMinAndUnboundedMax(t *testing.T) {
+	t.Setenv("UFO_HUB_MIN_ROVER_VERSION", "")
+	t.Setenv("UFO_HUB_MAX_ROVER_VERSION", "")
+
+	s := New(nil, 0, nil)
+	if s.minRoverVersion != currentRoverVersion || s.maxRoverVersion != "" {
+		t.Fatalf("range = %q..%q, want %q..unbounded", s.minRoverVersion, s.maxRoverVersion, currentRoverVersion)
+	}
+	if !s.roverVersionAllowed("99.0.0") {
+		t.Fatal("newer rover rejected when max version is unset")
+	}
+}
+
+func TestRequireRoverVersionRejectsUnsupportedRange(t *testing.T) {
+	s := &Server{minRoverVersion: "0.2.0", maxRoverVersion: "0.2.9"}
+	req := httptest.NewRequest(http.MethodPost, "/v1/rovers", nil)
+	req.Header.Set(roverVersionHeader, currentRoverVersion)
+	rec := httptest.NewRecorder()
+
+	if s.requireRoverVersion(rec, req) {
+		t.Fatal("too-new rover version accepted")
+	}
+	if rec.Code != http.StatusUpgradeRequired {
+		t.Fatalf("status = %d, want 426", rec.Code)
+	}
+	if rec.Header().Get("X-UFO-Rover-Max-Version") != "0.2.9" {
+		t.Fatalf("max version header = %q", rec.Header().Get("X-UFO-Rover-Max-Version"))
+	}
+	if !strings.Contains(rec.Body.String(), "between 0.2.0 and 0.2.9") {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+}
+
+func TestJWTSigningKeyAcceptsDocumentedBase64Seed(t *testing.T) {
+	seed := make([]byte, ed25519.SeedSize)
+	for i := range seed {
+		seed[i] = byte(i + 1)
+	}
+	t.Setenv("UFO_HUB_JWT_PRIVATE_KEY", base64.StdEncoding.EncodeToString(seed))
+
+	key, err := jwtSigningKeyFromEnv()
+	if err != nil {
+		t.Fatalf("jwtSigningKeyFromEnv: %v", err)
+	}
+	if len(key) != ed25519.PrivateKeySize {
+		t.Fatalf("key length = %d, want %d", len(key), ed25519.PrivateKeySize)
+	}
+}
+
+func TestRoverConfigEventFieldOrder(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeRoverConfigEvent(rec, roverConfigEvent{
+		Name:      "lab",
+		Units:     3,
+		Tags:      []string{"gpu"},
+		FleetID:   "fleet-1",
+		FleetName: "Lab Fleet",
+	})
+
+	if got, want := rec.Body.String(), "event: config\ndata: {\"name\":\"lab\",\"units\":3,\"tags\":[\"gpu\"],\"fleet_id\":\"fleet-1\",\"fleet_name\":\"Lab Fleet\"}\n\n"; got != want {
+		t.Fatalf("config event = %q, want %q", got, want)
+	}
+}
+
+func TestOperationCodeQuery(t *testing.T) {
+	cases := map[string]string{
+		"#UFO-9527":    "UFO-9527",
+		"#UFO-":        "UFO-",
+		"U":            "U",
+		"ufo":          "UFO",
+		"测试#ufo-9527":  "UFO-9527",
+		"see UFO-9527": "UFO-9527",
+		"no code":      "",
+	}
+	for input, want := range cases {
+		if got := operationCodeQuery(input); got != want {
+			t.Fatalf("operationCodeQuery(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestWorktreeSummarySegment(t *testing.T) {
+	cases := map[string]string{
+		"UI":                                   "ui",
+		"Fix attachment preview for .py files": "fix-attachment-preview",
+		"MISSION operation uuid":               "operation",
+		"修 worktree 名字，固定到 operation metadata": "修-worktree-名字",
+	}
+	for input, want := range cases {
+		if got := worktreeSummarySegment(input, ""); got != want {
+			t.Fatalf("worktreeSummarySegment(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestEffectiveWorktreeEnabledFromMetadata(t *testing.T) {
+	fleetOff := []byte(`{"worktree_enabled":false}`)
+	missionOn := []byte(`{"worktree_enabled":true}`)
+	operationOff := []byte(`{"worktree_enabled":false}`)
+
+	if !effectiveWorktreeEnabledFromMetadata(nil, nil, nil) {
+		t.Fatalf("missing metadata should use the system default")
+	}
+	if effectiveWorktreeEnabledFromMetadata(nil, nil, fleetOff) {
+		t.Fatalf("fleet metadata should be used when operation and mission inherit")
+	}
+	if !effectiveWorktreeEnabledFromMetadata(nil, missionOn, fleetOff) {
+		t.Fatalf("mission metadata should override fleet metadata")
+	}
+	if effectiveWorktreeEnabledFromMetadata(operationOff, missionOn, fleetOff) {
+		t.Fatalf("operation metadata should override mission metadata")
+	}
+}
+
+func TestEffectiveContextFromMetadata(t *testing.T) {
+	fleetContext := []byte(`{"context":"fleet root"}`)
+	missionContext := []byte(`{"context":"mission root"}`)
+	operationContext := []byte(`{"context":"operation root"}`)
+
+	if got := effectiveContextFromMetadata(nil, nil, fleetContext); got != "fleet root" {
+		t.Fatalf("fleet context = %q", got)
+	}
+	if got := effectiveContextFromMetadata(nil, missionContext, fleetContext); got != "mission root" {
+		t.Fatalf("mission context = %q", got)
+	}
+	if got := effectiveContextFromMetadata(operationContext, missionContext, fleetContext); got != "operation root" {
+		t.Fatalf("operation context = %q", got)
 	}
 }
 
@@ -125,12 +271,32 @@ func TestReadJSONRequiresApplicationJSON(t *testing.T) {
 	}
 }
 
+func TestInlineSafeAssetAllowsProgramTextWithoutInlineHTML(t *testing.T) {
+	cases := []struct {
+		name        string
+		contentType string
+		want        bool
+	}{
+		{"script.py", "application/octet-stream", true},
+		{"script.py", "text/x-python", true},
+		{"data.json", "application/json", true},
+		{"page.html", "text/html", false},
+		{"vector.svg", "image/svg+xml", false},
+	}
+	for _, tc := range cases {
+		got := inlineSafeAsset(db.Asset{Filename: tc.name, ContentType: tc.contentType})
+		if got != tc.want {
+			t.Fatalf("inlineSafeAsset(%q, %q) = %v, want %v", tc.name, tc.contentType, got, tc.want)
+		}
+	}
+}
+
 func TestParseDate(t *testing.T) {
 	valid, ok := parseDate(ptr(ufoEpochPDT.Format("2006-01-02")))
 	if !ok || !valid.Valid {
 		t.Fatal("valid date rejected")
 	}
-	if _, ok := parseDate(ptr("06/13/2026")); ok {
+	if _, ok := parseDate(ptr("2026-06-03 12:34:56 -0700")); ok {
 		t.Fatal("invalid date accepted")
 	}
 }
@@ -153,15 +319,38 @@ func TestApplyStatusToDTOUpdatesLifecycleTimestamps(t *testing.T) {
 	}
 }
 
-func TestLatestUserCommentAfter(t *testing.T) {
+func TestQueuedUserCommentsAfter(t *testing.T) {
 	runStart := pgtype.Timestamptz{Time: ufoEpochPDT.UTC(), Valid: true}
 	comments := []db.Comment{
 		{AuthorType: "user", Body: "before", CreatedAt: pgtype.Timestamptz{Time: runStart.Time.Add(-time.Second), Valid: true}},
 		{AuthorType: "pilot", Body: "after pilot", CreatedAt: pgtype.Timestamptz{Time: runStart.Time.Add(time.Second), Valid: true}},
-		{AuthorType: "user", Body: "after", CreatedAt: pgtype.Timestamptz{Time: runStart.Time.Add(2 * time.Second), Valid: true}},
+		{AuthorType: "user", Body: "first", CreatedAt: pgtype.Timestamptz{Time: runStart.Time.Add(2 * time.Second), Valid: true}},
+		{AuthorType: "user", Body: "second", CreatedAt: pgtype.Timestamptz{Time: runStart.Time.Add(3 * time.Second), Valid: true}},
 	}
-	if got := latestUserCommentAfter(comments, runStart); got != "after" {
-		t.Fatalf("latestUserCommentAfter = %q, want after", got)
+	got := queuedUserCommentsAfter(comments, runStart)
+	if !strings.Contains(got, "1. first") || !strings.Contains(got, "2. second") {
+		t.Fatalf("queuedUserCommentsAfter = %q, want both user comments", got)
+	}
+}
+
+func TestNextCronTime(t *testing.T) {
+	base := time.Date(2026, time.June, 6, 18, 18, 18, 0, time.UTC)
+	cases := []struct {
+		spec string
+		want time.Time
+	}{
+		{"@hourly", time.Date(base.Year(), base.Month(), base.Day(), 19, 0, 0, 0, time.UTC)},
+		{"@daily", time.Date(base.Year(), base.Month(), base.Day()+1, 0, 0, 0, 0, time.UTC)},
+		{"*/15 * * * *", time.Date(base.Year(), base.Month(), base.Day(), base.Hour(), 30, 0, 0, time.UTC)},
+	}
+	for _, tc := range cases {
+		got, ok := nextCronTime(tc.spec, base)
+		if !ok || !got.Equal(tc.want) {
+			t.Fatalf("nextCronTime(%q) = %v,%v want %v,true", tc.spec, got, ok, tc.want)
+		}
+	}
+	if _, ok := nextCronTime("nope", base); ok {
+		t.Fatal("invalid cron accepted")
 	}
 }
 

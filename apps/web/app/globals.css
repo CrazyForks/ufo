@@ -111,6 +111,20 @@
   --sidebar-border: oklch(1 0 0 / 12%);
 }
 
+.dark .shiki,
+.dark .shiki span,
+.console-dark .shiki,
+.console-dark .shiki span {
+  color: var(--shiki-dark) !important;
+}
+
+@media (prefers-color-scheme: dark) {
+  .console-system .shiki,
+  .console-system .shiki span {
+    color: var(--shiki-dark) !important;
+  }
+}
+
 :is(.console-light, .console-system) {
   --radius: 0.1875rem;
   --background: oklch(0.982 0.004 255);
@@ -210,6 +224,14 @@
     --sidebar-accent-foreground: oklch(0.94 0.018 245);
     --sidebar-border: oklch(0.72 0.07 250 / 22%);
   }
+}
+
+:where(button, [role="button"], [role="menuitem"], [role="option"], label:has(input:not(:disabled))) {
+  cursor: pointer;
+}
+
+:where(button:disabled, [aria-disabled="true"], [data-disabled]) {
+  cursor: default;
 }
 
 :is(.console-light, .console-dark, .console-system) body {
@@ -660,12 +682,14 @@
 .ufo-flydeck {
   position: absolute;
   inset: 0;
+  z-index: 40;
   overflow: hidden;
   pointer-events: none;
 }
 /* Detail flyers: outer traces a path, inner spins independently. */
 .ufo-fly {
   position: absolute;
+  z-index: 1;
   opacity: 0;
   animation-timing-function: ease-in-out;
   animation-iteration-count: infinite;
@@ -1063,8 +1087,20 @@
 }
 
 :is(.console-light, .console-dark, .console-system) ::selection {
-  background: var(--brand);
-  color: var(--brand-foreground);
+  background: var(--warning);
+  color: var(--foreground);
+}
+
+:is(.console-dark) ::selection {
+  background: var(--warning);
+  color: var(--background);
+}
+
+@media (prefers-color-scheme: dark) {
+  .console-system ::selection {
+    background: var(--warning);
+    color: var(--background);
+  }
 }
 
 :is(.console-light, .console-dark, .console-system) ::-webkit-scrollbar-thumb {
@@ -1099,6 +1135,113 @@
 .dark .ufo-pilot-icon-light-outline,
 .console-dark .ufo-pilot-icon-light-outline {
   filter: none;
+}
+
+.ufo-reply-composer {
+  border-color: color-mix(in oklch, var(--border) 70%, var(--foreground) 12%);
+}
+
+.ufo-active-composer {
+  animation: ufo-composer-aura 2.2s ease-in-out infinite;
+  border-color: color-mix(in oklch, var(--warning) 52%, var(--border));
+}
+
+.ufo-comment-row ::selection {
+  background: color-mix(in oklch, var(--brand) 42%, transparent);
+  color: var(--foreground);
+}
+
+.ufo-processing-comment {
+  animation: ufo-comment-aura 2.2s ease-in-out infinite;
+  background: color-mix(in oklch, var(--brand) 8%, transparent);
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  box-shadow:
+    0 0 0 1px color-mix(in oklch, var(--brand) 34%, transparent),
+    0 0 18px color-mix(in oklch, var(--brand) 18%, transparent);
+}
+
+.ufo-run-input-marquee {
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  line-height: 1.25rem;
+  white-space: nowrap;
+  mask-image: linear-gradient(90deg, transparent, #000 0.75rem, #000 calc(100% - 0.75rem), transparent);
+}
+
+.ufo-run-input-marquee-track {
+  display: inline-flex;
+  align-items: center;
+  gap: 2rem;
+  min-width: max-content;
+  animation: ufo-run-input-marquee 25s linear infinite;
+  will-change: transform;
+}
+
+.ufo-run-input-marquee:hover .ufo-run-input-marquee-track {
+  animation-play-state: paused;
+}
+
+@keyframes ufo-run-input-marquee {
+  to {
+    transform: translateX(calc(-50% - 1rem));
+  }
+}
+
+@keyframes ufo-composer-aura {
+  0%, 100% {
+    box-shadow:
+      0 0 0 1px color-mix(in oklch, var(--warning) 34%, transparent),
+      0 0 20px color-mix(in oklch, var(--warning) 24%, transparent);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px color-mix(in oklch, var(--warning) 55%, transparent),
+      0 0 34px color-mix(in oklch, var(--warning) 42%, transparent),
+      0 0 62px color-mix(in oklch, var(--brand) 18%, transparent);
+  }
+}
+
+@keyframes ufo-comment-aura {
+  50% {
+    box-shadow:
+      0 0 0 1px color-mix(in oklch, var(--brand) 55%, transparent),
+      0 0 30px color-mix(in oklch, var(--brand) 34%, transparent),
+      0 0 48px color-mix(in oklch, var(--brand) 12%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ufo-active-composer {
+    animation: none;
+  }
+
+  .ufo-processing-comment {
+    animation: none;
+  }
+
+  .ufo-run-input-marquee {
+    mask-image: none;
+    text-overflow: ellipsis;
+  }
+
+  .ufo-run-input-marquee-track {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    animation: none;
+  }
+
+  .ufo-run-input-marquee-track span:first-child {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .ufo-run-input-marquee-track span[aria-hidden] {
+    display: none;
+  }
 }
 
 @media (prefers-color-scheme: dark) {

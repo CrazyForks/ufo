@@ -1,0 +1,36 @@
+- name: bug
+  color: d73a5a
+  description: Something is not working as intended.
+- name: enhancement
+  color: a2eeef
+  description: New capability or improvement request.
+- name: documentation
+  color: 0075ca
+  description: Documentation, examples, or community guidance.
+- name: security
+  color: b60205
+  description: Security hardening or private advisory follow-up. Do not use for new public vulnerability reports.
+- name: question
+  color: d876e3
+  description: Needs clarification before action.
+- name: good first issue
+  color: 7057ff
+  description: Small, well-scoped issue for a new contributor.
+- name: help wanted
+  color: 008672
+  description: Maintainers would welcome outside contribution.
+- name: needs reproduction
+  color: fbca05
+  description: Needs steps, logs, or a minimal reproduction before action.
+- name: rover
+  color: c2e0c6
+  description: Rust rover or host-side runtime.
+- name: hub
+  color: c5def5
+  description: Go API, database, auth, or orchestration hub.
+- name: web
+  color: fef2c0
+  description: Next.js web UI or API facade.
+- name: community
+  color: 5319e7
+  description: Community, governance, moderation, or contributor experience.

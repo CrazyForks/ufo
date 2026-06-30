@@ -1,27 +1,28 @@
 "use client";
 
 import { useState } from "react";
-import { AuthCard, AuthInput, AuthButton } from "../auth-ui";
+import { AuthCard, AuthInput, AuthButton, authNextPath } from "../auth-ui";
 
 export default function SignupPage() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    setBusy(true);
+    setSubmitting(true);
     setError(null);
     const res = await fetch("/api/v1/auth/signup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, email, password }),
     });
-    setBusy(false);
-    if (res.ok) window.location.href = "/";
-    else {
+    setSubmitting(false);
+    if (res.ok) {
+      window.location.href = authNextPath(true);
+    } else {
       const d = await res.json().catch(() => ({}));
       setError(d.error || "Sign up failed");
     }
@@ -33,7 +34,7 @@ export default function SignupPage() {
         <AuthInput placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} />
         <AuthInput type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
         <AuthInput type="password" placeholder="Password (8+ chars)" value={password} onChange={(e) => setPassword(e.target.value)} />
-        <AuthButton className="w-full" disabled={busy} type="submit">{busy ? "Creating…" : "Create account"}</AuthButton>
+        <AuthButton className="w-full" disabled={submitting} type="submit">{submitting ? "Creating…" : "Create account"}</AuthButton>
       </form>
     </AuthCard>
   );

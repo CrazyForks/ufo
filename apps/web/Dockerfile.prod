@@ -1,0 +1,46 @@
+# Multi-stage production build for the Next.js Web board.
+# Build context is apps/web.
+
+ARG NODE_BUILDER_IMAGE=cgr.dev/chainguard/node:latest-dev
+ARG NODE_RUNTIME_IMAGE=cgr.dev/chainguard/node:latest
+
+# Build stage
+FROM ${NODE_BUILDER_IMAGE} AS builder
+
+USER root
+
+WORKDIR /app
+
+# Install dependencies
+COPY package.json package-lock.json ./
+RUN npm ci
+
+# Copy the rest of the web application source code
+COPY . .
+
+# Build the Next.js standalone server bundle.
+RUN npm run build
+
+# Final run stage
+FROM ${NODE_RUNTIME_IMAGE} AS runner
+
+WORKDIR /app
+
+# Configure production environment
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV HOSTNAME=0.0.0.0
+
+# Copy only the standalone server and static assets.
+COPY --from=builder --chown=node:node /app/.next/standalone ./
+COPY --from=builder --chown=node:node /app/.next/static ./.next/static
+COPY --from=builder --chown=node:node /app/public ./public
+
+# Expose Next.js port
+EXPOSE 3000
+
+USER node
+
+# Start the Next.js production server
+ENTRYPOINT ["node"]
+CMD ["server.js"]

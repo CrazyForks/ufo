@@ -1,0 +1,222 @@
+name: Release
+
+permissions:
+  contents: write
+  packages: write
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  rover-binaries:
+    name: Rover binary (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    container: ghcr.io/rust-cross/cargo-zigbuild:latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            exe: ""
+          - target: x86_64-apple-darwin
+            exe: ""
+          - target: x86_64-unknown-freebsd
+            exe: ""
+          - target: aarch64-unknown-linux-gnu
+            exe: ""
+          - target: x86_64-unknown-linux-gnu
+            exe: ""
+          - target: aarch64-unknown-linux-musl
+            exe: ""
+          - target: x86_64-unknown-linux-musl
+            exe: ""
+          - target: aarch64-pc-windows-gnullvm
+            exe: ".exe"
+          - target: x86_64-pc-windows-gnullvm
+            exe: ".exe"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check release version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: scripts/check-release-version.sh "${GITHUB_REF_NAME#v}"
+      - name: Install Rust target
+        shell: bash
+        run: |
+          export PATH="/usr/local/cargo/bin:$PATH"
+          rustup target add "${{ matrix.target }}"
+      - name: Build rover
+        shell: bash
+        working-directory: apps/rover
+        run: |
+          export PATH="/usr/local/cargo/bin:$PATH"
+          cargo zigbuild --release --locked --target "${{ matrix.target }}"
+      - name: Package rover
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="${{ matrix.target }}"
+          exe="${{ matrix.exe }}"
+          archive="ufo-${target}.tar.gz"
+          mkdir -p "dist/${target}"
+          cp "apps/rover/target/${target}/release/ufo${exe}" "dist/${target}/ufo${exe}"
+          cp LICENSE "dist/${target}/LICENSE"
+          cp apps/rover/README.md "dist/${target}/README.md"
+          tar -C "dist/${target}" -czf "dist/${archive}" .
+          (cd dist && sha256sum "$archive" > "$archive.sha256")
+      - name: Smoke packaged rover
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          tar -xzf "dist/ufo-${{ matrix.target }}.tar.gz" -C "$tmp"
+          "$tmp/ufo" --help >/dev/null
+          "$tmp/ufo" rover --help >/dev/null
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rover-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+
+  rover-msvc-binaries:
+    name: Rover MSVC binary (${{ matrix.target }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-pc-windows-msvc
+          - x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Check release version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: sh scripts/check-release-version.sh "${GITHUB_REF_NAME#v}"
+      - name: Build rover
+        shell: bash
+        working-directory: apps/rover
+        run: cargo build --release --locked --target "${{ matrix.target }}"
+      - name: Package rover
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="${{ matrix.target }}"
+          archive="ufo-${target}.tar.gz"
+          mkdir -p "dist/${target}"
+          cp "apps/rover/target/${target}/release/ufo.exe" "dist/${target}/ufo.exe"
+          cp LICENSE "dist/${target}/LICENSE"
+          cp apps/rover/README.md "dist/${target}/README.md"
+          tar -C "dist/${target}" -czf "dist/${archive}" .
+          (cd dist && sha256sum "$archive" > "$archive.sha256")
+      - name: Smoke packaged rover
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          tar -xzf "dist/ufo-${{ matrix.target }}.tar.gz" -C "$tmp"
+          "$tmp/ufo.exe" --help >/dev/null
+          "$tmp/ufo.exe" rover --help >/dev/null
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rover-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+
+  publish:
+    name: Publish release assets
+    needs:
+      - rover-binaries
+      - rover-msvc-binaries
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: rover-*
+          path: dist
+          merge-multiple: true
+      - name: Upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --verify-tag --title "$TAG" --notes "See CHANGELOG.md for release notes."
+          fi
+          scripts/homebrew-formula.sh "$TAG" dist > dist/ufo-cli.rb
+          ruby -c dist/ufo-cli.rb
+          gh release upload "$TAG" dist/* --clobber
+      - name: Update Homebrew tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ -z "${HOMEBREW_TAP_TOKEN}" ]; then
+            echo "HOMEBREW_TAP_TOKEN not set; skipping tap update"
+            exit 0
+          fi
+          git clone --depth 1 "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/fengsi/homebrew-ufo.git" tap
+          install -D dist/ufo-cli.rb tap/Formula/ufo-cli.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/ufo-cli.rb
+          git diff --cached --quiet || git commit -m "ufo-cli ${TAG#v}"
+          git push
+
+  container-images:
+    name: Publish container image (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: api
+            image: ghcr.io/fengsi/ufo-api
+            context: apps/api
+            file: apps/api/Dockerfile.prod
+          - name: web
+            image: ghcr.io/fengsi/ufo-web
+            context: apps/web
+            file: apps/web/Dockerfile.prod
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check release version
+        run: scripts/check-release-version.sh "${GITHUB_REF_NAME#v}"
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ matrix.image }}
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest
+      - uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

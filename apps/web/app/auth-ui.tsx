@@ -6,6 +6,38 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 export { Input as AuthInput } from "@/components/ui/input";
 export { Button as AuthButton } from "@/components/ui/button";
 
+const AUTH_NEXT_STORAGE_KEY = "ufo.auth.next";
+
+function safeNextPath(next: string | null): string {
+  if (!next) return "/";
+  if (!next.startsWith("/") || next.startsWith("//")) return "/";
+  return next;
+}
+
+export function storeAuthNextPath(next: string): void {
+  if (typeof window === "undefined") return;
+  const safe = safeNextPath(next);
+  try {
+    if (safe === "/") sessionStorage.removeItem(AUTH_NEXT_STORAGE_KEY);
+    else sessionStorage.setItem(AUTH_NEXT_STORAGE_KEY, safe);
+  } catch {
+    // Best effort only; login still works without preserving the target.
+  }
+}
+
+export function authNextPath(consume = false): string {
+  if (typeof window === "undefined") return "/";
+  let stored = "/";
+  try {
+    stored = safeNextPath(sessionStorage.getItem(AUTH_NEXT_STORAGE_KEY));
+    if (consume) sessionStorage.removeItem(AUTH_NEXT_STORAGE_KEY);
+  } catch {
+    stored = "/";
+  }
+  if (stored !== "/") return stored;
+  return safeNextPath(new URLSearchParams(window.location.search).get("next"));
+}
+
 export function AuthCard({
   title,
   error,
@@ -36,7 +68,7 @@ export function AuthCard({
           {children}
           <p className="mt-4 text-sm text-muted-foreground">
             {footer.text}{" "}
-            <a href={footer.href} className="font-medium text-brand hover:underline">{footer.label}</a>
+            <a href={footer.href} className="font-medium text-brand hover:underline" onClick={() => storeAuthNextPath(authNextPath())}>{footer.label}</a>
           </p>
         </CardContent>
       </Card>

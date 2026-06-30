@@ -10,6 +10,7 @@ import { OperationDetail } from "@/components/operation-detail";
 import { NewOperationDialog } from "@/components/new-operation-dialog";
 import { SignalsMenu } from "@/components/signals-menu";
 import { MissionsView } from "@/components/views/missions-view";
+import { RoutinesView } from "@/components/views/routines-view";
 import { CrewsView } from "@/components/views/crews-view";
 import { RoversView } from "@/components/views/rovers-view";
 import { MembersView } from "@/components/views/members-view";
@@ -21,6 +22,7 @@ import { appPath, parseAppPath, type Section } from "@/lib/routes";
 const TITLE: Record<Section, string> = {
   operations: "Operations",
   missions: "Missions",
+  routines: "Routines",
   crews: "Crews",
   rovers: "Rovers",
   members: "Members",
@@ -72,7 +74,8 @@ export function AppShell() {
 
   useEffect(() => {
     const path = appPath(app.fleet, section, app.selectedOperation);
-    if (window.location.pathname !== path) window.history.replaceState(null, "", path);
+    const hash = window.location.hash.startsWith("#enroll=") ? window.location.hash : "";
+    if (window.location.pathname !== path) window.history.replaceState(null, "", `${path}${hash}`);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [section, app.selectedOperation, app.fleet]);
   const darkNow = resolvedTheme === "dark" || theme === "console-dark";
@@ -98,8 +101,8 @@ export function AppShell() {
               <div className="flex items-center gap-2">
                 {section === "operations" && <NewOperationDialog />}
                 <SignalsMenu />
-                <Button variant="ghost" size="icon-sm" onClick={toggleTheme} title="Toggle theme">
-                  {darkNow ? <Sun /> : <Moon />}
+                <Button variant="ghost" size="icon-sm" onClick={toggleTheme} title={darkNow ? "Theme: dark" : "Theme: light"} aria-label="Toggle theme">
+                  {darkNow ? <Moon /> : <Sun />}
                 </Button>
               </div>
             </header>
@@ -107,6 +110,7 @@ export function AppShell() {
             <main className="ufo-main min-h-0 flex-1 overflow-hidden">
               {section === "operations" && <Board />}
               {section === "missions" && <MissionsView />}
+              {section === "routines" && <RoutinesView />}
               {section === "crews" && <CrewsView />}
               {section === "rovers" && <RoversView />}
               {section === "members" && <MembersView />}

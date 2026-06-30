@@ -6,6 +6,7 @@ import { useApp } from "@/components/app-provider";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { SECTION_ICONS } from "@/lib/section-icons";
 import type { Mission } from "@/lib/types";
 
@@ -14,13 +15,14 @@ export function MissionsView() {
   const app = useApp();
   const [name, setName] = useState("");
   const [key, setKey] = useState("");
+  const [context, setContext] = useState("");
 
   const count = (missionId: string) => app.missionCounts[missionId] ?? 0;
 
   async function create(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim() || !key.trim()) return;
-    if (await app.addMission(name, key)) { setName(""); setKey(""); }
+    if (await app.addMission(name, key, context)) { setName(""); setKey(""); setContext(""); }
   }
 
   return (
@@ -30,10 +32,13 @@ export function MissionsView() {
           <CardTitle className="flex items-center gap-2 text-base"><SECTION_ICONS.missions className="size-4" /> Missions</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
-          <form className="flex gap-2" onSubmit={create}>
-            <Input value={key} onChange={(e) => setKey(e.target.value.toUpperCase())} placeholder="KEY" className="w-24 font-mono uppercase" maxLength={8} />
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Mission name" className="flex-1" />
-            <Button type="submit" size="icon"><Plus /></Button>
+          <form className="space-y-2" onSubmit={create}>
+            <div className="flex gap-2">
+              <Input value={key} onChange={(e) => setKey(e.target.value.toUpperCase())} placeholder="KEY" className="w-24 font-mono uppercase" maxLength={8} />
+              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Mission name" className="flex-1" />
+              <Button type="submit" size="icon"><Plus /></Button>
+            </div>
+            <Textarea value={context} onChange={(e) => setContext(e.target.value)} placeholder="Context (root repo, defaults, constraints...)" className="min-h-20 resize-y text-sm" />
           </form>
           <div className="divide-y divide-border">
             {app.missions.map((m) => <MissionRow key={m.id} mission={m} count={count(m.id)} />)}
@@ -45,25 +50,33 @@ export function MissionsView() {
   );
 }
 
+function metadataContextValue(metadata: Record<string, unknown> | undefined) {
+  return typeof metadata?.context === "string" ? metadata.context : "";
+}
+
 function MissionRow({ mission, count }: { mission: Mission; count: number }) {
   const app = useApp();
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(mission.name);
   const [key, setKey] = useState(mission.key);
+  const [context, setContext] = useState(metadataContextValue(mission.metadata));
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim() || !key.trim()) return;
-    if (await app.updateMission(mission.id, name, key)) setEditing(false);
+    if (await app.updateMission(mission.id, name, key, context)) setEditing(false);
   }
 
   if (editing) {
     return (
-      <form className="flex items-center gap-2 py-2" onSubmit={save}>
-        <Input value={key} onChange={(e) => setKey(e.target.value.toUpperCase())} className="w-24 font-mono uppercase" maxLength={8} />
-        <Input value={name} onChange={(e) => setName(e.target.value)} className="flex-1" />
-        <Button type="submit" size="sm">Save</Button>
-        <Button type="button" variant="ghost" size="sm" onClick={() => setEditing(false)}>Cancel</Button>
+      <form className="space-y-2 py-2" onSubmit={save}>
+        <div className="flex items-center gap-2">
+          <Input value={key} onChange={(e) => setKey(e.target.value.toUpperCase())} className="w-24 font-mono uppercase" maxLength={8} />
+          <Input value={name} onChange={(e) => setName(e.target.value)} className="flex-1" />
+          <Button type="button" variant="ghost" size="sm" onClick={() => setEditing(false)}>Cancel</Button>
+          <Button type="submit" size="sm">Save</Button>
+        </div>
+        <Textarea value={context} onChange={(e) => setContext(e.target.value)} placeholder="Root repo, defaults, constraints..." className="min-h-20 resize-y text-sm" />
       </form>
     );
   }
@@ -76,7 +89,7 @@ function MissionRow({ mission, count }: { mission: Mission; count: number }) {
       </span>
       <span className="flex items-center gap-3">
         <span className="text-xs text-muted-foreground">{count} operations</span>
-        <Button variant="ghost" size="icon-sm" onClick={() => { setName(mission.name); setKey(mission.key); setEditing(true); }}><Pencil /></Button>
+        <Button variant="ghost" size="icon-sm" onClick={() => { setName(mission.name); setKey(mission.key); setContext(metadataContextValue(mission.metadata)); setEditing(true); }}><Pencil /></Button>
       </span>
     </div>
   );
