@@ -21,4 +21,6 @@ apps/rover/target/
 apps/rover/missions/
 
 # Local rover state
-.ufo/
+.ufo/*
+!.ufo/context/
+!.ufo/context/**

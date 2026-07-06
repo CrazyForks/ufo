@@ -3,12 +3,15 @@
 import { File, FileArchive, FileAudio, FileCode, FileImage, FileJson, FileSpreadsheet, FileText, FileType, FileVideo, Link2, Loader2, Presentation, Sparkles, Trash2, UserRound } from "lucide-react";
 import { bundledLanguagesInfo } from "shiki";
 import { assetFilePath } from "@/lib/assets";
+import { t } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import type { Asset } from "@/lib/types";
 
 export type AssetSource = "upload" | "output";
 
-const ASSET_SOURCE_LABEL: Record<AssetSource, string> = { upload: "User file", output: "Output" };
+function assetSourceLabel(source: AssetSource): string {
+  return source === "output" ? t("asset.output") : t("asset.upload");
+}
 
 export function assetSource(asset: Asset): AssetSource {
   return typeof asset.metadata?.run_id === "string" ? "output" : "upload";
@@ -17,8 +20,9 @@ export function assetSource(asset: Asset): AssetSource {
 export function AssetSourceIcon({ asset, className }: { asset: Asset; className?: string }) {
   const source = assetSource(asset);
   const Icon = source === "output" ? Sparkles : UserRound;
+  const label = assetSourceLabel(source);
   return (
-    <span className={cn("inline-flex shrink-0 items-center text-muted-foreground", className)} title={ASSET_SOURCE_LABEL[source]} aria-label={ASSET_SOURCE_LABEL[source]}>
+    <span className={cn("inline-flex shrink-0 items-center text-muted-foreground", className)} title={label} aria-label={label}>
       <Icon className="size-3" />
     </span>
   );
@@ -44,6 +48,8 @@ export function AssetChipStrip({ assets, deletingAssetId, onInsert, onDelete, cl
     <div className={cn("flex flex-wrap gap-1.5", className)}>
       {assets.map((asset) => {
         const deleting = deletingAssetId === asset.id;
+        const insertLabel = t("asset.insert", { name: asset.filename });
+        const deleteLabel = t("op.deleteAsset", { name: asset.filename });
         const content = (
           <>
             <AssetKindIcon asset={asset} className="size-3.5 shrink-0 text-muted-foreground" />
@@ -55,7 +61,7 @@ export function AssetChipStrip({ assets, deletingAssetId, onInsert, onDelete, cl
         const chipClass = "inline-flex h-7 max-w-full items-center gap-1.5 rounded-md border border-border bg-muted/30 px-2 text-xs";
         if (onInsert && !onDelete) {
           return (
-            <button key={asset.id} type="button" className={cn(chipClass, "hover:bg-accent hover:text-accent-foreground")} title={`Insert ${asset.filename}`} onClick={() => onInsert(asset)}>
+            <button key={asset.id} type="button" className={cn(chipClass, "hover:bg-accent hover:text-accent-foreground")} title={insertLabel} onClick={() => onInsert(asset)}>
               {content}
             </button>
           );
@@ -64,12 +70,12 @@ export function AssetChipStrip({ assets, deletingAssetId, onInsert, onDelete, cl
           <span key={asset.id} className={chipClass}>
             {content}
             {onInsert && (
-              <button type="button" className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground" title={`Insert ${asset.filename}`} aria-label={`Insert ${asset.filename}`} onClick={() => onInsert(asset)}>
+              <button type="button" className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground" title={insertLabel} aria-label={insertLabel} onClick={() => onInsert(asset)}>
                 <Link2 className="size-3" />
               </button>
             )}
             {onDelete && (
-              <button type="button" className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-destructive disabled:opacity-50" title={`Delete ${asset.filename}`} aria-label={`Delete ${asset.filename}`} disabled={deleting} onClick={() => onDelete(asset)}>
+              <button type="button" className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-destructive disabled:opacity-50" title={deleteLabel} aria-label={deleteLabel} disabled={deleting} onClick={() => onDelete(asset)}>
                 {deleting ? <Loader2 className="size-3 animate-spin" /> : <Trash2 className="size-3" />}
               </button>
             )}
@@ -172,20 +178,20 @@ export function canPreviewAsset(asset: Asset) {
 
 export function assetKindLabel(asset: Asset) {
   const contentType = asset.content_type.toLowerCase();
-  if (contentType.startsWith("image/")) return "Image";
-  if (contentType.startsWith("audio/")) return "Audio";
-  if (contentType.startsWith("video/")) return "Video";
-  if (contentType === "application/pdf") return "PDF";
-  if (isArchiveAsset(asset)) return "Archive";
-  if (isWordAsset(asset)) return "Word";
-  if (isPresentationAsset(asset)) return "PowerPoint";
-  if (isSpreadsheetAsset(asset)) return "Spreadsheet";
-  if (isJsonAsset(asset)) return "JSON";
-  if (isCodeAsset(asset)) return "Code";
-  if (isMarkdownAsset(asset)) return "Markdown";
-  if (isTextAsset(asset)) return "Text";
-  if (contentType === "application/octet-stream") return "Binary";
-  return contentType || "File";
+  if (contentType.startsWith("image/")) return t("asset.image");
+  if (contentType.startsWith("audio/")) return t("asset.audio");
+  if (contentType.startsWith("video/")) return t("asset.video");
+  if (contentType === "application/pdf") return t("asset.pdf");
+  if (isArchiveAsset(asset)) return t("asset.archive");
+  if (isWordAsset(asset)) return t("asset.word");
+  if (isPresentationAsset(asset)) return t("asset.powerpoint");
+  if (isSpreadsheetAsset(asset)) return t("asset.spreadsheet");
+  if (isJsonAsset(asset)) return t("asset.json");
+  if (isCodeAsset(asset)) return t("asset.code");
+  if (isMarkdownAsset(asset)) return t("asset.markdown");
+  if (isTextAsset(asset)) return t("asset.text");
+  if (contentType === "application/octet-stream") return t("asset.binary");
+  return contentType || t("common.file");
 }
 
 export function formatBytes(bytes: number) {

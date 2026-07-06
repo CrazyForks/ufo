@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { Activity, Loader2, Paperclip, Pencil, Play, Plus, Tags, Trash2, UserRound, X, type LucideIcon } from "lucide-react";
+import { Activity, Loader2, Paperclip, Pause, Pencil, Play, Plus, Tags, Trash2, UserRound, X, type LucideIcon } from "lucide-react";
 import { useApp } from "@/components/app-provider";
 import { AssetChipStrip } from "@/components/asset-display";
 import { PriorityIcon } from "@/components/priority-icon";
@@ -15,16 +15,17 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { PRIORITY, memberLabel, pilotLabel, userLabel } from "@/lib/labels";
+import { priorityLabel, useT, type MessageKey } from "@/lib/i18n";
+import { PRIORITY_LEVELS, memberLabel, pilotLabel, userLabel } from "@/lib/labels";
 import { SECTION_ICONS } from "@/lib/section-icons";
-import type { Asset, AssigneeType, Crew, Routine, RoutineTriggerType } from "@/lib/types";
+import type { Asset, AssigneeType, Crew, Pulse, Routine, RoutineTriggerType } from "@/lib/types";
 
-const CRON_PRESETS = [
-  { value: "@hourly", label: "Hourly" },
-  { value: "@daily", label: "Daily" },
-  { value: "@weekly", label: "Weekly" },
-  { value: "*/15 * * * *", label: "Every 15 minutes" },
-  { value: "0 9 * * *", label: "Daily at 09:00 UTC" },
+const CRON_PRESET_KEYS: { value: string; labelKey: MessageKey }[] = [
+  { value: "@hourly", labelKey: "routines.hourly" },
+  { value: "@daily", labelKey: "routines.daily" },
+  { value: "@weekly", labelKey: "routines.weekly" },
+  { value: "*/15 * * * *", labelKey: "routines.every15" },
+  { value: "0 9 * * *", labelKey: "routines.daily9" },
 ];
 
 function crewCanDispatch(crew: Crew | undefined) {
@@ -69,12 +70,18 @@ function routineAssigneeValue(routine: Routine, userId: string) {
 
 export function RoutinesView() {
   const app = useApp();
+  const t = useT();
   const [editingRoutineId, setEditingRoutineId] = useState<string | null>(null);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [missionId, setMissionId] = useState("");
   const [assignee, setAssignee] = useState("me");
   const [dispatchAfterPulse, setDispatchAfterPulse] = useState(true);
+  const [skipIfActive, setSkipIfActive] = useState(true);
+  const [rePulseOnClose, setRePulseOnClose] = useState(true);
+  const [autoCommitBranch, setAutoCommitBranch] = useState("");
+  const [dropWorktreeOnCommit, setDropWorktreeOnCommit] = useState(true);
+  const [scheduleEnabled, setScheduleEnabled] = useState(true);
   const [priority, setPriority] = useState("0");
   const [triggerType, setTriggerType] = useState<RoutineTriggerType>("manual");
   const [cron, setCron] = useState("@daily");
@@ -108,9 +115,21 @@ export function RoutinesView() {
       title: title.trim(),
       body: body.trim(),
       metadata: {
-        trigger: { kind: triggerType, ...(triggerType === "schedule" ? { cron: cron.trim() } : {}) },
+        trigger: {
+          kind: triggerType,
+          enabled: triggerType === "schedule" ? scheduleEnabled : true,
+          ...(triggerType === "schedule" ? { cron: cron.trim() } : {}),
+        },
         operation: {
           start_immediately: autoDispatch,
+          skip_if_active: skipIfActive,
+          re_pulse_on_close: rePulseOnClose,
+          ...(autoCommitBranch.trim()
+            ? {
+                auto_commit_branch: autoCommitBranch.trim(),
+                drop_worktree_on_commit: dropWorktreeOnCommit,
+              }
+            : {}),
           priority: Number(priority),
           assignee: assigneeInput(assignee, app.user.id),
           required_tags: requiredTags,
@@ -128,6 +147,11 @@ export function RoutinesView() {
     setMissionId("");
     setAssignee("me");
     setDispatchAfterPulse(true);
+    setSkipIfActive(true);
+    setRePulseOnClose(true);
+    setAutoCommitBranch("");
+    setDropWorktreeOnCommit(true);
+    setScheduleEnabled(true);
     setPriority("0");
     setTriggerType("manual");
     setCron("@daily");
@@ -147,6 +171,11 @@ export function RoutinesView() {
     setMissionId(routine.mission_id);
     setAssignee(nextAssignee);
     setDispatchAfterPulse(operation.start_immediately ?? canDispatchAssignee(nextAssignee, app.crews));
+    setSkipIfActive(operation.skip_if_active ?? true);
+    setRePulseOnClose(operation.re_pulse_on_close ?? true);
+    setAutoCommitBranch(operation.auto_commit_branch ?? "");
+    setDropWorktreeOnCommit(operation.drop_worktree_on_commit ?? true);
+    setScheduleEnabled(trigger.enabled ?? true);
     setPriority(String(operation.priority ?? 0));
     setTriggerType((trigger.kind ?? "manual") === "schedule" ? "schedule" : "manual");
     setCron(trigger.cron ?? "@daily");
@@ -189,14 +218,14 @@ export function RoutinesView() {
       <Card className="flex min-h-0 flex-col">
         <CardHeader className="p-4 pb-3">
           <CardTitle className="flex items-center justify-between gap-3 text-base">
-            <span className="flex items-center gap-2"><SECTION_ICONS.routines className="size-4" /> Routines</span>
+            <span className="flex items-center gap-2"><SECTION_ICONS.routines className="size-4" /> {t("routines.title")}</span>
             <span className="text-xs font-normal text-muted-foreground">{app.routines.length}</span>
           </CardTitle>
         </CardHeader>
         <CardContent className="flex min-h-0 flex-1 flex-col p-4 pt-0">
           <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
             {app.routines.map((routine) => <RoutineRow key={routine.id} routine={routine} editing={editingRoutineId === routine.id} onEdit={editRoutine} />)}
-            {app.routines.length === 0 && <p className="py-2 text-sm text-muted-foreground">No routines yet.</p>}
+            {app.routines.length === 0 && <p className="py-2 text-sm text-muted-foreground">{t("routines.emptyPeriod")}</p>}
           </div>
         </CardContent>
       </Card>
@@ -204,9 +233,9 @@ export function RoutinesView() {
       <Card className="flex min-h-0 flex-col">
         <CardHeader className="p-4 pb-3">
           <CardTitle className="flex items-center justify-between gap-3 text-base">
-            <span className="flex items-center gap-2">{editing ? <Pencil className="size-4" /> : <Plus className="size-4" />} {editing ? "Edit routine" : "New routine"}</span>
+            <span className="flex items-center gap-2">{editing ? <Pencil className="size-4" /> : <Plus className="size-4" />} {editing ? t("routines.edit") : t("routines.new")}</span>
             {editing && (
-              <Button type="button" variant="ghost" size="icon-sm" title="Cancel edit" aria-label="Cancel edit" onClick={resetForm}>
+              <Button type="button" variant="ghost" size="icon-sm" title={t("routines.cancelEdit")} aria-label={t("routines.cancelEdit")} onClick={resetForm}>
                 <X />
               </Button>
             )}
@@ -214,16 +243,16 @@ export function RoutinesView() {
         </CardHeader>
         <CardContent className="min-h-0 flex-1 overflow-y-auto p-4 pt-0">
           {app.missions.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Create a mission first.</p>
+            <p className="text-sm text-muted-foreground">{t("routines.createMissionFirst")}</p>
           ) : (
             <form id="routine-form" className="space-y-4" onSubmit={save}>
-              <FormSection title="Pulse" icon={Activity}>
-                <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Pulse title" />
+              <FormSection title={t("routines.pulse")} icon={Activity}>
+                <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={t("routines.pulseTitle")} />
                 <div className="space-y-1.5">
-                  <Textarea value={body} onChange={(e) => setBody(e.target.value)} placeholder="Operation prompt for each pulse" rows={3} />
+                  <Textarea value={body} onChange={(e) => setBody(e.target.value)} placeholder={t("routines.bodyPlaceholder")} rows={3} />
                   <input ref={uploadRef} type="file" multiple className="sr-only" onChange={(e) => onFiles(e.target.files)} />
                   <div className="flex items-center gap-1">
-                    <Button type="button" variant="ghost" size="icon-sm" className="text-muted-foreground" title="Upload files" aria-label="Upload files" disabled={uploading} onClick={() => uploadRef.current?.click()}>
+                    <Button type="button" variant="ghost" size="icon-sm" className="text-muted-foreground" title={t("routines.uploadFiles")} aria-label={t("routines.uploadFiles")} disabled={uploading} onClick={() => uploadRef.current?.click()}>
                       {uploading ? <Loader2 className="size-3 animate-spin" /> : <Paperclip className="size-3" />}
                     </Button>
                   </div>
@@ -231,39 +260,39 @@ export function RoutinesView() {
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1.5">
-                    <Label className="text-xs text-muted-foreground">Pulse</Label>
+                    <Label className="text-xs text-muted-foreground">{t("routines.pulse")}</Label>
                     <Select value={triggerType} onValueChange={(value) => setTriggerType(value as RoutineTriggerType)}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="manual">Manual</SelectItem>
-                        <SelectItem value="schedule">Schedule</SelectItem>
+                        <SelectItem value="manual">{t("routines.manual")}</SelectItem>
+                        <SelectItem value="schedule">{t("routines.schedule")}</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
                   {triggerType === "schedule" && (
                     <div className="space-y-1.5 sm:col-span-2">
-                      <Label className="text-xs text-muted-foreground">Schedule</Label>
-                      <Select value={CRON_PRESETS.some((preset) => preset.value === cron) ? cron : "custom"} onValueChange={(value) => { if (value !== "custom") setCron(value); }}>
+                      <Label className="text-xs text-muted-foreground">{t("routines.schedule")}</Label>
+                      <Select value={CRON_PRESET_KEYS.some((preset) => preset.value === cron) ? cron : "custom"} onValueChange={(value) => { if (value !== "custom") setCron(value); }}>
                         <SelectTrigger><SelectValue /></SelectTrigger>
                         <SelectContent>
-                          {CRON_PRESETS.map((preset) => <SelectItem key={preset.value} value={preset.value}>{preset.label}</SelectItem>)}
-                          <SelectItem value="custom">Custom</SelectItem>
+                          {CRON_PRESET_KEYS.map((preset) => <SelectItem key={preset.value} value={preset.value}>{t(preset.labelKey)}</SelectItem>)}
+                          <SelectItem value="custom">{t("routines.custom")}</SelectItem>
                         </SelectContent>
                       </Select>
                       <Input value={cron} onChange={(e) => setCron(e.target.value)} placeholder="0 9 * * *" />
                       <div className="rounded-md border border-border bg-muted/30 p-2 text-[11px] leading-snug text-muted-foreground">
-                        <div className="font-mono">@hourly · @daily · @weekly</div>
-                        <div className="font-mono">minute hour day month weekday</div>
-                        <div>Fields support *, numbers, and */n. Times are UTC.</div>
+                        <div className="font-mono">{t("routines.cronAliases")}</div>
+                        <div className="font-mono">{t("routines.cronFields")}</div>
+                        <div>{t("routines.cronHelp")}</div>
                       </div>
                     </div>
                   )}
                 </div>
               </FormSection>
 
-              <FormSection title="Dispatch" icon={UserRound}>
+              <FormSection title={t("routines.dispatch")} icon={UserRound}>
                 <div className="space-y-1.5">
-                  <Label className="text-xs text-muted-foreground">Mission</Label>
+                  <Label className="text-xs text-muted-foreground">{t("routines.mission")}</Label>
                   <Select value={mission} onValueChange={setMissionId}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
@@ -272,7 +301,7 @@ export function RoutinesView() {
                   </Select>
                 </div>
                 <div className="space-y-1.5">
-                  <Label className="text-xs text-muted-foreground">Assignee</Label>
+                  <Label className="text-xs text-muted-foreground">{t("routines.assignee")}</Label>
                   <Select value={assignee} onValueChange={setAssigneeAndDispatch}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
@@ -283,48 +312,111 @@ export function RoutinesView() {
                     </SelectContent>
                   </Select>
                 </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1.5">
-                    <Label className="text-xs text-muted-foreground">Priority</Label>
-                    <Select value={priority} onValueChange={setPriority}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        {PRIORITY.map((p, i) => (
-                          <SelectItem key={i} value={String(i)}>
-                            <span className="flex items-center gap-2"><PriorityIcon level={i} className="size-3.5" /> {p.label}</span>
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <label className="flex items-end justify-between gap-3 pb-2 text-xs">
-                    <span>
-                      <span className="font-medium text-foreground">Dispatch after pulse</span>
-                      <span className="block text-muted-foreground">{dispatchAvailable ? "Auto" : "Backlog"}</span>
-                    </span>
-                    <input
-                      type="checkbox"
-                      className="peer sr-only"
-                      checked={autoDispatch}
-                      disabled={!dispatchAvailable}
-                      onChange={(e) => setDispatchAfterPulse(e.target.checked)}
-                    />
-                    <span className="relative h-5 w-9 shrink-0 rounded-full bg-muted transition after:absolute after:left-0.5 after:top-0.5 after:size-4 after:rounded-full after:bg-background after:shadow after:transition after:content-[''] peer-checked:bg-brand peer-checked:after:translate-x-4 peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-disabled:opacity-50" />
-                  </label>
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-muted-foreground">{t("routines.priority")}</Label>
+                  <Select value={priority} onValueChange={setPriority}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {PRIORITY_LEVELS.map((i) => (
+                        <SelectItem key={i} value={String(i)}>
+                          <span className="flex items-center gap-2"><PriorityIcon level={i} className="size-3.5" /> {priorityLabel(i)}</span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
+                <label className="flex items-center justify-between gap-3 text-xs">
+                  <span>
+                    <span className="font-medium text-foreground">{t("routines.startRightAway")}</span>
+                    <span className="block text-muted-foreground">
+                      {dispatchAvailable
+                        ? autoDispatch
+                          ? t("routines.autoAcceptOn")
+                          : t("routines.autoAcceptOff")
+                        : t("routines.autoAcceptDisabled")}
+                    </span>
+                  </span>
+                  <input
+                    type="checkbox"
+                    className="peer sr-only"
+                    checked={autoDispatch}
+                    disabled={!dispatchAvailable}
+                    onChange={(e) => setDispatchAfterPulse(e.target.checked)}
+                  />
+                  <span className="relative h-5 w-9 shrink-0 rounded-full bg-muted transition after:absolute after:left-0.5 after:top-0.5 after:size-4 after:rounded-full after:bg-background after:shadow after:transition after:content-[''] peer-checked:bg-brand peer-checked:after:translate-x-4 peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-disabled:opacity-50" />
+                </label>
+                <label className="flex items-center justify-between gap-3 text-xs">
+                  <span>
+                    <span className="font-medium text-foreground">{t("routines.waitCurrentTitle")}</span>
+                    <span className="block text-muted-foreground">
+                      {skipIfActive
+                        ? t("routines.skipActiveOn")
+                        : t("routines.skipActiveOff")}
+                    </span>
+                  </span>
+                  <input type="checkbox" className="peer sr-only" checked={skipIfActive} onChange={(e) => setSkipIfActive(e.target.checked)} />
+                  <span className="relative h-5 w-9 shrink-0 rounded-full bg-muted transition after:absolute after:left-0.5 after:top-0.5 after:size-4 after:rounded-full after:bg-background after:shadow after:transition after:content-[''] peer-checked:bg-brand peer-checked:after:translate-x-4 peer-focus-visible:ring-2 peer-focus-visible:ring-ring" />
+                </label>
+                <label className="flex items-center justify-between gap-3 text-xs">
+                  <span>
+                    <span className="font-medium text-foreground">{t("routines.keepGoingTitle")}</span>
+                    <span className="block text-muted-foreground">
+                      {rePulseOnClose
+                        ? t("routines.rePulseOn")
+                        : t("routines.rePulseOff")}
+                    </span>
+                  </span>
+                  <input type="checkbox" className="peer sr-only" checked={rePulseOnClose} onChange={(e) => setRePulseOnClose(e.target.checked)} />
+                  <span className="relative h-5 w-9 shrink-0 rounded-full bg-muted transition after:absolute after:left-0.5 after:top-0.5 after:size-4 after:rounded-full after:bg-background after:shadow after:transition after:content-[''] peer-checked:bg-brand peer-checked:after:translate-x-4 peer-focus-visible:ring-2 peer-focus-visible:ring-ring" />
+                </label>
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-muted-foreground" htmlFor="routine-auto-commit-branch">{t("routines.autoCommitBranch")}</Label>
+                  <Input
+                    id="routine-auto-commit-branch"
+                    value={autoCommitBranch}
+                    onChange={(e) => setAutoCommitBranch(e.target.value)}
+                    placeholder={t("routines.autoCommitBranchPlaceholder")}
+                    className="h-8 font-mono text-xs"
+                  />
+                  <p className="text-[11px] text-muted-foreground">{t("routines.autoCommitBranchHint")}</p>
+                </div>
+                {autoCommitBranch.trim() ? (
+                  <label className="flex items-center justify-between gap-3 text-xs">
+                    <span>
+                      <span className="font-medium text-foreground">{t("routines.dropWorktreeTitle")}</span>
+                      <span className="block text-muted-foreground">
+                        {dropWorktreeOnCommit
+                          ? t("routines.dropWorktreeOn")
+                          : t("routines.dropWorktreeOff")}
+                      </span>
+                    </span>
+                    <input type="checkbox" className="peer sr-only" checked={dropWorktreeOnCommit} onChange={(e) => setDropWorktreeOnCommit(e.target.checked)} />
+                    <span className="relative h-5 w-9 shrink-0 rounded-full bg-muted transition after:absolute after:left-0.5 after:top-0.5 after:size-4 after:rounded-full after:bg-background after:shadow after:transition after:content-[''] peer-checked:bg-brand peer-checked:after:translate-x-4 peer-focus-visible:ring-2 peer-focus-visible:ring-ring" />
+                  </label>
+                ) : null}
+                {triggerType === "schedule" && (
+                  <label className="flex items-center justify-between gap-3 text-xs">
+                    <span>
+                      <span className="font-medium text-foreground">{t("routines.runOnSchedule")}</span>
+                      <span className="block text-muted-foreground">{scheduleEnabled ? t("routines.firesOnCron") : t("routines.pausedTimer")}</span>
+                    </span>
+                    <input type="checkbox" className="peer sr-only" checked={scheduleEnabled} onChange={(e) => setScheduleEnabled(e.target.checked)} />
+                    <span className="relative h-5 w-9 shrink-0 rounded-full bg-muted transition after:absolute after:left-0.5 after:top-0.5 after:size-4 after:rounded-full after:bg-background after:shadow after:transition after:content-[''] peer-checked:bg-brand peer-checked:after:translate-x-4 peer-focus-visible:ring-2 peer-focus-visible:ring-ring" />
+                  </label>
+                )}
               </FormSection>
 
-              <FormSection title="Context" icon={Tags}>
+              <FormSection title={t("routines.context")} icon={Tags}>
                 <div className="space-y-1.5">
-                  <Textarea value={context} onChange={(e) => setContext(e.target.value)} placeholder="Context" rows={3} />
+                  <Textarea value={context} onChange={(e) => setContext(e.target.value)} placeholder={t("routines.context")} rows={3} />
                 </div>
                 <div className="space-y-1.5">
-                  <Label className="text-xs text-muted-foreground">Required rover tags</Label>
-                  <TagEditor tags={requiredTags} onChange={setRequiredTags} placeholder="tag" />
+                  <Label className="text-xs text-muted-foreground">{t("routines.requiredTags")}</Label>
+                  <TagEditor tags={requiredTags} onChange={setRequiredTags} placeholder={t("routines.tagPlaceholder")} />
                 </div>
                 <div className="space-y-1.5">
-                  <Label className="text-xs text-muted-foreground">Excluded rover tags</Label>
-                  <TagEditor tags={excludedTags} onChange={setExcludedTags} placeholder="tag" />
+                  <Label className="text-xs text-muted-foreground">{t("routines.excludedTags")}</Label>
+                  <TagEditor tags={excludedTags} onChange={setExcludedTags} placeholder={t("routines.tagPlaceholder")} />
                 </div>
               </FormSection>
             </form>
@@ -332,7 +424,7 @@ export function RoutinesView() {
         </CardContent>
         {app.missions.length > 0 && (
           <CardFooter className="border-t border-border p-4">
-            <Button type="submit" form="routine-form" className="w-full" disabled={saving || !canSave}><SaveIcon /> {saving ? "Saving..." : editing ? "Save changes" : "Save routine"}</Button>
+            <Button type="submit" form="routine-form" className="w-full" disabled={saving || !canSave}><SaveIcon /> {saving ? t("routines.saving") : editing ? t("routines.saveChanges") : t("routines.save")}</Button>
           </CardFooter>
         )}
       </Card>
@@ -354,7 +446,10 @@ function FormSection({ title, icon: Icon, children }: { title: string; icon: Luc
 
 function RoutineRow({ routine, editing, onEdit }: { routine: Routine; editing: boolean; onEdit: (routine: Routine) => void }) {
   const app = useApp();
+  const t = useT();
   const [pulsing, setPulsing] = useState(false);
+  const [history, setHistory] = useState<Pulse[] | null>(null);
+  const [loadingHistory, setLoadingHistory] = useState(false);
   const mission = app.missions.find((m) => m.id === routine.mission_id);
   const trigger = routineTrigger(routine);
   const operation = routineOperation(routine);
@@ -362,17 +457,68 @@ function RoutineRow({ routine, editing, onEdit }: { routine: Routine; editing: b
   const excludedTags = operation.excluded_tags ?? [];
   const context = routineContext(routine);
   const triggerType = trigger.kind ?? "manual";
+  const scheduleOn = trigger.enabled ?? true;
   const priority = operation.priority ?? 0;
+  const skipActive = operation.skip_if_active ?? true;
+  const rePulse = operation.re_pulse_on_close ?? true;
+  const autoCommit = (operation.auto_commit_branch ?? "").trim();
+  const dropWorktree = operation.drop_worktree_on_commit ?? true;
 
   async function pulse() {
     setPulsing(true);
     try {
       const pulse = await app.pulseRoutine(routine.id);
       if (pulse?.operation_id) app.openOperation(pulse.operation_id);
+      if (history) {
+        const next = await app.listRoutinePulses(routine.id);
+        setHistory(next);
+      }
     } finally {
       setPulsing(false);
     }
   }
+
+  async function toggleHistory() {
+    if (history) {
+      setHistory(null);
+      return;
+    }
+    setLoadingHistory(true);
+    try {
+      setHistory(await app.listRoutinePulses(routine.id));
+    } finally {
+      setLoadingHistory(false);
+    }
+  }
+
+  async function toggleSchedule() {
+    const nextEnabled = !scheduleOn;
+    await app.updateRoutine(routine.id, {
+      mission_id: routine.mission_id,
+      title: routine.title,
+      body: routine.body,
+      metadata: {
+        ...routine.metadata,
+        trigger: {
+          kind: "schedule",
+          cron: trigger.cron,
+          enabled: nextEnabled,
+        },
+        operation: {
+          ...operation,
+          start_immediately: operation.start_immediately ?? true,
+          skip_if_active: skipActive,
+          re_pulse_on_close: rePulse,
+          ...(autoCommit
+            ? { auto_commit_branch: autoCommit, drop_worktree_on_commit: dropWorktree }
+            : {}),
+        },
+      },
+      operation_metadata: routine.operation_metadata,
+    });
+  }
+
+  const nextFallback = triggerType === "schedule" ? (scheduleOn ? t("routines.pending") : t("routines.paused")) : t("routines.manual");
 
   return (
     <div className={`rounded-md border p-3 text-sm ${editing ? "border-brand" : "border-border"}`}>
@@ -381,54 +527,87 @@ function RoutineRow({ routine, editing, onEdit }: { routine: Routine; editing: b
           <div className="flex min-w-0 items-center gap-2">
             <div className="truncate font-medium" title={routine.title}>{routine.title}</div>
             <Badge variant={triggerType === "schedule" ? "brand" : "secondary"} className="shrink-0 text-[10px]">
-              {triggerType === "schedule" ? "Schedule" : "Manual"}
+              {triggerType === "schedule" ? (scheduleOn ? t("routines.schedule") : t("routines.paused")) : t("routines.manual")}
             </Badge>
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
             <span className="min-w-0 truncate">
-              {mission ? <><span className="font-mono">{mission.key}</span> - {mission.name}</> : "Mission"}
+              {mission ? <><span className="font-mono">{mission.key}</span> - {mission.name}</> : t("routines.mission")}
             </span>
-            <span>{routineAssigneeLabel(routine, app)}</span>
-            <span>{operation.start_immediately ?? true ? "Auto-dispatch" : "Backlog"}</span>
-            <span className="flex items-center gap-1"><PriorityIcon level={priority} className="size-3.5" /> {PRIORITY[priority]?.label ?? "Priority"}</span>
+            <span>{routineAssigneeLabel(routine, app, t("common.crew"), t("common.unassigned"))}</span>
+            <span>{operation.start_immediately ?? true ? t("routines.startRightAway") : t("routines.createOnly")}</span>
+            <span>{skipActive ? t("routines.waitFinish") : t("routines.allowOverlap")}</span>
+            <span>{rePulse ? t("routines.keepGoing") : t("routines.stopFinished")}</span>
+            {autoCommit ? <span className="font-mono">{t("routines.autoCommitTo", { branch: autoCommit })}</span> : null}
+            {autoCommit ? <span>{dropWorktree ? t("routines.dropWorktreeShort") : t("routines.keepWorktreeShort")}</span> : null}
+            <span className="flex items-center gap-1"><PriorityIcon level={priority} className="size-3.5" /> {priorityLabel(priority)}</span>
           </div>
           <div className="mt-2 grid gap-1 text-[11px] text-muted-foreground sm:grid-cols-2">
-            <span className="min-w-0 truncate">{triggerType === "schedule" ? `Schedule ${trigger.cron ?? ""}` : "Manual Pulse"}</span>
-            <span className="min-w-0 truncate">Next Pulse {formatPulseTime(routine.next_pulse_at, triggerType === "schedule" ? "Pending" : "Manual")}</span>
-            <span className="min-w-0 truncate sm:col-span-2">Last Pulsed {formatPulseTime(routine.last_pulsed_at, "Never")}</span>
+            <span className="min-w-0 truncate">{triggerType === "schedule" ? t("routines.scheduleCron", { cron: trigger.cron ?? "" }) : t("routines.manualPulse")}</span>
+            <span className="min-w-0 truncate">{t("routines.nextPulse", { time: formatPulseTime(routine.next_pulse_at, nextFallback) })}</span>
+            <span className="min-w-0 truncate sm:col-span-2">{t("routines.lastPulsed", { time: formatPulseTime(routine.last_pulsed_at, t("common.never")) })}</span>
           </div>
         </div>
-        <Button variant="ghost" size="icon-sm" title="Edit routine" aria-label="Edit routine" onClick={() => onEdit(routine)}><Pencil /></Button>
-        <Button variant="ghost" size="icon-sm" title="Pulse routine" aria-label="Pulse routine" onClick={pulse} disabled={pulsing}><Play /></Button>
-        <Button variant="ghost" size="icon-sm" title="Delete routine" aria-label="Delete routine" onClick={() => app.deleteRoutine(routine.id)}><Trash2 /></Button>
+        <Button variant="ghost" size="icon-sm" title={t("routines.pulseHistory")} aria-label={t("routines.pulseHistory")} onClick={toggleHistory} disabled={loadingHistory}>
+          {loadingHistory ? <Loader2 className="animate-spin" /> : <Activity />}
+        </Button>
+        {triggerType === "schedule" && (
+          <Button variant="ghost" size="icon-sm" title={scheduleOn ? t("routines.pauseSchedule") : t("routines.resumeSchedule")} aria-label={scheduleOn ? t("routines.pauseSchedule") : t("routines.resumeSchedule")} onClick={toggleSchedule}>
+            {scheduleOn ? <Pause /> : <Play />}
+          </Button>
+        )}
+        <Button variant="ghost" size="icon-sm" title={t("routines.edit")} aria-label={t("routines.edit")} onClick={() => onEdit(routine)}><Pencil /></Button>
+        <Button variant="ghost" size="icon-sm" title={t("routines.pulseRoutine")} aria-label={t("routines.pulseRoutine")} onClick={pulse} disabled={pulsing}><Play /></Button>
+        <Button variant="ghost" size="icon-sm" title={t("routines.delete")} aria-label={t("routines.delete")} onClick={() => app.deleteRoutine(routine.id)}><Trash2 /></Button>
       </div>
 
       {(requiredTags.length > 0 || excludedTags.length > 0) && (
         <div className="mt-2 space-y-1">
           {requiredTags.length > 0 && (
             <div className="flex items-center gap-2">
-              <span className="w-14 shrink-0 text-[11px] uppercase text-muted-foreground">Require</span>
+              <span className="w-14 shrink-0 text-[11px] uppercase text-muted-foreground">{t("routines.require")}</span>
               <TagList tags={requiredTags} />
             </div>
           )}
           {excludedTags.length > 0 && (
             <div className="flex items-center gap-2">
-              <span className="w-14 shrink-0 text-[11px] uppercase text-muted-foreground">Exclude</span>
+              <span className="w-14 shrink-0 text-[11px] uppercase text-muted-foreground">{t("routines.exclude")}</span>
               <TagList tags={excludedTags} />
             </div>
           )}
         </div>
       )}
-      {context && <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">Context: {context}</p>}
+      {context && <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">{t("routines.contextPrefix", { context })}</p>}
       {routine.body && <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">{routine.body}</p>}
+      {history && (
+        <div className="mt-2 space-y-1 border-t border-border pt-2">
+          <div className="text-[11px] font-medium uppercase text-muted-foreground">{t("routines.history")}</div>
+          {history.length === 0 && <p className="text-xs text-muted-foreground">{t("routines.noHistoryPeriod")}</p>}
+          {history.map((p) => (
+            <div key={p.id} className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+              <span className="min-w-0 truncate">
+                <Badge variant="secondary" className="mr-1 text-[10px]">{p.status}</Badge>
+                {formatPulseTime(p.finished_at ?? p.created_at, p.created_at)}
+              </span>
+              {p.operation_id ? (
+                <button type="button" className="shrink-0 font-mono text-[11px] text-brand hover:underline" onClick={() => app.openOperation(p.operation_id!)}>
+                  {t("routines.open")}
+                </button>
+              ) : (
+                <span className="shrink-0 text-[11px]">—</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-function routineAssigneeLabel(routine: Routine, app: ReturnType<typeof useApp>) {
+function routineAssigneeLabel(routine: Routine, app: ReturnType<typeof useApp>, crewFallback: string, unassigned: string) {
   const assignee = routineOperation(routine).assignee;
   if (assignee?.type === "pilot") return pilotLabel(assignee.id ?? "");
-  if (assignee?.type === "crew") return app.crews.find((c) => c.id === assignee.id)?.name ?? "Crew";
+  if (assignee?.type === "crew") return app.crews.find((c) => c.id === assignee.id)?.name ?? crewFallback;
   if (assignee?.type === "user") return memberLabel(assignee.id ?? "", app.user, app.members);
-  return "Unassigned";
+  return unassigned;
 }

@@ -5,9 +5,11 @@ import { useApp } from "@/components/app-provider";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { useT } from "@/lib/i18n";
 
 export function RenameFleetDialog({ fleetId, name: initialName, trigger }: { fleetId: string; name: string; trigger: ReactNode }) {
   const app = useApp();
+  const t = useT();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState(initialName);
   const [saving, setSaving] = useState(false);
@@ -31,13 +33,13 @@ export function RenameFleetDialog({ fleetId, name: initialName, trigger }: { fle
       <DialogTrigger asChild>{trigger}</DialogTrigger>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Rename fleet</DialogTitle>
+          <DialogTitle>{t("fleet.renameTitle")}</DialogTitle>
         </DialogHeader>
         <form onSubmit={submit} className="space-y-3">
-          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Fleet name" autoFocus />
+          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={t("fleet.newName")} autoFocus />
           <div className="flex justify-end gap-2 pt-1">
-            <Button type="button" variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
-            <Button type="submit" disabled={saving}>{saving ? "Saving..." : "Save"}</Button>
+            <Button type="button" variant="ghost" onClick={() => setOpen(false)}>{t("common.cancel")}</Button>
+            <Button type="submit" disabled={saving}>{saving ? t("common.saving") : t("common.save")}</Button>
           </div>
         </form>
       </DialogContent>

@@ -45,6 +45,90 @@ func TestOperationStatusForRun(t *testing.T) {
 	}
 }
 
+func TestClearAuthCookiesMatchSetAttributes(t *testing.T) {
+	s := &Server{secureCookies: false}
+	rec := httptest.NewRecorder()
+	s.clearSessionCookie(rec)
+	s.clearAccessCookie(rec)
+	cookies := rec.Result().Cookies()
+	if len(cookies) != 2 {
+		t.Fatalf("cleared cookies = %d, want 2", len(cookies))
+	}
+	for _, c := range cookies {
+		if c.Path != "/" {
+			t.Errorf("%s Path = %q, want /", c.Name, c.Path)
+		}
+		if !c.HttpOnly {
+			t.Errorf("%s HttpOnly = false, want true", c.Name)
+		}
+		if c.SameSite != http.SameSiteLaxMode {
+			t.Errorf("%s SameSite = %v, want Lax", c.Name, c.SameSite)
+		}
+		if c.MaxAge != -1 {
+			t.Errorf("%s MaxAge = %d, want -1", c.Name, c.MaxAge)
+		}
+		if c.Secure {
+			t.Errorf("%s Secure = true, want false when secureCookies off", c.Name)
+		}
+	}
+	recSecure := httptest.NewRecorder()
+	s.secureCookies = true
+	s.clearSessionCookie(recSecure)
+	if got := recSecure.Result().Cookies(); len(got) == 0 || !got[0].Secure {
+		t.Fatalf("secure clear cookie Secure = false, want true")
+	}
+}
+
+func TestValidAuthEmail(t *testing.T) {
+	good := []string{"a@b.co", "user+tag@example.com", "x.y@sub.domain.io", "a@b..com"}
+	for _, e := range good {
+		if !validAuthEmail(e) {
+			t.Errorf("validAuthEmail(%q) = false, want true", e)
+		}
+	}
+	bad := []string{"", "nope", "@x.com", "a@", "a@b", strings.Repeat("a", maxEmailLen) + "@b.co"}
+	for _, e := range bad {
+		if validAuthEmail(e) {
+			t.Errorf("validAuthEmail(%q) = true, want false", e)
+		}
+	}
+	local := strings.Repeat("a", maxEmailLen-len("@b.co"))
+	if !validAuthEmail(local + "@b.co") {
+		t.Fatalf("validAuthEmail at maxEmailLen = false, want true")
+	}
+}
+
+func TestValidPasswordLength(t *testing.T) {
+	if validPasswordLength("short") || validPasswordLength(strings.Repeat("x", maxPasswordLen+1)) {
+		t.Fatal("out-of-range passwords accepted")
+	}
+	if !validPasswordLength(strings.Repeat("x", minPasswordLen)) || !validPasswordLength(strings.Repeat("x", maxPasswordLen)) {
+		t.Fatal("boundary passwords rejected")
+	}
+}
+
+func TestEmailLocalPart(t *testing.T) {
+	if got := emailLocalPart("alice@example.com"); got != "alice" {
+		t.Fatalf("emailLocalPart = %q, want alice", got)
+	}
+	if got := emailLocalPart("@example.com"); got != "user" {
+		t.Fatalf("emailLocalPart empty local = %q, want user", got)
+	}
+	longLocal := strings.Repeat("a", maxNameLen+10) + "@example.com"
+	if got := emailLocalPart(longLocal); len(got) != maxNameLen {
+		t.Fatalf("emailLocalPart long local len = %d, want %d", len(got), maxNameLen)
+	}
+}
+
+func TestValidDisplayName(t *testing.T) {
+	if validDisplayName("") || validDisplayName(strings.Repeat("n", maxNameLen+1)) {
+		t.Fatal("invalid display names accepted")
+	}
+	if !validDisplayName("A") || !validDisplayName(strings.Repeat("n", maxNameLen)) {
+		t.Fatal("valid display names rejected")
+	}
+}
+
 func TestValidPilotKind(t *testing.T) {
 	if !validPilotKind("claude") || !validPilotKind("codex") || !validPilotKind("antigravity") || !validPilotKind("opencode") || !validPilotKind("openclaw") || !validPilotKind("local_1") {
 		t.Fatal("known pilot kind rejected")
@@ -55,13 +139,13 @@ func TestValidPilotKind(t *testing.T) {
 }
 
 func TestRoverVersionAllowed(t *testing.T) {
-	s := &Server{minRoverVersion: "0.3.0", maxRoverVersion: "0.5.0"}
-	for _, version := range []string{"0.3.0", "v0.3.1", "0.5.0"} {
+	s := &Server{minRoverVersion: "0.3.0", maxRoverVersion: "0.6.0"}
+	for _, version := range []string{"0.3.0", "v0.3.1", "0.6.0"} {
 		if !s.roverVersionAllowed(version) {
 			t.Fatalf("version %q rejected", version)
 		}
 	}
-	for _, version := range []string{"", "dev", "0.2.9", "0.5.1"} {
+	for _, version := range []string{"", "dev", "0.2.9", "0.6.1"} {
 		if s.roverVersionAllowed(version) {
 			t.Fatalf("version %q accepted", version)
 		}

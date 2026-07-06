@@ -44,12 +44,14 @@ fn sample_accepted_run(pilot: &str) -> AcceptedRun {
         operation_worktree_name: "UFO-1-operation".to_string(),
         operation_created_at: "2026-06-18T18:18:18Z".to_string(),
         worktree_enabled: true,
+        worktree_base_ref: String::new(),
         status: "queued".to_string(),
         pilot: pilot.to_string(),
         prompt: String::new(),
         session_id: "session".to_string(),
         can_propose_sub_operations: false,
         assets: Vec::new(),
+        skills: vec![],
     }
 }
 
@@ -196,9 +198,9 @@ fn update_hint_matches_platform_installer_support() {
 fn upgrade_env_keeps_only_requested_values() {
     assert!(upgrade_env(Some("  "), None).is_empty());
     assert_eq!(
-        upgrade_env(Some(" v0.5.0 "), Some(Path::new("/opt/ufo"))),
+        upgrade_env(Some(" v0.6.0 "), Some(Path::new("/opt/ufo"))),
         vec![
-            ("UFO_ROVER_VERSION", "v0.5.0".to_string()),
+            ("UFO_ROVER_VERSION", "v0.6.0".to_string()),
             ("UFO_ROVER_INSTALL_DIR", "/opt/ufo".to_string())
         ]
     );
@@ -209,7 +211,7 @@ fn upgrade_env_keeps_only_requested_values() {
 fn homebrew_version_override_requires_real_value() {
     assert!(!has_homebrew_version_override(None));
     assert!(!has_homebrew_version_override(Some("  ")));
-    assert!(has_homebrew_version_override(Some("v0.5.0")));
+    assert!(has_homebrew_version_override(Some("v0.6.0")));
 }
 
 #[test]
@@ -652,7 +654,7 @@ fn work_directory_uses_source_worktree_for_git_diff() {
         fs::write(source.join("scratch.txt"), "untracked\n").unwrap();
         fs::write(source.join("ignored-secret.txt"), "secret\n").unwrap();
 
-        ensure_work_directory(&operation, Some(&source))
+        ensure_work_directory(&operation, Some(&source), "")
             .await
             .unwrap();
         assert_eq!(
@@ -707,7 +709,7 @@ fn source_apply_to_source_applies_only_when_touched_paths_are_clean() {
         git(&source, &["add", "."]).await.unwrap();
         git(&source, &["commit", "-q", "-m", "base"]).await.unwrap();
 
-        ensure_work_directory(&operation, Some(&source))
+        ensure_work_directory(&operation, Some(&source), "")
             .await
             .unwrap();
         fs::write(operation.join("README.md"), "applied\n").unwrap();
@@ -800,7 +802,7 @@ fn source_refresh_updates_from_source_head_without_conflict() {
         git(&source, &["add", "."]).await.unwrap();
         git(&source, &["commit", "-q", "-m", "base"]).await.unwrap();
 
-        ensure_work_directory(&operation, Some(&source))
+        ensure_work_directory(&operation, Some(&source), "")
             .await
             .unwrap();
         fs::write(operation.join("README.md"), "operation edit\n").unwrap();
@@ -854,7 +856,7 @@ fn source_refresh_conflict_keeps_operation_worktree_unchanged() {
         git(&source, &["add", "."]).await.unwrap();
         git(&source, &["commit", "-q", "-m", "base"]).await.unwrap();
 
-        ensure_work_directory(&operation, Some(&source))
+        ensure_work_directory(&operation, Some(&source), "")
             .await
             .unwrap();
         let original_head = git_head(&operation).await.unwrap();
@@ -881,6 +883,99 @@ fn source_refresh_conflict_keeps_operation_worktree_unchanged() {
 }
 
 #[test]
+fn drops_worktree_only_for_auto_loop_branch_success() {
+    assert!(drop_operation_worktree_after_branch_action(
+        "commit_to_branch",
+        "succeeded",
+        true
+    ));
+    assert!(drop_operation_worktree_after_branch_action(
+        "create_source_branch",
+        "succeeded",
+        true
+    ));
+    assert!(!drop_operation_worktree_after_branch_action(
+        "create_source_branch",
+        "succeeded",
+        false
+    ));
+    assert!(!drop_operation_worktree_after_branch_action(
+        "commit_to_branch",
+        "succeeded",
+        false
+    ));
+    assert!(!drop_operation_worktree_after_branch_action(
+        "commit_to_branch",
+        "failed",
+        true
+    ));
+    assert!(!drop_operation_worktree_after_branch_action(
+        "apply_to_source",
+        "succeeded",
+        true
+    ));
+}
+
+#[test]
+fn auto_loop_branch_success_removes_operation_worktree() {
+    let _guard = env_lock();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let base = std::env::temp_dir().join(format!(
+            "ufo-drop-worktree-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let source = base.join("source");
+        let operation = base.join("operation");
+        fs::create_dir_all(&source).unwrap();
+        init_test_git_repo(&source).await.unwrap();
+        fs::write(source.join("README.md"), "before\n").unwrap();
+        git(&source, &["add", "."]).await.unwrap();
+        git(&source, &["commit", "-q", "-m", "base"]).await.unwrap();
+
+        ensure_work_directory(&operation, Some(&source), "")
+            .await
+            .unwrap();
+        fs::write(operation.join("README.md"), "on-branch\n").unwrap();
+        let action = AcceptedSourceAction {
+            id: "action".to_string(),
+            operation_id: "operation".to_string(),
+            operation_title: "Branch work".to_string(),
+            operation_worktree_name: "UFO-9-drop".to_string(),
+            operation_created_at: "2026-06-18T18:18:18Z".to_string(),
+            kind: "commit_to_branch".to_string(),
+            branch_name: "self-dev/skill-bindings".to_string(),
+            drop_worktree_on_success: true,
+        };
+
+        let report = branch_operation_changes(&source, &operation, &action, true)
+            .await
+            .unwrap();
+        assert_eq!(report.status, "succeeded");
+
+        if drop_operation_worktree_after_branch_action(
+            &action.kind,
+            &report.status,
+            action.drop_worktree_on_success,
+        ) {
+            remove_worktree(&source, &operation).await;
+        }
+        assert!(
+            !operation.exists() || !operation.join(".git").exists(),
+            "auto-loop worktree should be removed after branch lands"
+        );
+        assert_eq!(
+            git(&source, &["show", "self-dev/skill-bindings:README.md"])
+                .await
+                .unwrap(),
+            "on-branch\n"
+        );
+        let _ = fs::remove_dir_all(base);
+    });
+}
+
+#[test]
 fn source_branch_commits_operation_changes_without_switching_source() {
     let _guard = env_lock();
     tokio::runtime::Runtime::new().unwrap().block_on(async {
@@ -898,7 +993,7 @@ fn source_branch_commits_operation_changes_without_switching_source() {
         git(&source, &["add", "."]).await.unwrap();
         git(&source, &["commit", "-q", "-m", "base"]).await.unwrap();
 
-        ensure_work_directory(&operation, Some(&source))
+        ensure_work_directory(&operation, Some(&source), "")
             .await
             .unwrap();
         fs::write(operation.join("README.md"), "branched\n").unwrap();
@@ -910,9 +1005,10 @@ fn source_branch_commits_operation_changes_without_switching_source() {
             operation_created_at: "2026-06-18T18:18:18Z".to_string(),
             kind: "create_source_branch".to_string(),
             branch_name: "ufo/UFO-2-branch-work".to_string(),
+            drop_worktree_on_success: false,
         };
 
-        let report = branch_operation_changes(&source, &operation, &action)
+        let report = branch_operation_changes(&source, &operation, &action, false)
             .await
             .unwrap();
 
@@ -934,7 +1030,7 @@ fn source_branch_commits_operation_changes_without_switching_source() {
             .await
             .unwrap();
 
-        let recreated = branch_operation_changes(&source, &operation, &action)
+        let recreated = branch_operation_changes(&source, &operation, &action, false)
             .await
             .unwrap();
 
@@ -951,7 +1047,7 @@ fn source_branch_commits_operation_changes_without_switching_source() {
             .unwrap();
         fs::write(operation.join("README.md"), "branched again\n").unwrap();
 
-        let updated = branch_operation_changes(&source, &operation, &action)
+        let updated = branch_operation_changes(&source, &operation, &action, false)
             .await
             .unwrap();
 
@@ -962,6 +1058,19 @@ fn source_branch_commits_operation_changes_without_switching_source() {
                 .await
                 .unwrap(),
             "branched again\n"
+        );
+
+        fs::write(operation.join("README.md"), "self-dev iteration\n").unwrap();
+        let iterate = branch_operation_changes(&source, &operation, &action, true)
+            .await
+            .unwrap();
+        assert_eq!(iterate.status, "succeeded");
+        assert_ne!(iterate.commit_sha, updated.commit_sha);
+        assert_eq!(
+            git(&source, &["show", "ufo/UFO-2-branch-work:README.md"])
+                .await
+                .unwrap(),
+            "self-dev iteration\n"
         );
 
         let _ = fs::remove_dir_all(base);
@@ -986,10 +1095,10 @@ fn marker_work_directory_migrates_to_source_worktree_and_keeps_assets() {
         git(&source, &["add", "."]).await.unwrap();
         git(&source, &["commit", "-q", "-m", "base"]).await.unwrap();
 
-        ensure_work_directory(&operation, None).await.unwrap();
+        ensure_work_directory(&operation, None, "").await.unwrap();
         fs::create_dir_all(operation.join("assets")).unwrap();
         fs::write(operation.join("assets").join("note.txt"), "asset\n").unwrap();
-        ensure_work_directory(&operation, Some(&source))
+        ensure_work_directory(&operation, Some(&source), "")
             .await
             .unwrap();
 
@@ -1027,7 +1136,7 @@ fn work_directory_fails_when_source_worktree_cannot_be_created() {
         fs::create_dir_all(&operation).unwrap();
         fs::write(operation.join("stray.txt"), "not a worktree\n").unwrap();
 
-        let err = ensure_work_directory(&operation, Some(&source))
+        let err = ensure_work_directory(&operation, Some(&source), "")
             .await
             .unwrap_err()
             .to_string();
@@ -1036,7 +1145,7 @@ fn work_directory_fails_when_source_worktree_cannot_be_created() {
 
         let file_operation = base.join("operation-file");
         fs::write(&file_operation, "not a directory\n").unwrap();
-        let err = ensure_work_directory(&file_operation, Some(&source))
+        let err = ensure_work_directory(&file_operation, Some(&source), "")
             .await
             .unwrap_err()
             .to_string();
@@ -1076,7 +1185,7 @@ fn work_directory_rejects_unrelated_existing_git_repo() {
             .await
             .unwrap();
 
-        let err = ensure_work_directory(&operation, Some(&source))
+        let err = ensure_work_directory(&operation, Some(&source), "")
             .await
             .unwrap_err()
             .to_string();
@@ -1101,11 +1210,11 @@ fn fallback_work_directory_requires_ufo_marker() {
                 .unwrap_or_default()
         ));
         let operation = base.join("operation");
-        ensure_work_directory(&operation, None).await.unwrap();
+        ensure_work_directory(&operation, None, "").await.unwrap();
         fs::create_dir_all(operation.join("assets")).unwrap();
         fs::write(operation.join("assets").join("note.txt"), "asset\n").unwrap();
         fs::write(operation.join("note.txt"), "pilot edit\n").unwrap();
-        ensure_work_directory(&operation, None).await.unwrap();
+        ensure_work_directory(&operation, None, "").await.unwrap();
         git(&operation, &["add", "-N", "."]).await.unwrap();
         let diff = git_diff(&operation).await.unwrap();
         assert!(diff.contains("pilot edit"));
@@ -1120,7 +1229,7 @@ fn fallback_work_directory_requires_ufo_marker() {
             .await
             .unwrap();
 
-        let err = ensure_work_directory(&unrelated, None)
+        let err = ensure_work_directory(&unrelated, None, "")
             .await
             .unwrap_err()
             .to_string();
@@ -1676,6 +1785,15 @@ fn dashboard_event_detail_freezes_selected_event() {
 fn dashboard_event_rows_fit_terminal_height() {
     assert_eq!(event_rows_for_height(60, 1, 0), EVENT_ROWS);
     assert_eq!(event_rows_for_height(23, 1, 1), 1);
+    assert_eq!(event_rows_for_height(65, 13, 10), EVENT_ROWS - 1);
+}
+
+#[test]
+fn dashboard_home_windows_many_rovers_units_and_operations() {
+    let (rover_rows, operation_rows) = fit_dashboard_body_rows(36, 89, 81, true, true);
+
+    assert_eq!(rover_rows + operation_rows, 12);
+    assert!(visible_window(80, 79, operation_rows - 1).contains(&79));
 }
 
 #[test]

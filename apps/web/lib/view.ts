@@ -8,8 +8,6 @@ export const DRAFT_SAVE_DELAY_SECONDS = 10;
 const DEFAULT_VISIBLE = ["backlog", "todo", "in_progress", "in_review", "done"];
 const KEY = "ufo.visibleStatuses";
 
-// Persisted, customizable board view: which status columns are shown. blocked +
-// canceled are hidden by default and live behind the "Columns" menu.
 export function useVisibleStatuses() {
   const [visible, setVisible] = useState<string[]>(DEFAULT_VISIBLE);
 
@@ -23,7 +21,6 @@ export function useVisibleStatuses() {
   }, []);
 
   const persist = (next: string[]) => {
-    // keep canonical board order
     const ordered = ALL_STATUSES.filter((s) => next.includes(s));
     setVisible(ordered);
     try {
@@ -39,7 +36,6 @@ export function useVisibleStatuses() {
   return { visible, toggle };
 }
 
-// Card properties that can be shown/hidden on board cards + list rows.
 export const CARD_PROPS = ["priority", "description", "assignee", "dates", "mission", "labels", "subOperationProgress"] as const;
 export type CardProp = (typeof CARD_PROPS)[number];
 export type ViewMode = "board" | "list" | "swimlane";
@@ -49,9 +45,6 @@ export type AssetViewMode = "grid" | "compact_grid" | "list";
 
 export const SORTS = ["created_desc", "created_asc", "priority", "due", "title"] as const;
 export type SortKey = (typeof SORTS)[number];
-export const SORT_LABEL: Record<SortKey, string> = {
-  created_desc: "Newest", created_asc: "Oldest", priority: "Priority", due: "Due date", title: "Title",
-};
 
 const CP_KEY = "ufo.cardProps";
 const MODE_KEY = "ufo.boardMode";
@@ -62,8 +55,6 @@ const ASSET_VIEW_KEY = "ufo.assetView";
 const ASSET_PANEL_OPEN_KEY = "ufo.assetPanelOpen";
 const TELEMETRY_SHOW_ALL_KEY = "ufo.telemetryShowAll";
 
-// Order loaded operations within a column/lane. Default (created_desc) is the
-// native fetch order; the rest sort the currently-loaded set client-side.
 export function sortOperations(items: Operation[], sort: SortKey): Operation[] {
   const a = [...items];
   switch (sort) {
@@ -85,7 +76,6 @@ export function sortOperations(items: Operation[], sort: SortKey): Operation[] {
   }
 }
 
-// Persisted display prefs: enabled card properties + view mode + sort.
 export function useBoardDisplay() {
   const [cardProps, setCardProps] = useState<Set<CardProp>>(new Set(CARD_PROPS));
   const [mode, setModeState] = useState<ViewMode>("board");

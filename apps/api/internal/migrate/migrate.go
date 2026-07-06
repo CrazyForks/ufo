@@ -1,5 +1,3 @@
-// Package migrate applies the embedded SQL files on startup, in lexical order,
-// each exactly once (tracked in schema_migrations).
 package migrate
 
 import (
@@ -21,13 +19,8 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
-// migrationLockKey is a fixed advisory-lock id so that with multiple API
-// instances booting at once, exactly one runs DDL at a time.
 const migrationLockKey int64 = 8675309
 
-// Run executes every embedded .sql file in lexical order, holding a session-level
-// advisory lock for the duration so concurrent instances serialize rather than
-// racing on DDL.
 func Run(ctx context.Context, pool *pgxpool.Pool) error {
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
@@ -55,7 +48,6 @@ func Run(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 	sort.Strings(files)
 
-	// Track applied migrations so each file runs exactly once, in order.
 	if _, err := conn.Exec(ctx,
 		`create table if not exists schema_migrations (
 			name text primary key,

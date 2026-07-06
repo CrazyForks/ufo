@@ -127,9 +127,11 @@ Project conventions, not suggestions. Read before changing code.
 
 ## Documentation
 
-- Wrap Markdown prose greedily at 78 columns (fill each line before breaking).
-  This applies to text only — code blocks, tables, and unbreakable tokens
-  (URLs, paths) are exempt.
+- Wrap Markdown prose greedily at 78 columns: keep filling the current source
+  line until the next word, CJK phrase, inline code/link, or punctuation group
+  would exceed 78. Do not wrap Chinese early just because rendered glyphs are
+  wide. This applies to text only; code blocks, tables, diagrams, badges, and
+  unbreakable tokens (URLs, paths) are exempt.
 - `THIRD_PARTY_NOTICES.md` reproduces third-party license texts and must stay
   verbatim.
 - Document new or changed user-facing env vars and workflows in README (and

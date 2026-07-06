@@ -7,9 +7,11 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { useT } from "@/lib/i18n";
 
 export function NewFleetDialog({ trigger }: { trigger?: ReactNode }) {
   const app = useApp();
+  const t = useT();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [context, setContext] = useState("");
@@ -29,19 +31,19 @@ export function NewFleetDialog({ trigger }: { trigger?: ReactNode }) {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        {trigger ?? <Button variant="ghost" size="icon-sm" title="New fleet"><Plus /></Button>}
+        {trigger ?? <Button variant="ghost" size="icon-sm" title={t("fleet.newTitle")}><Plus /></Button>}
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>New fleet</DialogTitle>
+          <DialogTitle>{t("fleet.newTitle")}</DialogTitle>
         </DialogHeader>
         <form onSubmit={submit} className="space-y-3">
-          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Fleet name" autoFocus />
-          <Textarea value={context} onChange={(e) => setContext(e.target.value)} placeholder="Context (root repo, default branch, constraints...)" className="min-h-20 resize-y text-sm" />
-          <p className="text-xs text-muted-foreground">A group fleet you can invite teammates to and manage.</p>
+          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={t("fleet.newName")} autoFocus />
+          <Textarea value={context} onChange={(e) => setContext(e.target.value)} placeholder={t("fleet.contextPlaceholder")} className="min-h-20 resize-y text-sm" />
+          <p className="text-xs text-muted-foreground">{t("fleet.hint")}</p>
           <div className="flex justify-end gap-2 pt-1">
-            <Button type="button" variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
-            <Button type="submit" disabled={creating}>{creating ? "Creating…" : "Create"}</Button>
+            <Button type="button" variant="ghost" onClick={() => setOpen(false)}>{t("common.cancel")}</Button>
+            <Button type="submit" disabled={creating}>{creating ? t("auth.creating") : t("common.create")}</Button>
           </div>
         </form>
       </DialogContent>

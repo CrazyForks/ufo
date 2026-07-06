@@ -8,12 +8,14 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatusIcon } from "@/components/status-icon";
 import { getJSON, withFleet } from "@/lib/api";
+import { useT, type MessageKey } from "@/lib/i18n";
 import { initials, operationCode } from "@/lib/labels";
 import type { Operation } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 export function UserProfileView() {
   const app = useApp();
+  const t = useT();
   const profile = app.userProfile;
   const member = profile ? app.members.find((m) => m.id === profile.id) : null;
   const self = profile?.id === app.user.id;
@@ -34,14 +36,14 @@ export function UserProfileView() {
   return (
     <div className="flex h-full flex-col">
       <header className="ufo-topbar flex h-12 shrink-0 items-center gap-2 border-b border-border px-3">
-        <Button type="button" variant="ghost" size="icon-sm" title="Back" aria-label="Back" onClick={() => app.openUser(null)}>
+        <Button type="button" variant="ghost" size="icon-sm" title={t("common.back")} aria-label={t("common.back")} onClick={() => app.openUser(null)}>
           <ArrowLeft className="size-4" />
         </Button>
-        <h1 className="text-sm font-semibold">Profile</h1>
+        <h1 className="text-sm font-semibold">{t("profile.title")}</h1>
       </header>
       <div className="mx-auto w-full max-w-lg flex-1 space-y-4 overflow-y-auto p-4">
         {!profile ? (
-          <p className="text-sm text-muted-foreground">Loading profile…</p>
+          <p className="text-sm text-muted-foreground">{t("profile.loading")}</p>
         ) : (
           <>
             <Card>
@@ -50,33 +52,33 @@ export function UserProfileView() {
                   <Avatar className="size-10">
                     <AvatarFallback className="text-sm">{initials(profile.name || member?.email || "?")}</AvatarFallback>
                   </Avatar>
-                  <span className="min-w-0 truncate">{profile.name || "Unnamed"}{self ? " (you)" : ""}</span>
+                  <span className="min-w-0 truncate">{profile.name || t("profile.unnamed")}{self ? t("profile.youSuffix") : ""}</span>
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-3 text-sm">
                 <div>
-                  <p className="text-xs font-medium uppercase text-muted-foreground">Name</p>
+                  <p className="text-xs font-medium uppercase text-muted-foreground">{t("profile.name")}</p>
                   <p className="mt-0.5">{profile.name || "—"}</p>
                 </div>
                 {member && (
                   <div>
-                    <p className="text-xs font-medium uppercase text-muted-foreground">Fleet role</p>
-                    <p className="mt-0.5 capitalize">{member.role}</p>
+                    <p className="text-xs font-medium uppercase text-muted-foreground">{t("profile.fleetRole")}</p>
+                    <p className="mt-0.5">{member.role === "owner" || member.role === "admin" || member.role === "member" ? t(`members.role.${member.role}` as MessageKey) : member.role}</p>
                   </div>
                 )}
                 {self && (
-                  <p className="text-xs text-muted-foreground">Email and account settings are under Settings.</p>
+                  <p className="text-xs text-muted-foreground">{t("profile.settingsHint")}</p>
                 )}
               </CardContent>
             </Card>
 
             <Card>
               <CardHeader>
-                <CardTitle className="text-sm">Mutual fleets</CardTitle>
+                <CardTitle className="text-sm">{t("profile.mutualFleets")}</CardTitle>
               </CardHeader>
               <CardContent>
                 {profile.fleets.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">None in common.</p>
+                  <p className="text-xs text-muted-foreground">{t("profile.noneInCommon")}</p>
                 ) : (
                   <ul className="space-y-1">
                     {profile.fleets.map((f) => (
@@ -92,13 +94,13 @@ export function UserProfileView() {
 
             <Card>
               <CardHeader>
-                <CardTitle className="text-sm">Operations involved</CardTitle>
+                <CardTitle className="text-sm">{t("profile.operationsInvolved")}</CardTitle>
               </CardHeader>
               <CardContent>
                 {ops == null ? (
-                  <p className="text-xs text-muted-foreground">Loading…</p>
+                  <p className="text-xs text-muted-foreground">{t("profile.loadingShort")}</p>
                 ) : ops.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">None in this fleet.</p>
+                  <p className="text-xs text-muted-foreground">{t("profile.noneInFleet")}</p>
                 ) : (
                   <ul className="space-y-1">
                     {ops.map((op) => (

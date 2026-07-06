@@ -1,4 +1,3 @@
-// Public ids are opaque strings; the API never exposes internal numeric ids.
 export type User = { id: string; email: string; name: string; created_at: string; updated_at: string };
 export type UserProfile = { id: string; name: string; fleets: Fleet[] };
 export type Fleet = { id: string; name: string; kind: string; metadata: Record<string, unknown>; created_at: string; updated_at: string };
@@ -6,17 +5,22 @@ export type Member = { id: string; email: string; name: string; role: string; cr
 export type Invitation = { id: string; invitee_email: string; role: string; status: string; created_at: string; updated_at: string; expires_at: string };
 export type MyInvite = { id: string; fleet_id: string; fleet_name: string; role: string; invitee_email: string };
 export type Mission = { id: string; name: string; key: string; metadata: Record<string, unknown>; created_at: string; updated_at: string };
-// A pilot kind with how many fleet rovers it can drive.
 export type Pilot = { kind: string; rovers: number; online_rovers: number };
 export type CrewMember = { member_type: string; member_id: string; role: string; created_at: string; updated_at: string };
 export type Crew = { id: string; name: string; created_at: string; updated_at: string; members?: CrewMember[] };
 export type Label = { id: string; name: string; color: string; created_at: string; updated_at: string };
+export type SkillFile = { path: string; content: string; size_bytes: number; created_at: string; updated_at: string };
+export type Skill = { id: string; name: string; slug: string; description: string; archived: boolean; files: SkillFile[]; created_at: string; updated_at: string };
 export type AssigneeType = "pilot" | "user" | "crew";
 export type RoutineTriggerType = "manual" | "schedule";
 export type RoutineMetadata = {
-  trigger?: { kind?: RoutineTriggerType; cron?: string };
+  trigger?: { kind?: RoutineTriggerType; cron?: string; enabled?: boolean };
   operation?: {
     start_immediately?: boolean;
+    skip_if_active?: boolean;
+    re_pulse_on_close?: boolean;
+    auto_commit_branch?: string;
+    drop_worktree_on_commit?: boolean;
     priority?: number;
     assignee?: { type?: AssigneeType; id?: string };
     required_tags?: string[];
@@ -59,7 +63,7 @@ export type SourceAction = {
   operation_id: string;
   run_id: string | null;
   rover_id: string | null;
-  kind: "apply_to_source" | "create_source_branch" | "refresh_from_source";
+  kind: "apply_to_source" | "create_source_branch" | "commit_to_branch" | "refresh_from_source";
   status: "queued" | "accepted" | "succeeded" | "failed" | "conflicted";
   branch_name: string;
   commit_sha: string;
@@ -116,6 +120,45 @@ export type Comment = {
   created_at: string;
   updated_at: string;
 };
+export type RunUsage = {
+  provider?: string;
+  model?: string;
+  source?: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
+  reasoning_tokens?: number;
+  total_tokens: number;
+  duration_ms?: number | null;
+  cost_micros?: number | null;
+  metadata?: Record<string, unknown>;
+  created_at: string;
+};
+
+export type UsageTotals = {
+  runs: number;
+  total_tokens: number;
+  cost_micros: number;
+  max_runs?: number | null;
+  max_tokens?: number | null;
+  max_usd_micros?: number | null;
+};
+
+export type MissionUsage = UsageTotals & {
+  id: string;
+  key: string;
+  name: string;
+};
+
+export type UsageSummary = {
+  period: "calendar_week" | "calendar_month";
+  period_key: string;
+  start_at: string;
+  end_at: string;
+  fleet: UsageTotals;
+  missions: MissionUsage[];
+};
 export type Run = {
   id: string;
   operation_id: string;
@@ -123,6 +166,7 @@ export type Run = {
   status: string;
   needs_input?: boolean;
   metadata: Record<string, unknown>;
+  usage?: RunUsage | null;
   created_at: string;
   updated_at: string;
 };
@@ -205,7 +249,6 @@ export const BOARD_COLUMNS: { key: string; label: string }[] = [
   { key: "blocked", label: "Blocked" },
 ];
 
-// Tailwind text/bg color classes per status (semantic tokens).
 export const STATUS_TEXT: Record<string, string> = {
   backlog: "text-muted-foreground",
   todo: "text-foreground",

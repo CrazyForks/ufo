@@ -14,6 +14,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { CrewOption, PilotOption } from "@/components/assignee-select";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useT } from "@/lib/i18n";
 import { pilotLabel, userLabel } from "@/lib/labels";
 import { DRAFT_SAVE_DELAY_SECONDS } from "@/lib/view";
 import type { Asset } from "@/lib/types";
@@ -55,6 +56,7 @@ function writeOperationCreateDraft(draft: OperationCreateDraft) {
 
 export function NewOperationDialog() {
   const app = useApp();
+  const t = useT();
   const savedDraft = readOperationCreateDraft();
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState(savedDraft.title);
@@ -110,13 +112,30 @@ export function NewOperationDialog() {
     e.preventDefault();
     if (creating || !title.trim() || !mission) return;
     setCreating(true);
-    const a =
-      assignee === "me"
-        ? { assignee_type: "user", assignee_id: app.user.id }
-        : (() => { const [k, id] = assignee.split(":"); return { assignee_type: k, assignee_id: id }; })();
-    const op = await app.createOperation({ title, body, mission_id: mission, start_immediately: startNow, sub_operations_enabled: subOperationsEnabled, asset_ids: assets.map((asset) => asset.id), ...a });
-    setCreating(false);
-    if (op) { sessionStorage.removeItem(OPERATION_CREATE_DRAFT_KEY); draftRef.current = defaultOperationCreateDraft(); setTitle(""); setBody(""); setAssignee("me"); setStartImmediately(true); setSubOperationsEnabled(true); setMissionId(""); setAssets([]); setOpen(false); app.openOperation(op.id); }
+    try {
+      const a =
+        assignee === "me"
+          ? { assignee_type: "user", assignee_id: app.user.id }
+          : (() => { const [k, id] = assignee.split(":"); return { assignee_type: k, assignee_id: id }; })();
+      const op = await app.createOperation({ title, body, mission_id: mission, start_immediately: startNow, sub_operations_enabled: subOperationsEnabled, asset_ids: assets.map((asset) => asset.id), ...a });
+      if (op) {
+        sessionStorage.removeItem(OPERATION_CREATE_DRAFT_KEY);
+        draftRef.current = defaultOperationCreateDraft();
+        setTitle("");
+        setBody("");
+        setAssignee("me");
+        setStartImmediately(true);
+        setSubOperationsEnabled(true);
+        setMissionId("");
+        setAssets([]);
+        setOpen(false);
+        app.openOperation(op.id);
+      } else {
+        saveCurrentDraft();
+      }
+    } finally {
+      setCreating(false);
+    }
   }
 
   async function onFiles(files: FileList | null) {
@@ -148,7 +167,7 @@ export function NewOperationDialog() {
     try {
       const res = await del(`/api/v1/assets/${asset.id}`);
       if (!res.ok) {
-        setAssetDeleteError("Could not delete this file.");
+        setAssetDeleteError(t("op.deleteFileFailed"));
         return;
       }
       setAssets((prev) => prev.filter((item) => item.id !== asset.id));
@@ -167,15 +186,18 @@ export function NewOperationDialog() {
     <>
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button size="sm"><Plus /> New operation</Button>
+        <Button size="sm"><Plus /> {t("op.new")}</Button>
       </DialogTrigger>
-      <DialogContent>
+      <DialogContent
+        onPointerDownOutside={(e) => e.preventDefault()}
+        onInteractOutside={(e) => e.preventDefault()}
+      >
         <DialogHeader>
-          <DialogTitle>New operation</DialogTitle>
+          <DialogTitle>{t("op.new")}</DialogTitle>
         </DialogHeader>
         {app.missions.length === 0 ? (
           <p className="py-4 text-sm text-muted-foreground">
-            Create a mission first — every operation belongs to one. Head to the Missions section to add one.
+            {t("op.needMission")}
           </p>
         ) : (
         <form
@@ -189,17 +211,17 @@ export function NewOperationDialog() {
           }}
           className="space-y-3"
         >
-          <Input value={title} onChange={(e) => { draftRef.current = { ...draftRef.current, title: e.target.value }; setTitle(e.target.value); }} placeholder="Title" autoFocus />
+          <Input value={title} onChange={(e) => { draftRef.current = { ...draftRef.current, title: e.target.value }; setTitle(e.target.value); }} placeholder={t("op.titlePlaceholder")} autoFocus />
           <div className="space-y-1.5">
             <Textarea
               value={body}
               onChange={(e) => { draftRef.current = { ...draftRef.current, body: e.target.value }; setBody(e.target.value); }}
-              placeholder="What should happen? (the prompt for the assigned pilot)"
+              placeholder={t("op.bodyPlaceholderPilot")}
               rows={4}
             />
             <input ref={uploadRef} type="file" multiple className="sr-only" onChange={(e) => onFiles(e.target.files)} />
             <div className="flex items-center gap-1">
-              <Button type="button" variant="ghost" size="icon-sm" className="text-muted-foreground" title="Upload files" aria-label="Upload files" disabled={uploading} onClick={() => uploadRef.current?.click()}>
+              <Button type="button" variant="ghost" size="icon-sm" className="text-muted-foreground" title={t("op.uploadFiles")} aria-label={t("op.uploadFiles")} disabled={uploading} onClick={() => uploadRef.current?.click()}>
                 {uploading ? <Loader2 className="size-3 animate-spin" /> : <Paperclip className="size-3" />}
               </Button>
             </div>
@@ -211,7 +233,7 @@ export function NewOperationDialog() {
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <Label className="text-xs text-muted-foreground">Assignee</Label>
+              <Label className="text-xs text-muted-foreground">{t("common.assignee")}</Label>
               <Select value={assignee} onValueChange={setAssigneeAndStart}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -223,9 +245,9 @@ export function NewOperationDialog() {
               </Select>
             </div>
             <div className="space-y-1.5">
-              <Label className="text-xs text-muted-foreground">Mission</Label>
+              <Label className="text-xs text-muted-foreground">{t("common.mission")}</Label>
               <Select value={mission} onValueChange={(value) => { draftRef.current = { ...draftRef.current, missionId: value }; setMissionId(value); }}>
-                <SelectTrigger><SelectValue placeholder="Select a mission" /></SelectTrigger>
+                <SelectTrigger><SelectValue placeholder={t("op.selectMission")} /></SelectTrigger>
                 <SelectContent>
                   {app.missions.map((m) => <SelectItem key={m.id} value={String(m.id)}><span className="font-mono text-xs">{m.key}</span> · {m.name}</SelectItem>)}
                 </SelectContent>
@@ -234,9 +256,9 @@ export function NewOperationDialog() {
           </div>
           <label className="flex items-center justify-between gap-3 text-xs">
             <span>
-              <span className="font-medium text-foreground">Run automatically</span>
+              <span className="font-medium text-foreground">{t("op.runAutomatically")}</span>
               <span className="block text-muted-foreground">
-                {canStartImmediately ? "Dispatch when created" : "Human-only assignments stay in Backlog"}
+                {canStartImmediately ? t("op.dispatchWhenCreated") : t("op.humanOnlyBacklog")}
               </span>
             </span>
             <input
@@ -250,8 +272,8 @@ export function NewOperationDialog() {
           </label>
           <label className="flex items-center justify-between gap-3 text-xs">
             <span>
-              <span className="font-medium text-foreground">Allow sub-operations</span>
-              <span className="block text-muted-foreground">Crew captains may split this operation</span>
+              <span className="font-medium text-foreground">{t("op.allowSubOps")}</span>
+              <span className="block text-muted-foreground">{t("op.crewCaptainsSplit")}</span>
             </span>
             <input
               type="checkbox"
@@ -262,8 +284,8 @@ export function NewOperationDialog() {
             <span className="relative h-5 w-9 shrink-0 rounded-full bg-muted transition after:absolute after:left-0.5 after:top-0.5 after:size-4 after:rounded-full after:bg-background after:shadow after:transition after:content-[''] peer-checked:bg-brand peer-checked:after:translate-x-4 peer-focus-visible:ring-2 peer-focus-visible:ring-ring" />
           </label>
           <div className="flex justify-end gap-2 pt-1">
-            <Button type="button" variant="ghost" onClick={() => { sessionStorage.removeItem(OPERATION_CREATE_DRAFT_KEY); draftRef.current = defaultOperationCreateDraft(); setTitle(""); setBody(""); setAssignee("me"); setStartImmediately(true); setSubOperationsEnabled(true); setMissionId(""); setAssets([]); setOpen(false); }}>Cancel</Button>
-            <Button type="submit" disabled={creating}>{creating ? "Creating…" : "Create"}</Button>
+            <Button type="button" variant="ghost" onClick={() => { sessionStorage.removeItem(OPERATION_CREATE_DRAFT_KEY); draftRef.current = defaultOperationCreateDraft(); setTitle(""); setBody(""); setAssignee("me"); setStartImmediately(true); setSubOperationsEnabled(true); setMissionId(""); setAssets([]); setOpen(false); }}>{t("common.cancel")}</Button>
+            <Button type="submit" disabled={creating}>{creating ? t("auth.creating") : t("common.create")}</Button>
           </div>
         </form>
         )}

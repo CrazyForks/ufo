@@ -10,32 +10,34 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { TagEditor, TagList } from "@/components/tag-editor";
 import { PilotIcon } from "@/components/pilot-icon";
+import { t as translate, useT, type MessageKey } from "@/lib/i18n";
 import { pilotLabel } from "@/lib/labels";
 import { SECTION_ICONS } from "@/lib/section-icons";
 import { cn } from "@/lib/utils";
+import { BudgetEditor } from "@/components/budget-editor";
 
-const ROVER_STATUS: Record<string, { label: string; icon: LucideIcon; color: string }> = {
-  online: { label: "Online", icon: Circle, color: "text-success" },
-  full: { label: "Full", icon: CircleDot, color: "text-warning" },
-  offline: { label: "Offline", icon: CircleOff, color: "text-muted-foreground" },
+const ROVER_STATUS: Record<string, { labelKey: MessageKey; icon: LucideIcon; color: string }> = {
+  online: { labelKey: "rovers.online", icon: Circle, color: "text-success" },
+  full: { labelKey: "rovers.full", icon: CircleDot, color: "text-warning" },
+  offline: { labelKey: "rovers.offline", icon: CircleOff, color: "text-muted-foreground" },
 };
-const EXPIRY_OPTIONS = [
-  ["1", "1 day"],
-  ["3", "3 days"],
-  ["7", "7 days"],
-  ["15", "15 days"],
-  ["30", "30 days"],
-  ["90", "90 days"],
-  ["180", "180 days"],
-  ["365", "1 year"],
-  ["never", "Never"],
-] as const;
+const EXPIRY_OPTIONS: { value: string; labelKey: MessageKey }[] = [
+  { value: "1", labelKey: "rovers.expiry.1" },
+  { value: "3", labelKey: "rovers.expiry.3" },
+  { value: "7", labelKey: "rovers.expiry.7" },
+  { value: "15", labelKey: "rovers.expiry.15" },
+  { value: "30", labelKey: "rovers.expiry.30" },
+  { value: "90", labelKey: "rovers.expiry.90" },
+  { value: "180", labelKey: "rovers.expiry.180" },
+  { value: "365", labelKey: "rovers.expiry.365" },
+  { value: "never", labelKey: "rovers.labels.never" },
+];
 const MAX_ROVER_UNITS = 100;
 const MAX_ENROLLMENT_CODE_USES = 100;
 const WEB_ENROLLMENT_CODE_RE = /^[a-f0-9]{40}$/;
 
 function shortDate(value?: string | null) {
-  return value ? new Date(value).toLocaleDateString() : "Never";
+  return value ? new Date(value).toLocaleDateString() : translate("rovers.labels.never");
 }
 
 function expiryISO(value: string) {
@@ -52,6 +54,21 @@ function clampUnits(value: unknown) {
 function metadataTags(metadata: Record<string, unknown> | undefined) {
   const tags = metadata?.tags;
   return Array.isArray(tags) ? tags.filter((tag): tag is string => typeof tag === "string" && tag.trim() !== "") : [];
+}
+
+function budgetSummary(metadata: Record<string, unknown> | undefined): string | null {
+  const raw = metadata?.budget;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const budget = raw as Record<string, unknown>;
+  const period = typeof budget.period === "string" && budget.period.trim() ? budget.period : "calendar_week";
+  const periodLabel = period === "calendar_month" ? translate("budget.month") : period === "calendar_week" ? translate("budget.week") : period;
+  const parts: string[] = [];
+  if (typeof budget.max_runs === "number" && budget.max_runs > 0) parts.push(translate("rovers.budgetRuns", { count: budget.max_runs, period: periodLabel }));
+  if (typeof budget.max_tokens === "number" && budget.max_tokens > 0) parts.push(translate("rovers.budgetTokens", { count: budget.max_tokens, period: periodLabel }));
+  if (typeof budget.max_usd_micros === "number" && budget.max_usd_micros > 0) {
+    parts.push(`$${(budget.max_usd_micros / 1_000_000).toFixed(2)}/${periodLabel}`);
+  }
+  return parts.length > 0 ? parts.join(" · ") : null;
 }
 
 type PendingEnrollment = {
@@ -87,6 +104,7 @@ function clearPendingEnrollmentHash() {
 }
 
 function RoverName({ id, name, onRename }: { id: string; name: string; onRename: (id: string, name: string) => void }) {
+  const t = useT();
   const [value, setValue] = useState(name);
   const [editing, setEditing] = useState(false);
   useEffect(() => setValue(name), [name]);
@@ -106,7 +124,7 @@ function RoverName({ id, name, onRename }: { id: string; name: string; onRename:
   return (
     <Input
       autoFocus
-      aria-label="Rover name"
+      aria-label={t("rovers.nameAria")}
       className="h-7 w-44 border-transparent px-1 shadow-none"
       value={value}
       onBlur={save}
@@ -123,9 +141,10 @@ function RoverName({ id, name, onRename }: { id: string; name: string; onRename:
 }
 
 function RoverUnits({ id, units, running, onSet }: { id: string; units: number; running: number; onSet: (id: string, units: number) => void }) {
+  const t = useT();
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(String(units));
-  const label = `${units} ${units === 1 ? "unit" : "units"}`;
+  const label = `${units} ${units === 1 ? t("rovers.unit") : t("rovers.unitsPlural")}`;
   useEffect(() => setValue(String(units)), [units]);
   const save = () => {
     const next = Number(value);
@@ -138,7 +157,7 @@ function RoverUnits({ id, units, running, onSet }: { id: string; units: number; 
       <button
         type="button"
         className="h-7 w-20 truncate px-1 text-left text-xs text-muted-foreground"
-        title={`${running} of ${label} running`}
+        title={t("rovers.runningOf", { running, label })}
         onClick={() => setEditing(true)}
       >
         {label}
@@ -151,7 +170,7 @@ function RoverUnits({ id, units, running, onSet }: { id: string; units: number; 
       type="number"
       min={1}
       max={MAX_ROVER_UNITS}
-      aria-label="Rover units"
+      aria-label={t("rovers.unitsAria")}
       className="h-7 w-20 border-transparent px-1 text-xs shadow-none"
       value={value}
       onBlur={save}
@@ -169,6 +188,7 @@ function RoverUnits({ id, units, running, onSet }: { id: string; units: number; 
 
 export function RoversView() {
   const app = useApp();
+  const t = useT();
   const [activePendingID, setActivePendingID] = useState<string | null>(null);
   const [pendingFleet, setPendingFleet] = useState(app.fleet);
   const [pendingName, setPendingName] = useState("");
@@ -243,23 +263,25 @@ export function RoversView() {
           onInteractOutside={(e) => e.preventDefault()}
         >
           <DialogHeader>
-            <DialogTitle>Approve rover enrollment</DialogTitle>
-            <DialogDescription>This pending rover will keep waiting until it is approved or denied.</DialogDescription>
+            <DialogTitle>{t("rovers.approveTitle")}</DialogTitle>
+            <DialogDescription>
+              {t("rovers.approveDesc")}
+            </DialogDescription>
           </DialogHeader>
           {activePending && (
             <div className="space-y-4">
               <div className="grid gap-3 sm:grid-cols-[1fr_8rem]">
                 <label className="space-y-1.5 text-xs font-medium text-muted-foreground">
-                  Name
-                  <Input value={pendingName} onChange={(e) => setPendingName(e.target.value)} placeholder="rover" />
+                  {t("rovers.name")}
+                  <Input value={pendingName} onChange={(e) => setPendingName(e.target.value)} placeholder={t("rovers.namePlaceholder")} />
                 </label>
                 <label className="space-y-1.5 text-xs font-medium text-muted-foreground">
-                  Units
+                  {t("rovers.units")}
                   <Input type="number" min={1} max={MAX_ROVER_UNITS} value={pendingUnits} onChange={(e) => setPendingUnits(e.target.value)} />
                 </label>
               </div>
               <label className="space-y-1.5 text-xs font-medium text-muted-foreground">
-                Fleet
+                {t("rovers.fleet")}
                 <Select value={pendingFleet} onValueChange={setPendingFleet}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
@@ -268,12 +290,12 @@ export function RoversView() {
                 </Select>
               </label>
               <div className="space-y-1.5">
-                <p className="text-xs font-medium text-muted-foreground">Tags</p>
+                <p className="text-xs font-medium text-muted-foreground">{t("rovers.tags")}</p>
                 <TagEditor tags={pendingTags} onChange={setPendingTags} />
               </div>
               <div className="flex justify-end gap-2">
-                <Button variant="destructive" onClick={denyPendingEnrollment}><X />Deny</Button>
-                <Button variant="brand" disabled={!pendingFleet} onClick={approvePendingEnrollment}><Check />Approve</Button>
+                <Button variant="destructive" onClick={denyPendingEnrollment}><X />{t("rovers.deny")}</Button>
+                <Button variant="brand" disabled={!pendingFleet} onClick={approvePendingEnrollment}><Check />{t("rovers.approve")}</Button>
               </div>
             </div>
           )}
@@ -282,37 +304,36 @@ export function RoversView() {
       <Dialog open={revokingRover != null} onOpenChange={(open) => { if (!open) setRevokingRover(null); }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Revoke rover</DialogTitle>
+            <DialogTitle>{t("rovers.revokeTitle")}</DialogTitle>
             <DialogDescription>
-              Revoking {revokingRover?.name || "this rover"} deletes its connection token, disconnects it
-              immediately, and removes its local enrollment. This cannot be undone.
+              {t("rovers.revokeConfirm", { name: revokingRover?.name || t("rovers.thisRover") })}
             </DialogDescription>
           </DialogHeader>
           <div className="flex justify-end gap-2">
-            <Button variant="ghost" onClick={() => setRevokingRover(null)}>Cancel</Button>
-            <Button variant="destructive" onClick={() => { if (revokingRover) app.revokeRover(revokingRover.id); setRevokingRover(null); }}>Revoke</Button>
+            <Button variant="ghost" onClick={() => setRevokingRover(null)}>{t("common.cancel")}</Button>
+            <Button variant="destructive" onClick={() => { if (revokingRover) app.revokeRover(revokingRover.id); setRevokingRover(null); }}>{t("rovers.revoke")}</Button>
           </div>
         </DialogContent>
       </Dialog>
       <Card className="flex min-h-0 flex-1 flex-col">
-        <CardHeader><CardTitle className="flex items-center gap-2 text-base"><SECTION_ICONS.rovers className="size-4" /> Rovers</CardTitle></CardHeader>
+        <CardHeader><CardTitle className="flex items-center gap-2 text-base"><SECTION_ICONS.rovers className="size-4" /> {t("rovers.title")}</CardTitle></CardHeader>
         <CardContent className="flex min-h-0 flex-1 flex-col space-y-4">
           {pendingApprovals.length > 0 && (
             <div className="space-y-2 rounded-md border border-brand/30 bg-brand/10 p-3">
-              <p className="text-sm font-medium text-foreground">Pending rover approvals</p>
+              <p className="text-sm font-medium text-foreground">{t("rovers.pendingApprovals")}</p>
               {pendingApprovals.map((code) => {
                 const units = clampUnits(code.metadata?.units);
                 const tags = metadataTags(code.metadata);
                 return (
                   <div key={code.id} className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
                     <span className="min-w-0 truncate">
-                      {code.name || "Unnamed rover"} · {units} {units === 1 ? "unit" : "units"}
+                      {code.name || t("rovers.unnamed")} · {units} {units === 1 ? t("rovers.unit") : t("rovers.unitsPlural")}
                       {tags.length > 0 && ` · ${tags.join(", ")}`}
-                      {` · expires ${shortDate(code.expires_at)}`}
+                      {` · ${t("rovers.expires", { date: shortDate(code.expires_at) })}`}
                     </span>
                     <span className="flex items-center gap-2">
-                      <Button size="sm" variant="outline" onClick={() => setActivePendingID(code.id)}>Review</Button>
-                      <Button size="sm" variant="ghost" className="text-destructive" onClick={() => app.denyPendingRover(code.id)}>Deny</Button>
+                      <Button size="sm" variant="outline" onClick={() => setActivePendingID(code.id)}>{t("rovers.review")}</Button>
+                      <Button size="sm" variant="ghost" className="text-destructive" onClick={() => app.denyPendingRover(code.id)}>{t("rovers.deny")}</Button>
                     </span>
                   </div>
                 );
@@ -320,15 +341,15 @@ export function RoversView() {
             </div>
           )}
           <div className="flex flex-wrap items-center gap-2">
-            <Button size="sm" onClick={() => app.createEnrollmentCode({ name: enrollmentCodeName.trim(), expiresAt: expiryISO(enrollmentCodeExpiry), uses })} disabled={!canCreateCode}>Create enrollment code</Button>
-            <Input value={enrollmentCodeName} onChange={(e) => setEnrollmentCodeName(e.target.value)} className="h-8 w-40" placeholder="Name" />
+            <Button size="sm" onClick={() => app.createEnrollmentCode({ name: enrollmentCodeName.trim(), expiresAt: expiryISO(enrollmentCodeExpiry), uses })} disabled={!canCreateCode}>{t("rovers.createCode")}</Button>
+            <Input value={enrollmentCodeName} onChange={(e) => setEnrollmentCodeName(e.target.value)} className="h-8 w-40" placeholder={t("rovers.codeName")} />
             <Select value={enrollmentCodeExpiry} onValueChange={setEnrollmentCodeExpiry}>
               <SelectTrigger className="h-8 w-32"><SelectValue /></SelectTrigger>
               <SelectContent>
-                {EXPIRY_OPTIONS.map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}
+                {EXPIRY_OPTIONS.map((opt) => <SelectItem key={opt.value} value={opt.value}>{t(opt.labelKey)}</SelectItem>)}
               </SelectContent>
             </Select>
-            <Input type="number" min={2} max={MAX_ENROLLMENT_CODE_USES} value={enrollmentCodeUses} onChange={(e) => setEnrollmentCodeUses(e.target.value)} className="h-8 w-28" placeholder="Uses" />
+            <Input type="number" min={2} max={MAX_ENROLLMENT_CODE_USES} value={enrollmentCodeUses} onChange={(e) => setEnrollmentCodeUses(e.target.value)} className="h-8 w-28" placeholder={t("rovers.uses")} />
           </div>
           {app.newEnrollmentCode && (
             <pre className="overflow-x-auto rounded-md bg-foreground/90 p-3 text-xs text-background">
@@ -336,62 +357,77 @@ export function RoversView() {
             </pre>
           )}
           <div className="text-sm text-muted-foreground">
-            Hub slots: <span className="font-medium text-foreground">{runningSlots}</span>/{totalSlots} active
+            {t("rovers.hubSlots", { running: runningSlots, total: totalSlots })}
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto divide-y divide-border pr-1">
             {app.rovers.map((r) => {
-              const status = ROVER_STATUS[r.status] ?? { label: r.status, icon: Circle, color: "text-muted-foreground" };
-              const StatusIcon = status.icon;
+              const statusMeta = ROVER_STATUS[r.status];
+              const statusLabel = statusMeta ? t(statusMeta.labelKey) : r.status;
+              const StatusIcon = statusMeta?.icon ?? Circle;
+              const statusColor = statusMeta?.color ?? "text-muted-foreground";
+              const budget = budgetSummary(r.metadata);
               return (
                 <div key={r.id} className="space-y-2 py-3 text-sm">
                   <div className="flex items-center justify-between">
-                    <span className="flex items-center gap-2">
+                    <span className="flex min-w-0 flex-wrap items-center gap-2">
                       <RoverName id={r.id} name={r.name} onRename={app.renameRover} />
-                      <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground" title={`Rover ${status.label}`}>
-                        <StatusIcon aria-hidden className={cn("size-3.5", status.color)} />
-                        {status.label}
+                      <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground" title={t("rovers.statusTitle", { status: statusLabel })}>
+                        <StatusIcon aria-hidden className={cn("size-3.5", statusColor)} />
+                        {statusLabel}
                       </span>
                       <RoverUnits id={r.id} units={r.units} running={r.running_units ?? 0} onSet={app.setRoverUnits} />
+                      {budget && (
+                        <span className="truncate text-xs text-muted-foreground" title={t("rovers.optionalCap")}>
+                          {t("rovers.cap", { budget })}
+                        </span>
+                      )}
                     </span>
-                    <Button variant="ghost" size="sm" className="text-destructive" onClick={() => setRevokingRover({ id: r.id, name: r.name })}>Revoke</Button>
+                    <Button variant="ghost" size="sm" className="text-destructive" onClick={() => setRevokingRover({ id: r.id, name: r.name })}>{t("rovers.revoke")}</Button>
                   </div>
                   <div className="space-y-1 pl-4">
                     {(() => {
                       const auto = r.auto_tags ?? [];
-                      const pilots = auto.filter((t) => t.startsWith("pilot:")).map((t) => t.slice(6));
-                      const autoTags = auto.filter((t) => !t.startsWith("pilot:"));
+                      const pilots = auto.filter((tag) => tag.startsWith("pilot:")).map((tag) => tag.slice(6));
+                      const autoTags = auto.filter((tag) => !tag.startsWith("pilot:"));
                       return (
                         <div className="grid gap-x-3 gap-y-1.5 text-xs sm:grid-cols-[4.75rem_minmax(0,1fr)]">
                           {pilots.length > 0 && (
                             <>
-                              <span className="pt-1 text-[11px] uppercase text-muted-foreground">pilots</span>
+                              <span className="pt-1 text-[11px] uppercase text-muted-foreground">{t("rovers.pilots")}</span>
                               <PilotIconList pilots={pilots} />
                             </>
                           )}
                           {autoTags.length > 0 && (
                             <>
-                              <span className="pt-1 text-[11px] uppercase text-muted-foreground">auto tags</span>
+                              <span className="pt-1 text-[11px] uppercase text-muted-foreground">{t("rovers.autoTags")}</span>
                               <TagList tags={autoTags} />
                             </>
                           )}
-                          <span className="pt-1 text-[11px] uppercase text-muted-foreground">user tags</span>
-                          <TagEditor tags={r.tags ?? []} onChange={(t) => app.setRoverTags(r.id, t)} />
+                          <span className="pt-1 text-[11px] uppercase text-muted-foreground">{t("rovers.userTags")}</span>
+                          <TagEditor tags={r.tags ?? []} onChange={(tags) => app.setRoverTags(r.id, tags)} />
                         </div>
                       );
                     })()}
+                    {(app.myRole === "owner" || app.myRole === "admin") && (
+                      <div className="pt-2">
+                        <BudgetEditor metadata={r.metadata} onSave={(b) => app.setRoverBudget(r.id, b)} />
+                      </div>
+                    )}
                   </div>
                 </div>
               );
             })}
-            {app.rovers.length === 0 && <p className="py-2 text-sm text-muted-foreground">No rovers enrolled.</p>}
+            {app.rovers.length === 0 && <p className="py-2 text-sm text-muted-foreground">{t("rovers.emptyEnrolled")}</p>}
           </div>
           {enrollmentCodes.length > 0 && (
             <div className="space-y-1 border-t border-border pt-3">
-              <p className="text-xs font-medium text-muted-foreground">Enrollment codes</p>
-              {enrollmentCodes.map((t) => (
-                <div key={t.id} className="flex items-center justify-between text-xs text-muted-foreground">
-                  <span>{t.name || "one-time"} · {t.code} · {t.remaining_uses} {t.remaining_uses === 1 ? "use" : "uses"} left · created {shortDate(t.created_at)} · expires {shortDate(t.expires_at)}</span>
-                  <Button variant="ghost" size="icon-sm" onClick={() => app.revokeEnrollmentCode(t.id)}>×</Button>
+              <p className="text-xs font-medium text-muted-foreground">{t("rovers.enrollmentCodes")}</p>
+              {enrollmentCodes.map((code) => (
+                <div key={code.id} className="flex items-center justify-between text-xs text-muted-foreground">
+                  <span>
+                    {code.name || t("rovers.oneTime")} · {code.code} · {t("rovers.usesLeft", { count: code.remaining_uses, noun: code.remaining_uses === 1 ? t("rovers.use") : t("rovers.usesPlural") })} · {t("rovers.created", { date: shortDate(code.created_at) })} · {t("rovers.expiresLabel", { date: shortDate(code.expires_at) })}
+                  </span>
+                  <Button variant="ghost" size="icon-sm" onClick={() => app.revokeEnrollmentCode(code.id)}>×</Button>
                 </div>
               ))}
             </div>

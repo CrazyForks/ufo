@@ -11,10 +11,6 @@ import (
 	"ufo/apps/api/internal/db"
 )
 
-// The wire never carries internal bigint ids. Each DTO emits the resource's
-// public id as `id` and expands FK references to the referenced resource's
-// public id (resolved via batch lookups — see the map* helpers below).
-
 func uuidStr(u pgtype.UUID) string {
 	if !u.Valid {
 		return ""
@@ -77,7 +73,6 @@ func toFleetDTO(f db.Fleet) fleetDTO {
 	return fleetDTO{ID: uuidStr(f.PublicID), Name: f.Name, Kind: f.Kind, Metadata: metadataJSON(f.Metadata), CreatedAt: f.CreatedAt.Time, UpdatedAt: f.UpdatedAt.Time}
 }
 
-// pilotDTO is a pilot kind with the count of fleet rovers it can drive.
 type pilotDTO struct {
 	Kind         string `json:"kind"`
 	Rovers       int    `json:"rovers"`
@@ -95,6 +90,39 @@ type missionDTO struct {
 
 func toMissionDTO(m db.Mission) missionDTO {
 	return missionDTO{ID: uuidStr(m.PublicID), Name: m.Name, Key: m.Key, Metadata: metadataJSON(m.Metadata), CreatedAt: m.CreatedAt.Time, UpdatedAt: m.UpdatedAt.Time}
+}
+
+type skillFileDTO struct {
+	Path      string    `json:"path"`
+	Content   string    `json:"content"`
+	SizeBytes int64     `json:"size_bytes"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type skillDTO struct {
+	ID          string         `json:"id"`
+	Name        string         `json:"name"`
+	Slug        string         `json:"slug"`
+	Description string         `json:"description"`
+	Archived    bool           `json:"archived"`
+	Files       []skillFileDTO `json:"files"`
+	CreatedAt   time.Time      `json:"created_at"`
+	UpdatedAt   time.Time      `json:"updated_at"`
+}
+
+func toSkillDTO(s db.Skill, files []db.SkillFile) skillDTO {
+	out := skillDTO{
+		ID: uuidStr(s.PublicID), Name: s.Name, Slug: s.Slug, Description: s.Description,
+		Archived: s.Archived, Files: []skillFileDTO{}, CreatedAt: s.CreatedAt.Time, UpdatedAt: s.UpdatedAt.Time,
+	}
+	for _, f := range files {
+		out.Files = append(out.Files, skillFileDTO{
+			Path: f.Path, Content: f.Content, SizeBytes: f.SizeBytes,
+			CreatedAt: f.CreatedAt.Time, UpdatedAt: f.UpdatedAt.Time,
+		})
+	}
+	return out
 }
 
 type enrollmentCodeDTO struct {
@@ -283,8 +311,6 @@ func toLabelDTO(l db.Label) labelDTO {
 	return labelDTO{ID: uuidStr(l.PublicID), Name: l.Name, Color: l.Color, CreatedAt: l.CreatedAt.Time, UpdatedAt: l.UpdatedAt.Time}
 }
 
-// operationReferenceDTO is a compact operation reference (relations, search) — enough for the
-// web to render the code (mission_id + sequence) and a status icon.
 type operationReferenceDTO struct {
 	ID        string `json:"id"`
 	Title     string `json:"title"`
@@ -301,7 +327,6 @@ type relationDTO struct {
 	CreatedAt time.Time             `json:"created_at"`
 }
 
-// relationKind maps the stored (kind, direction) to the display-facing kind.
 func relationKind(kind string, outgoing bool) string {
 	switch kind {
 	case "blocks":
@@ -487,6 +512,22 @@ func dateStr(d pgtype.Date) *string {
 	return &s
 }
 
+type runUsageDTO struct {
+	Provider         string          `json:"provider,omitempty"`
+	Model            string          `json:"model,omitempty"`
+	Source           string          `json:"source,omitempty"`
+	InputTokens      int64           `json:"input_tokens"`
+	OutputTokens     int64           `json:"output_tokens"`
+	CacheReadTokens  int64           `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int64           `json:"cache_write_tokens,omitempty"`
+	ReasoningTokens  int64           `json:"reasoning_tokens,omitempty"`
+	TotalTokens      int64           `json:"total_tokens"`
+	DurationMs       *int64          `json:"duration_ms,omitempty"`
+	CostMicros       *int64          `json:"cost_micros,omitempty"`
+	Metadata         json.RawMessage `json:"metadata"`
+	CreatedAt        time.Time       `json:"created_at"`
+}
+
 type runDTO struct {
 	ID          string          `json:"id"`
 	OperationID string          `json:"operation_id"`
@@ -494,6 +535,7 @@ type runDTO struct {
 	Status      string          `json:"status"`
 	NeedsInput  bool            `json:"needs_input"`
 	Metadata    json.RawMessage `json:"metadata"`
+	Usage       *runUsageDTO    `json:"usage,omitempty"`
 	CreatedAt   time.Time       `json:"created_at"`
 	UpdatedAt   time.Time       `json:"updated_at"`
 }
@@ -526,9 +568,6 @@ type signalDTO struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
-// runMessageDTO serializes a transcript message with input as raw JSON (the db
-// row stores jsonb as []byte, which would otherwise marshal as base64). No own
-// id — the client orders by sequence.
 type runMessageDTO struct {
 	Sequence  int32           `json:"sequence"`
 	Type      string          `json:"type"`
@@ -686,8 +725,6 @@ func (s *Server) mapRovers(ctx context.Context, ids []int64) map[int64]string {
 	return out
 }
 
-// polyUUID resolves a polymorphic (type, id) reference to its public id. Pilots
-// are referenced by kind, not id, so they're handled separately.
 func polyUUID(typ string, id int64, users, crews map[int64]string) string {
 	switch typ {
 	case "user":
@@ -919,8 +956,6 @@ func (s *Server) commentDTOs(ctx context.Context, cs []db.Comment, userID int64)
 	return out
 }
 
-// reactionsForTargets batch-loads reactions for a set of targets of one type
-// ("operation"|"comment") → map[targetID][]reactionDTO. One query for either kind.
 func (s *Server) reactionsForTargets(ctx context.Context, targetType string, ids []int64, userID int64) map[int64][]reactionDTO {
 	out := map[int64][]reactionDTO{}
 	ids = dedupeIDs(ids)
@@ -939,17 +974,31 @@ func (s *Server) reactionsForTargets(ctx context.Context, targetType string, ids
 
 func (s *Server) runDTOs(ctx context.Context, rs []db.Run) []runDTO {
 	var opIDs []int64
+	var runIDs []int64
 	for _, r := range rs {
 		opIDs = append(opIDs, r.OperationID)
+		runIDs = append(runIDs, r.ID)
 	}
 	opMap := s.mapOperations(ctx, opIDs)
+	usageByRun := map[int64]db.RunUsage{}
+	if len(runIDs) > 0 {
+		if rows, err := s.q.ListRunUsageByRunIDs(ctx, runIDs); err == nil {
+			for _, u := range rows {
+				usageByRun[u.RunID] = u
+			}
+		}
+	}
 	out := make([]runDTO, 0, len(rs))
 	for _, r := range rs {
-		out = append(out, runDTO{
+		d := runDTO{
 			ID: uuidStr(r.PublicID), OperationID: opMap[r.OperationID], Status: r.Status,
 			Pilot: r.Pilot, NeedsInput: r.NeedsInput, Metadata: metadataJSON(r.Metadata),
 			CreatedAt: r.CreatedAt.Time, UpdatedAt: r.UpdatedAt.Time,
-		})
+		}
+		if u, ok := usageByRun[r.ID]; ok {
+			d.Usage = toRunUsageDTO(u)
+		}
+		out = append(out, d)
 	}
 	return out
 }

@@ -79,7 +79,6 @@ const TUI_MUTED: Rgb = (170, 180, 195);
 const TUI_SUCCESS: Rgb = (120, 255, 170);
 const TUI_METRIC_SLOTS: Rgb = (200, 205, 255);
 
-/// Current local time in hub-log style, e.g. `2026-06-06 18:18:18 -0700`.
 fn ts() -> String {
     format_ts(&chrono::Local::now())
 }
@@ -256,6 +255,8 @@ struct AcceptedRun {
     operation_worktree_name: String,
     operation_created_at: String,
     worktree_enabled: bool,
+    #[serde(default)]
+    worktree_base_ref: String,
     #[allow(dead_code)]
     status: String,
     #[serde(default)]
@@ -268,6 +269,21 @@ struct AcceptedRun {
     can_propose_sub_operations: bool,
     #[serde(default)]
     assets: Vec<AcceptedAsset>,
+    #[serde(default)]
+    skills: Vec<AcceptedSkill>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AcceptedSkillFile {
+    path: String,
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AcceptedSkill {
+    slug: String,
+    #[serde(default)]
+    files: Vec<AcceptedSkillFile>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -291,6 +307,8 @@ struct AcceptedSourceAction {
     kind: String,
     #[serde(default)]
     branch_name: String,
+    #[serde(default)]
+    drop_worktree_on_success: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -487,7 +505,6 @@ fn rover_headers() -> HeaderMap {
     headers
 }
 
-// The rover speaks v1; the hub is the origin, so the version is appended here.
 fn hub_url(hub: &str, path: impl AsRef<str>) -> String {
     format!(
         "{}/v1/{}",
@@ -589,7 +606,6 @@ fn clamp_rover_units(units: usize) -> usize {
     units.clamp(1, MAX_ROVER_UNITS)
 }
 
-/// Detected tags this host can advertise: pilots on PATH, plus os/arch.
 async fn detect_auto_tags() -> Vec<String> {
     PilotCaps::detect().await.auto_tags()
 }
@@ -652,7 +668,6 @@ async fn start_after_enroll(
     cmd_start(None, headless, retry_seconds, None, auto_upgrade, outpost).await
 }
 
-/// Code-based enrollment: exchange a code for a connection token and persist it.
 async fn enroll_code(
     client: &Client,
     hub: &str,
@@ -672,7 +687,6 @@ async fn enroll_code(
     Ok(())
 }
 
-/// The web UI base the hub advertises for browser approval.
 async fn approval_base(client: &Client, hub: &str) -> Result<String> {
     let hub = hub.trim_end_matches('/');
     let resp = client
@@ -694,8 +708,6 @@ fn discovery_web_url(discovery: &serde_json::Value) -> Option<String> {
     (!web_url.is_empty()).then(|| web_url.trim_end_matches('/').to_string())
 }
 
-/// Web enrollment: open browser approval when possible, then check the normal
-/// exchange until the locally generated code is registered by the browser.
 async fn enroll_web(
     client: &Client,
     hub: &str,
@@ -762,7 +774,6 @@ async fn enroll_web(
     }
 }
 
-/// High-entropy 40-character lowercase hex code registered in the browser.
 fn generate_enrollment_code() -> Result<String> {
     let provider = rustls::crypto::ring::default_provider();
     let mut bytes = [0u8; 20];
@@ -777,7 +788,6 @@ fn generate_enrollment_code() -> Result<String> {
     Ok(code)
 }
 
-/// Prompt on stdin for hub, method, name, units, and tags, then enroll.
 async fn cmd_enroll_interactive() -> Result<()> {
     let hub = prompt_line("Hub URL [http://localhost:8080]: ")?;
     let hub = if hub.is_empty() {
@@ -804,9 +814,6 @@ async fn cmd_enroll_interactive() -> Result<()> {
     }
 }
 
-/// Enroll several code-based rovers from pipe-separated `key=value` --config specs.
-/// Same params as single enroll: hub, code, name, units, tags.
-/// Per-field order: config key → matching env (hub/code/units) → default.
 async fn cmd_enroll_multi(specs: Vec<String>) -> Result<()> {
     let client = http_client();
     for spec in specs {
@@ -833,12 +840,10 @@ async fn cmd_enroll_multi(specs: Vec<String>) -> Result<()> {
     Ok(())
 }
 
-/// Non-empty process env value, if set.
 fn env_nonempty(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|s| !s.is_empty())
 }
 
-/// Prefer a non-empty config/CLI field, else the named env var.
 fn field_or_env(field: Option<&String>, env_key: &str) -> Option<String> {
     field
         .cloned()
@@ -846,7 +851,6 @@ fn field_or_env(field: Option<&String>, env_key: &str) -> Option<String> {
         .or_else(|| env_nonempty(env_key))
 }
 
-/// Split a multi-enroll --config value on unescaped `|` (`\|` → literal `|`).
 fn split_enroll_config_fields(spec: &str) -> Vec<String> {
     let mut fields = Vec::new();
     let mut cur = String::new();
@@ -893,7 +897,6 @@ fn parse_enroll_config(spec: &str) -> HashMap<String, String> {
         .collect()
 }
 
-/// Comma-separated user tags (may contain `:`). Empty segments dropped.
 fn parse_tags_list(raw: &str) -> Vec<String> {
     raw.split(',')
         .map(str::trim)
@@ -1774,7 +1777,6 @@ impl WindowsConsole {
         }
 
         // SAFETY: `GetStdHandle` has no Rust-side preconditions; the returned
-        // handle is checked before use.
         let input = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
         if input.is_null() || input == INVALID_HANDLE_VALUE {
             return None;
@@ -1832,7 +1834,6 @@ impl WindowsConsole {
             };
             let mut read = 0;
             // SAFETY: `record` points to one writable `InputRecord`, `read` is
-            // a valid out-pointer, and the requested length is exactly 1.
             if unsafe { ReadConsoleInputW(self.input, &mut record, 1, &mut read) } == 0 || read == 0
             {
                 break;
@@ -1860,7 +1861,6 @@ impl Drop for WindowsConsole {
             fn SetConsoleMode(handle: WinHandle, mode: u32) -> i32;
         }
         // SAFETY: both fields were captured after a successful `GetConsoleMode`;
-        // restoration failure during drop is intentionally ignored.
         let _ = unsafe { SetConsoleMode(self.input, self.original_mode) };
     }
 }
@@ -2290,6 +2290,18 @@ fn render_dashboard_frame(state: &Dashboard, outpost: &Path) -> String {
     } else {
         active_rows.len() + 1
     };
+    let rover_run_detail_open = snapshot.focus == DashboardFocus::Rovers && run_detail.is_some();
+    let operation_run_detail_open =
+        snapshot.focus == DashboardFocus::Operations && run_detail.is_some();
+    let rover_main_list = rover_detail.is_none() && !rover_run_detail_open;
+    let operation_main_list = !active_rows.is_empty() && !operation_run_detail_open;
+    let (rover_body_rows, operation_body_rows) = fit_dashboard_body_rows(
+        terminal_height,
+        rover_body_rows,
+        operation_body_rows,
+        rover_main_list,
+        operation_main_list,
+    );
     let event_rows = event_rows_for_height(terminal_height, rover_body_rows, operation_body_rows);
 
     out.push_str("\x1b[2J\x1b[H\x1b[0m");
@@ -2320,6 +2332,8 @@ fn render_dashboard_frame(state: &Dashboard, outpost: &Path) -> String {
         );
         push_row(&mut out, width, &dim(&header));
         let selected = snapshot.selected_rover.min(rovers.len().saturating_sub(1));
+        let mut rows = Vec::new();
+        let mut selected_row = 0;
         for (i, rover) in rovers.iter().enumerate() {
             let status = status_pill(&rover.runtime.status);
             let marker = if snapshot.focus == DashboardFocus::Rovers && i == selected {
@@ -2327,7 +2341,10 @@ fn render_dashboard_frame(state: &Dashboard, outpost: &Path) -> String {
             } else {
                 " ".to_string()
             };
-            let row = format!(
+            if i == selected {
+                selected_row = rows.len();
+            }
+            rows.push(format!(
                 "{} {}  {}  {}  {}  {}",
                 marker,
                 fit_field(&rover.runtime.name, ROVER_NAME_WIDTH),
@@ -2335,11 +2352,13 @@ fn render_dashboard_frame(state: &Dashboard, outpost: &Path) -> String {
                 fit_field(&rover.runtime.units.to_string(), RUN_WIDTH),
                 fit_field(&rover_hub_label(&rover.runtime), hub_w),
                 fit_field(&rover.runtime.fleet, fleet_w),
-            );
-            push_row(&mut out, width, &row);
+            ));
             for (unit, run) in rover_unit_rows(&rover.runtime) {
-                push_rover_unit_row(&mut out, width, unit, run, false);
+                rows.push(rover_unit_row(width, unit, run, false));
             }
+        }
+        for i in visible_window(rows.len(), selected_row, rover_body_rows.saturating_sub(1)) {
+            push_row(&mut out, width, &rows[i]);
         }
     }
     push_bottom(&mut out, width);
@@ -2361,7 +2380,12 @@ fn render_dashboard_frame(state: &Dashboard, outpost: &Path) -> String {
         let selected = snapshot
             .selected_operation
             .min(active_rows.len().saturating_sub(1));
-        for (i, operation) in active_rows.iter().enumerate() {
+        for i in visible_window(
+            active_rows.len(),
+            selected,
+            operation_body_rows.saturating_sub(1),
+        ) {
+            let operation = &active_rows[i];
             let marker = if snapshot.focus == DashboardFocus::Operations && i == selected {
                 paint(SELECT_MARKER, TUI_ACCENT)
             } else {
@@ -2619,7 +2643,6 @@ fn terminal_size_from_tty() -> Option<(usize, usize)> {
     }
 
     // SAFETY: `GetStdHandle` has no Rust-side preconditions; the returned
-    // handle is checked before use.
     let output = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
     if output.is_null() || output == INVALID_HANDLE_VALUE {
         return None;
@@ -2666,23 +2689,60 @@ fn event_rows_for_height(
     rover_body_rows: usize,
     operation_body_rows: usize,
 ) -> usize {
+    let event_header_rows = 1;
+    let fixed_rows =
+        dashboard_chrome_rows() + rover_body_rows + operation_body_rows + event_header_rows;
+    height
+        .saturating_sub(1)
+        .saturating_sub(fixed_rows)
+        .clamp(1, EVENT_ROWS)
+}
+
+fn fit_dashboard_body_rows(
+    height: usize,
+    rover_body_rows: usize,
+    operation_body_rows: usize,
+    cap_rovers: bool,
+    cap_operations: bool,
+) -> (usize, usize) {
+    let event_header_rows = 1;
+    let min_event_rows = 1;
+    let budget = height
+        .saturating_sub(1)
+        .saturating_sub(dashboard_chrome_rows() + event_header_rows + min_event_rows);
+    let mut rovers = rover_body_rows;
+    let mut operations = operation_body_rows;
+    while rovers + operations > budget {
+        let can_cap_rovers = cap_rovers && rovers > 1;
+        let can_cap_operations = cap_operations && operations > 1;
+        if can_cap_rovers && (!can_cap_operations || rovers >= operations) {
+            rovers -= 1;
+        } else if can_cap_operations {
+            operations -= 1;
+        } else {
+            break;
+        }
+    }
+    (rovers, operations)
+}
+
+fn dashboard_chrome_rows() -> usize {
     let banner_rows = ROVER_BANNER.trim_matches('\n').lines().count() + 1;
     let title_rows = 3;
+    let section_gaps = 3;
+    let section_borders = 6;
     let help_rows = 1;
-    let rover_section_rows = 2 + rover_body_rows;
-    let operation_section_rows = 2 + operation_body_rows;
-    let event_header_rows = 1;
-    let fixed_rows = banner_rows
-        + title_rows
-        + help_rows
-        + 1
-        + rover_section_rows
-        + 1
-        + operation_section_rows
-        + 1
-        + 2
-        + event_header_rows;
-    height.saturating_sub(fixed_rows).clamp(1, EVENT_ROWS)
+    banner_rows + title_rows + section_gaps + section_borders + help_rows
+}
+
+fn visible_window(total: usize, selected: usize, limit: usize) -> std::ops::Range<usize> {
+    let limit = limit.min(total);
+    if limit == 0 {
+        return 0..0;
+    }
+    let selected = selected.min(total.saturating_sub(1));
+    let start = selected.saturating_add(1).saturating_sub(limit);
+    start..start + limit
 }
 
 fn push_title(out: &mut String, width: usize, title: &str, middle: &str, right: &str) {
@@ -2817,10 +2877,19 @@ fn push_rover_unit_row(
     run: Option<(&String, &RunRuntime)>,
     selected: bool,
 ) {
+    let row = rover_unit_row(width, unit, run, selected);
+    push_row(out, width, &row);
+}
+
+fn rover_unit_row(
+    width: usize,
+    unit: usize,
+    run: Option<(&String, &RunRuntime)>,
+    selected: bool,
+) -> String {
     let inner = width.saturating_sub(4);
     let fixed = 2 + ROVER_NAME_WIDTH + 2 + ROVER_STATUS_WIDTH + 2 + RUN_WIDTH + 2;
     let detail_w = inner.saturating_sub(fixed);
-    // Always 2 cells so list/detail slot columns stay aligned.
     let lead = if selected {
         pad_visible(&paint(SELECT_MARKER, TUI_ACCENT), 2)
     } else {
@@ -2836,17 +2905,13 @@ fn push_rover_unit_row(
     } else {
         (status_pill("standby"), String::new(), String::new())
     };
-    push_row(
-        out,
-        width,
-        &format!(
-            "{lead}{}  {}  {}  {}",
-            fit_field(&label, ROVER_NAME_WIDTH),
-            fit_field(&state, ROVER_STATUS_WIDTH),
-            fit_field(&run_id, RUN_WIDTH),
-            pad_visible(&detail, detail_w),
-        ),
-    );
+    format!(
+        "{lead}{}  {}  {}  {}",
+        fit_field(&label, ROVER_NAME_WIDTH),
+        fit_field(&state, ROVER_STATUS_WIDTH),
+        fit_field(&run_id, RUN_WIDTH),
+        pad_visible(&detail, detail_w),
+    )
 }
 
 fn push_rover_detail(out: &mut String, width: usize, rover: &DashboardRover, selected_unit: usize) {
@@ -3954,7 +4019,13 @@ async fn run_one(
     upgrade_required: Arc<AtomicBool>,
     can_auto_upgrade: Arc<AtomicBool>,
 ) {
-    match ensure_work_directory(operation_directory, source_worktree).await {
+    match ensure_work_directory(
+        operation_directory,
+        source_worktree,
+        run.worktree_base_ref.as_str(),
+    )
+    .await
+    {
         Ok(()) => {
             logline!(
                 "accepted run {} (operation {}) in {}",
@@ -4016,14 +4087,15 @@ async fn discover_source_worktree() -> Option<PathBuf> {
     (!root.is_empty()).then(|| PathBuf::from(root))
 }
 
-/// Ensure an operation's isolated work directory exists and is git-init'd.
-/// If the rover was started inside a git repo, use a detached worktree so the
-/// pilot sees real project files and the uploaded diff is useful.
-async fn ensure_work_directory(path: &Path, source_worktree: Option<&Path>) -> Result<()> {
+async fn ensure_work_directory(
+    path: &Path,
+    source_worktree: Option<&Path>,
+    base_ref: &str,
+) -> Result<()> {
     if path.join(".git").exists() {
         if let Some(source) = source_worktree {
             if marker_work_directory(path)? {
-                migrate_marker_work_directory(source, path).await?;
+                migrate_marker_work_directory(source, path, base_ref).await?;
                 return Ok(());
             }
             if !same_git_common_dir(source, path).await? {
@@ -4040,7 +4112,7 @@ async fn ensure_work_directory(path: &Path, source_worktree: Option<&Path>) -> R
         return Ok(());
     }
     if let Some(source) = source_worktree {
-        create_operation_worktree(source, path).await?;
+        create_operation_worktree(source, path, base_ref).await?;
         return Ok(());
     }
     fs::create_dir_all(path)?;
@@ -4078,7 +4150,7 @@ async fn canonical_git_common_dir(path: &Path) -> Result<PathBuf> {
     fs::canonicalize(path).context("canonicalize git common dir")
 }
 
-async fn migrate_marker_work_directory(source: &Path, path: &Path) -> Result<()> {
+async fn migrate_marker_work_directory(source: &Path, path: &Path, base_ref: &str) -> Result<()> {
     if !marker_work_directory(path)? {
         return Err(anyhow!(
             "operation directory is not a marker work directory"
@@ -4098,7 +4170,7 @@ async fn migrate_marker_work_directory(source: &Path, path: &Path) -> Result<()>
             .unwrap_or_default()
     ));
     fs::rename(path, &backup)?;
-    match create_operation_worktree(source, path).await {
+    match create_operation_worktree(source, path, base_ref).await {
         Ok(()) => {
             let assets = backup.join("assets");
             if assets.exists() {
@@ -4129,7 +4201,27 @@ fn marker_work_directory(path: &Path) -> Result<bool> {
     Ok(true)
 }
 
-async fn create_operation_worktree(source: &Path, path: &Path) -> Result<()> {
+async fn resolve_worktree_start_point(source: &Path, preferred: &str) -> String {
+    let preferred = preferred.trim();
+    if !preferred.is_empty() {
+        let branch_ref = format!("refs/heads/{preferred}");
+        if git_success(source, &["show-ref", "--verify", "--quiet", &branch_ref])
+            .await
+            .unwrap_or(false)
+        {
+            return preferred.to_string();
+        }
+        if git_success(source, &["rev-parse", "--verify", "--quiet", preferred])
+            .await
+            .unwrap_or(false)
+        {
+            return preferred.to_string();
+        }
+    }
+    "HEAD".to_string()
+}
+
+async fn create_operation_worktree(source: &Path, path: &Path, base_ref: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -4141,12 +4233,13 @@ async fn create_operation_worktree(source: &Path, path: &Path) -> Result<()> {
             return Err(anyhow!("operation directory is not empty"));
         }
     }
+    let start = resolve_worktree_start_point(source, base_ref).await;
     let out = Command::new("git")
         .arg("-C")
         .arg(source)
         .args(["worktree", "add", "--detach"])
         .arg(path)
-        .arg("HEAD")
+        .arg(&start)
         .output()
         .await?;
     if !out.status.success() {
@@ -4155,7 +4248,10 @@ async fn create_operation_worktree(source: &Path, path: &Path) -> Result<()> {
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    apply_source_dirty_state(source, path).await?;
+    // Only mirror uncommitted source dirt when basing on the live source HEAD.
+    if start == "HEAD" {
+        apply_source_dirty_state(source, path).await?;
+    }
     exclude_operation_assets(path).await?;
     Ok(())
 }
@@ -4223,16 +4319,23 @@ async fn exclude_operation_assets(path: &Path) -> Result<()> {
     Ok(())
 }
 
+const GIT_SOURCE_PATHSPECS: &[&str] = &[
+    ".",
+    ":(exclude)assets/**",
+    ":(exclude).ufo/**",
+    ":(exclude).codex/**",
+];
+
 async fn git_diff(path: &Path) -> Result<String> {
-    git(path, &["diff", "--", ".", ":(exclude)assets/**"]).await
+    let mut args = vec!["diff", "--"];
+    args.extend_from_slice(GIT_SOURCE_PATHSPECS);
+    git(path, &args).await
 }
 
 async fn git_diff_binary(path: &Path) -> Result<Vec<u8>> {
-    git_bytes(
-        path,
-        &["diff", "--binary", "--", ".", ":(exclude)assets/**"],
-    )
-    .await
+    let mut args = vec!["diff", "--binary", "--"];
+    args.extend_from_slice(GIT_SOURCE_PATHSPECS);
+    git_bytes(path, &args).await
 }
 
 async fn git_diff_binary_and_names(path: &Path) -> Result<(Vec<u8>, Vec<PathBuf>)> {
@@ -4270,18 +4373,9 @@ async fn git_diff_binary_and_names(path: &Path) -> Result<(Vec<u8>, Vec<PathBuf>
 }
 
 async fn git_diff_names(path: &Path) -> Result<Vec<PathBuf>> {
-    let out = git_bytes(
-        path,
-        &[
-            "diff",
-            "--name-only",
-            "-z",
-            "--",
-            ".",
-            ":(exclude)assets/**",
-        ],
-    )
-    .await?;
+    let mut args = vec!["diff", "--name-only", "-z", "--"];
+    args.extend_from_slice(GIT_SOURCE_PATHSPECS);
+    let out = git_bytes(path, &args).await?;
     Ok(out
         .split(|b| *b == 0)
         .filter(|raw| !raw.is_empty())
@@ -4293,19 +4387,9 @@ async fn git_diff_names(path: &Path) -> Result<Vec<PathBuf>> {
 }
 
 async fn git_untracked_names(path: &Path) -> Result<Vec<PathBuf>> {
-    let out = git_bytes(
-        path,
-        &[
-            "ls-files",
-            "--others",
-            "--exclude-standard",
-            "-z",
-            "--",
-            ".",
-            ":(exclude)assets/**",
-        ],
-    )
-    .await?;
+    let mut args = vec!["ls-files", "--others", "--exclude-standard", "-z", "--"];
+    args.extend_from_slice(GIT_SOURCE_PATHSPECS);
+    let out = git_bytes(path, &args).await?;
     Ok(out
         .split(|b| *b == 0)
         .filter(|raw| !raw.is_empty())
@@ -4396,18 +4480,26 @@ fn write_git_exclude(path: &Path, git_dir: &str) -> Result<()> {
     if let Some(parent) = exclude.parent() {
         fs::create_dir_all(parent)?;
     }
+    const ENTRIES: &[&str] = &["/assets/", "/.ufo/", "/.codex/"];
     let mut content = fs::read_to_string(&exclude).unwrap_or_default();
-    if !content.lines().any(|line| line.trim() == "/assets/") {
+    let mut changed = false;
+    for entry in ENTRIES {
+        if content.lines().any(|line| line.trim() == *entry) {
+            continue;
+        }
         if !content.ends_with('\n') && !content.is_empty() {
             content.push('\n');
         }
-        content.push_str("/assets/\n");
+        content.push_str(entry);
+        content.push('\n');
+        changed = true;
+    }
+    if changed {
         fs::write(exclude, content)?;
     }
     Ok(())
 }
 
-/// Run a git command in a directory, returning stdout (errors on non-zero exit).
 async fn git(directory: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&git_bytes(directory, args).await?).to_string())
 }
@@ -4474,7 +4566,6 @@ impl std::fmt::Display for RunLeaseLost {
 
 impl std::error::Error for RunLeaseLost {}
 
-/// Accept the oldest queued run, if any.
 async fn accept_run(client: &Client, hub: &str, token: &str) -> Result<Option<AcceptedRun>> {
     let resp = client
         .post(hub_url(hub, "runs/accept"))
@@ -4943,7 +5034,6 @@ async fn resolve_pilot(pilot: &Pilot) -> Option<PathBuf> {
         .map(|_| path)
 }
 
-/// Resolve `<name>` to the executable this rover will invoke.
 async fn resolve_cli(name: &str) -> Option<PathBuf> {
     if let Some(path) = cli_on_path(name) {
         return Some(path);
@@ -4993,7 +5083,6 @@ fn is_executable_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Block a run because the pilot's CLI isn't installed on this rover.
 async fn block_no_cli(
     client: &Client,
     hub: &str,
@@ -5047,7 +5136,6 @@ async fn log_pilot_start(
 const NEEDS_INPUT_SENTINEL: &str = "@@UFO_NEEDS_INPUT@@";
 const NEEDS_INPUT_INSTRUCTION: &str = "If you cannot proceed without a decision or information only a human can provide, do not guess: end your reply with a line containing exactly @@UFO_NEEDS_INPUT@@ followed by your question.";
 const WORK_DIRECTORY_INSTRUCTION: &str = "Work only in the current operation directory. If this is a project checkout, it is already an isolated git worktree; do not edit the rover's original source checkout.";
-// The pilot may set the operation's status by emitting @@UFO_STATUS:<status>@@.
 const STATUS_PREFIX: &str = "@@UFO_STATUS:";
 const STATUS_INSTRUCTION: &str = "By default, finishing leaves the operation In Review for a human. To set a different outcome, end your reply with a line containing exactly @@UFO_STATUS:<status>@@ where <status> is one of in_review, done, blocked, canceled.";
 
@@ -5061,7 +5149,6 @@ const SUB_OPERATIONS_INSTRUCTION: &str = "If this operation splits cleanly into 
 const SUB_OPERATIONS_FEEDBACK_SENTINEL: &str = "@@UFO_SUB_OPERATIONS_FEEDBACK@@";
 const SUB_OPERATIONS_FEEDBACK_INSTRUCTION: &str = "When reconciling sub-operations, if an existing sub-operation needs rework or clarification, do not create a replacement sub-operation. End your reply with @@UFO_SUB_OPERATIONS_FEEDBACK@@ followed by a JSON array of objects {\"operation_id\": string, \"body\": string}. UFO will post each body back to that same sub-operation and resume its pilot. Ask the human only after the captain and sub-operation pilot cannot resolve it.";
 
-/// Parse the JSON array after @@UFO_OPERATIONS@@.
 fn parse_operations(msg: &str) -> Option<serde_json::Value> {
     let i = msg.find(OPERATIONS_SENTINEL)?;
     let rest = msg[i + OPERATIONS_SENTINEL.len()..].trim();
@@ -5069,7 +5156,6 @@ fn parse_operations(msg: &str) -> Option<serde_json::Value> {
     v.is_array().then_some(v)
 }
 
-/// Remove the @@UFO_OPERATIONS@@ marker and its trailing JSON from the human message.
 fn strip_operations(msg: &str) -> String {
     match msg.find(OPERATIONS_SENTINEL) {
         Some(i) => msg[..i].trim().to_string(),
@@ -5077,7 +5163,6 @@ fn strip_operations(msg: &str) -> String {
     }
 }
 
-/// Parse the JSON array after @@UFO_SUB_OPERATIONS@@.
 fn parse_sub_operations(msg: &str) -> Option<serde_json::Value> {
     let i = msg.find(SUB_OPERATIONS_SENTINEL)?;
     let rest = msg[i + SUB_OPERATIONS_SENTINEL.len()..].trim();
@@ -5085,7 +5170,6 @@ fn parse_sub_operations(msg: &str) -> Option<serde_json::Value> {
     v.is_array().then_some(v)
 }
 
-/// Remove the @@UFO_SUB_OPERATIONS@@ marker and its trailing JSON from the human message.
 fn strip_sub_operations(msg: &str) -> String {
     match msg.find(SUB_OPERATIONS_SENTINEL) {
         Some(i) => msg[..i].trim().to_string(),
@@ -5093,7 +5177,6 @@ fn strip_sub_operations(msg: &str) -> String {
     }
 }
 
-/// Parse the JSON array after @@UFO_SUB_OPERATIONS_FEEDBACK@@.
 fn parse_sub_operations_feedback(msg: &str) -> Option<serde_json::Value> {
     let i = msg.find(SUB_OPERATIONS_FEEDBACK_SENTINEL)?;
     let rest = msg[i + SUB_OPERATIONS_FEEDBACK_SENTINEL.len()..].trim();
@@ -5109,7 +5192,6 @@ fn strip_sub_operations_feedback(msg: &str) -> String {
     }
 }
 
-/// Extract a pilot-requested status from @@UFO_STATUS:x@@, if present.
 fn parse_status(msg: &str) -> Option<String> {
     let i = msg.find(STATUS_PREFIX)?;
     let rest = &msg[i + STATUS_PREFIX.len()..];
@@ -5121,7 +5203,6 @@ fn parse_status(msg: &str) -> Option<String> {
     matches!(status, "in_review" | "done" | "blocked" | "canceled").then(|| status.to_string())
 }
 
-/// Remove a @@UFO_STATUS:x@@ marker from the message the human sees.
 fn strip_status(msg: &str) -> String {
     let Some(i) = msg.find(STATUS_PREFIX) else {
         return msg.to_string();
@@ -5142,7 +5223,6 @@ fn strip_status(msg: &str) -> String {
         .to_string()
 }
 
-/// Run an accepted operation with its assigned pilot, then capture a diff.
 async fn execute_run(
     client: &Client,
     hub: &str,
@@ -5154,8 +5234,8 @@ async fn execute_run(
 ) -> Result<()> {
     let pilot = run.pilot.as_str();
 
-    // The operation title + body, with the needs-input + status protocols appended.
     let local_assets = fetch_run_assets(client, hub, token, run, operation_directory).await?;
+    materialize_run_skills(operation_directory, pilot, &run.skills)?;
     let mut prompt = if run.prompt.trim().is_empty() {
         "Describe this repository in a new file SUMMARY.md.".to_string()
     } else {
@@ -5171,6 +5251,7 @@ async fn execute_run(
                 .join("\n"),
         );
     }
+    prompt = prepend_repo_context(operation_directory, prompt)?;
     let mut cli_prompt = format!(
         "{prompt}\n\n{WORK_DIRECTORY_INSTRUCTION}\n{NEEDS_INPUT_INSTRUCTION}\n{STATUS_INSTRUCTION}\n{OPERATIONS_INSTRUCTION}"
     );
@@ -5227,6 +5308,7 @@ async fn execute_run(
     )
     .await?;
 
+    let started = std::time::Instant::now();
     let pilot_run = async {
         match pilot.output {
             PilotOutput::JsonLines => {
@@ -5240,7 +5322,7 @@ async fn execute_run(
                 } else {
                     String::new()
                 };
-                Ok((status, session, message))
+                Ok((status, session, message, json!({})))
             }
         }
     };
@@ -5248,15 +5330,16 @@ async fn execute_run(
     let lease = heartbeat(client, hub, token, &run.id);
     tokio::pin!(lease);
 
-    let (status, session, mut message) = tokio::select! {
+    let (status, session, mut message, usage_acc) = tokio::select! {
         result = &mut pilot_run => result?,
         result = &mut lease => {
             result?;
             return Err(anyhow!("heartbeat stopped unexpectedly"));
         }
     };
+    let duration_ms = started.elapsed().as_millis() as i64;
+    let usage = finalize_usage_report(usage_acc, duration_ms, pilot.kind);
 
-    // Sentinels are protocol markers, not part of the human-visible comment.
     let needs_input = message.contains(NEEDS_INPUT_SENTINEL);
     if needs_input {
         message = message.replace(NEEDS_INPUT_SENTINEL, "").trim().to_string();
@@ -5325,6 +5408,7 @@ async fn execute_run(
         operations.as_ref(),
         sub_operations.as_ref(),
         sub_operations_feedback.as_ref(),
+        Some(usage),
     )
     .await?;
     append_event(
@@ -5358,7 +5442,10 @@ async fn execute_source_action(
         Some(source) => match action.kind.as_str() {
             "apply_to_source" => apply_operation_to_source(source, operation_directory).await,
             "create_source_branch" => {
-                branch_operation_changes(source, operation_directory, action).await
+                branch_operation_changes(source, operation_directory, action, false).await
+            }
+            "commit_to_branch" => {
+                branch_operation_changes(source, operation_directory, action, true).await
             }
             "refresh_from_source" => {
                 refresh_operation_from_source(source, operation_directory).await
@@ -5379,6 +5466,20 @@ async fn execute_source_action(
         report.metadata = source_report_metadata(source, report.metadata).await;
     }
     report.metadata = operation_worktree_metadata(operation_directory, report.metadata);
+    if drop_operation_worktree_after_branch_action(
+        &action.kind,
+        &report.status,
+        action.drop_worktree_on_success,
+    ) && let Some(source) = source_worktree
+    {
+        logline!(
+            "removing operation worktree after auto {} -> {}",
+            action.kind,
+            action.branch_name
+        );
+        remove_worktree(source, operation_directory).await;
+        report.metadata = mark_operation_worktree_removed(report.metadata);
+    }
     if let Err(e) = report_source_action(
         client,
         hub,
@@ -5396,6 +5497,25 @@ async fn execute_source_action(
     {
         errline!("source action {} report failed: {e:#}", action.id);
     }
+}
+
+fn drop_operation_worktree_after_branch_action(
+    kind: &str,
+    status: &str,
+    drop_on_success: bool,
+) -> bool {
+    drop_on_success
+        && status == "succeeded"
+        && matches!(kind, "create_source_branch" | "commit_to_branch")
+}
+
+fn mark_operation_worktree_removed(metadata: Option<Value>) -> Option<Value> {
+    let mut map = match metadata {
+        Some(Value::Object(map)) => map,
+        _ => Map::new(),
+    };
+    map.insert("operation_worktree_removed".to_string(), Value::Bool(true));
+    Some(Value::Object(map))
 }
 
 #[derive(Default)]
@@ -5659,6 +5779,7 @@ async fn branch_operation_changes(
     source: &Path,
     operation: &Path,
     action: &AcceptedSourceAction,
+    update_existing: bool,
 ) -> Result<SourceActionReport> {
     if !operation.join(".git").exists() {
         return Err(anyhow!("operation worktree is missing"));
@@ -5683,7 +5804,9 @@ async fn branch_operation_changes(
         ));
     }
     let branch_ref = format!("refs/heads/{}", action.branch_name);
-    if git_success(operation, &["show-ref", "--verify", "--quiet", &branch_ref]).await? {
+    let branch_exists =
+        git_success(operation, &["show-ref", "--verify", "--quiet", &branch_ref]).await?;
+    if branch_exists && !update_existing {
         return Err(anyhow!(
             "source branch already exists: {}",
             action.branch_name
@@ -5691,67 +5814,138 @@ async fn branch_operation_changes(
     }
     let base_sha = git_head(operation).await.unwrap_or_default();
     let source_head_sha = git_head(source).await.unwrap_or_default();
-    git(
-        operation,
-        &["add", "--all", "--", ".", ":(exclude)assets/**"],
-    )
-    .await?;
-    let staged = git(
-        operation,
-        &[
-            "diff",
-            "--cached",
-            "--name-only",
-            "--",
-            ".",
-            ":(exclude)assets/**",
-        ],
-    )
-    .await?;
+    let mut add_args = vec!["add", "--all", "--"];
+    add_args.extend_from_slice(GIT_SOURCE_PATHSPECS);
+    git(operation, &add_args).await?;
+    let mut staged_args = vec!["diff", "--cached", "--name-only", "--"];
+    staged_args.extend_from_slice(GIT_SOURCE_PATHSPECS);
+    let staged = git(operation, &staged_args).await?;
     if staged.trim().is_empty() {
-        if base_sha != source_head_sha {
+        if branch_exists {
+            let tip = git(operation, &["rev-parse", &branch_ref])
+                .await?
+                .trim()
+                .to_string();
+            if tip == base_sha {
+                return Ok(source_action_report_with_changes(
+                    SourceActionReport {
+                        status: "succeeded".to_string(),
+                        branch_name: action.branch_name.clone(),
+                        commit_sha: tip.clone(),
+                        base_sha,
+                        source_head_sha,
+                        message: format!(
+                            "branch {} already at {} with no new changes",
+                            action.branch_name,
+                            short_id(&tip)
+                        ),
+                        ..SourceActionReport::default()
+                    },
+                    false,
+                ));
+            }
+            git(operation, &["branch", "-f", &action.branch_name, "HEAD"]).await?;
+            return Ok(source_action_report_with_changes(
+                SourceActionReport {
+                    status: "succeeded".to_string(),
+                    branch_name: action.branch_name.clone(),
+                    commit_sha: base_sha.clone(),
+                    base_sha: base_sha.clone(),
+                    source_head_sha,
+                    message: format!(
+                        "updated branch {} to {} (no new commit)",
+                        action.branch_name,
+                        short_id(&base_sha)
+                    ),
+                    ..SourceActionReport::default()
+                },
+                true,
+            ));
+        }
+        if base_sha != source_head_sha || update_existing {
             git(operation, &["branch", &action.branch_name, "HEAD"]).await?;
             let commit_sha = base_sha.clone();
-            return Ok(SourceActionReport {
+            return Ok(source_action_report_with_changes(
+                SourceActionReport {
+                    status: "succeeded".to_string(),
+                    branch_name: action.branch_name.clone(),
+                    commit_sha: commit_sha.clone(),
+                    base_sha,
+                    source_head_sha,
+                    message: format!(
+                        "created branch {} at {}",
+                        action.branch_name,
+                        short_id(&commit_sha)
+                    ),
+                    ..SourceActionReport::default()
+                },
+                true,
+            ));
+        }
+        return Ok(source_action_report_with_changes(
+            SourceActionReport {
+                status: "failed".to_string(),
+                branch_name: action.branch_name.clone(),
+                base_sha,
+                source_head_sha,
+                message: "operation worktree has no changes to commit".to_string(),
+                ..SourceActionReport::default()
+            },
+            false,
+        ));
+    }
+    let message = source_action_message(action);
+    git(operation, &["commit", "-m", &message]).await?;
+    let commit_sha = git_head(operation).await?;
+    if branch_exists {
+        git(operation, &["branch", "-f", &action.branch_name, "HEAD"]).await?;
+        return Ok(source_action_report_with_changes(
+            SourceActionReport {
                 status: "succeeded".to_string(),
                 branch_name: action.branch_name.clone(),
                 commit_sha: commit_sha.clone(),
                 base_sha,
                 source_head_sha,
                 message: format!(
-                    "recreated source branch {} at {}",
+                    "updated branch {} to {}",
                     action.branch_name,
                     short_id(&commit_sha)
                 ),
                 ..SourceActionReport::default()
-            });
-        }
-        return Ok(SourceActionReport {
-            status: "failed".to_string(),
+            },
+            true,
+        ));
+    }
+    git(operation, &["branch", &action.branch_name, "HEAD"]).await?;
+    Ok(source_action_report_with_changes(
+        SourceActionReport {
+            status: "succeeded".to_string(),
             branch_name: action.branch_name.clone(),
+            commit_sha: commit_sha.clone(),
             base_sha,
             source_head_sha,
-            message: "operation worktree has no changes to commit".to_string(),
+            message: format!(
+                "created branch {} at {}",
+                action.branch_name,
+                short_id(&commit_sha)
+            ),
             ..SourceActionReport::default()
-        });
-    }
-    let message = source_action_message(action);
-    git(operation, &["commit", "-m", &message]).await?;
-    let commit_sha = git_head(operation).await?;
-    git(operation, &["branch", &action.branch_name, "HEAD"]).await?;
-    Ok(SourceActionReport {
-        status: "succeeded".to_string(),
-        branch_name: action.branch_name.clone(),
-        commit_sha: commit_sha.clone(),
-        base_sha,
-        source_head_sha,
-        message: format!(
-            "created source branch {} at {}",
-            action.branch_name,
-            short_id(&commit_sha)
-        ),
-        ..SourceActionReport::default()
-    })
+        },
+        true,
+    ))
+}
+
+fn source_action_report_with_changes(
+    mut report: SourceActionReport,
+    had_changes: bool,
+) -> SourceActionReport {
+    let mut map = match report.metadata.take() {
+        Some(Value::Object(map)) => map,
+        _ => Map::new(),
+    };
+    map.insert("had_changes".to_string(), Value::Bool(had_changes));
+    report.metadata = Some(Value::Object(map));
+    report
 }
 
 fn first_line(s: &str) -> &str {
@@ -5791,7 +5985,6 @@ async fn heartbeat(client: &Client, hub: &str, token: &str, run_id: &str) -> Res
     }
 }
 
-/// Spawn the command (stdout+stderr piped), stream both as log events, and wait.
 async fn run_streaming(
     client: &Client,
     hub: &str,
@@ -5827,7 +6020,6 @@ async fn run_streaming(
         })
     };
 
-    // Shell output is the transcript: stream each stdout line as a text message.
     let mut sequence: i64 = 0;
     let mut message = String::new();
     let mut lines = BufReader::new(stdout).lines();
@@ -5858,8 +6050,6 @@ async fn run_streaming(
     Ok((status, message))
 }
 
-/// Like run_streaming but parses structured JSONL pilot output:
-/// streams readable lines as log events and returns (status, session_id, message).
 async fn run_streaming_json(
     client: &Client,
     hub: &str,
@@ -5867,7 +6057,7 @@ async fn run_streaming_json(
     run_id: &str,
     cmd: &mut Command,
     dashboard: &Option<Dashboard>,
-) -> Result<(std::process::ExitStatus, String, String)> {
+) -> Result<(std::process::ExitStatus, String, String, Value)> {
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     cmd.kill_on_drop(true);
     let mut child = cmd.spawn()?;
@@ -5896,6 +6086,7 @@ async fn run_streaming_json(
 
     let mut session = String::new();
     let mut message = String::new();
+    let mut usage = json!({});
     let mut sequence: i64 = 0;
     let mut lines = BufReader::new(stdout).lines();
     while let Some(line) = lines.next_line().await? {
@@ -5933,6 +6124,7 @@ async fn run_streaming_json(
         {
             session = s.to_string();
         }
+        merge_usage_from_event(&mut usage, &v);
         process_event(
             client,
             hub,
@@ -5948,7 +6140,7 @@ async fn run_streaming_json(
 
     let status = child.wait().await?;
     let _ = err_task.await;
-    Ok((status, session, message))
+    Ok((status, session, message, usage))
 }
 
 /// Translate one structured JSON pilot event into transcript messages.
@@ -6073,7 +6265,6 @@ async fn process_event(
                 *message = t.to_string();
             }
         }
-        // codex: each item.completed is a step.
         Some("item.completed") => {
             if let Some(item) = v.get("item") {
                 match item.get("type").and_then(|x| x.as_str()) {
@@ -6178,7 +6369,6 @@ async fn process_event(
     Ok(())
 }
 
-/// Claude tool_result content is either a string or an array of text blocks.
 fn tool_result_text(content: Option<&serde_json::Value>) -> String {
     match content {
         Some(serde_json::Value::String(s)) => s.clone(),
@@ -6253,6 +6443,7 @@ async fn post_result(
     operations: Option<&serde_json::Value>,
     sub_operations: Option<&serde_json::Value>,
     sub_operations_feedback: Option<&serde_json::Value>,
+    usage: Option<Value>,
 ) -> Result<()> {
     let mut body = json!({
         "status": status,
@@ -6270,6 +6461,9 @@ async fn post_result(
     if let Some(s) = sub_operations_feedback {
         body["sub_operations_feedback"] = s.clone();
     }
+    if let Some(u) = usage {
+        body["usage"] = u;
+    }
     let resp = client
         .post(hub_url(hub, format!("runs/{run_id}/result")))
         .bearer_auth(token)
@@ -6286,6 +6480,131 @@ async fn post_result(
         return Err(anyhow!("result post returned {}", resp.status()));
     }
     Ok(())
+}
+
+fn merge_usage_from_event(usage: &mut Value, v: &Value) {
+    let mut take_usage_obj = |obj: &Value| {
+        let mut changed = false;
+        for (src, dst) in [
+            ("input_tokens", "input_tokens"),
+            ("output_tokens", "output_tokens"),
+            ("cache_read_input_tokens", "cache_read_tokens"),
+            ("cache_read_tokens", "cache_read_tokens"),
+            ("cache_creation_input_tokens", "cache_write_tokens"),
+            ("cache_write_tokens", "cache_write_tokens"),
+            ("reasoning_tokens", "reasoning_tokens"),
+            ("total_tokens", "total_tokens"),
+        ] {
+            if let Some(n) = obj.get(src).and_then(|x| x.as_i64()).filter(|&n| n >= 0) {
+                usage[dst] = json!(n);
+                changed = true;
+            }
+        }
+        if let Some(n) = obj
+            .get("prompt_tokens")
+            .and_then(|x| x.as_i64())
+            .filter(|&n| n >= 0)
+        {
+            usage["input_tokens"] = json!(n);
+            changed = true;
+        }
+        if let Some(n) = obj
+            .get("completion_tokens")
+            .and_then(|x| x.as_i64())
+            .filter(|&n| n >= 0)
+        {
+            usage["output_tokens"] = json!(n);
+            changed = true;
+        }
+        if changed {
+            usage["source"] = json!("pilot");
+        }
+    };
+
+    if let Some(u) = v.get("usage") {
+        take_usage_obj(u);
+    }
+    if let Some(u) = v.pointer("/message/usage") {
+        take_usage_obj(u);
+    }
+    if let Some(u) = v.pointer("/response/usage") {
+        take_usage_obj(u);
+    }
+    if let Some(m) = v
+        .get("model")
+        .and_then(|x| x.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        usage["model"] = json!(m);
+    }
+    if let Some(m) = v
+        .pointer("/message/model")
+        .and_then(|x| x.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        usage["model"] = json!(m);
+    }
+
+    let input = usage
+        .get("input_tokens")
+        .and_then(|x| x.as_i64())
+        .unwrap_or(0);
+    let output = usage
+        .get("output_tokens")
+        .and_then(|x| x.as_i64())
+        .unwrap_or(0);
+    let cache_r = usage
+        .get("cache_read_tokens")
+        .and_then(|x| x.as_i64())
+        .unwrap_or(0);
+    let cache_w = usage
+        .get("cache_write_tokens")
+        .and_then(|x| x.as_i64())
+        .unwrap_or(0);
+    let reasoning = usage
+        .get("reasoning_tokens")
+        .and_then(|x| x.as_i64())
+        .unwrap_or(0);
+    let total = usage
+        .get("total_tokens")
+        .and_then(|x| x.as_i64())
+        .unwrap_or(0);
+    if total <= 0 {
+        let sum = input + output + cache_r + cache_w + reasoning;
+        if sum > 0 {
+            usage["total_tokens"] = json!(sum);
+        }
+    }
+}
+
+fn finalize_usage_report(mut usage: Value, duration_ms: i64, pilot_kind: &str) -> Value {
+    usage["duration_ms"] = json!(duration_ms);
+    if usage
+        .get("provider")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .is_empty()
+    {
+        usage["provider"] = json!(pilot_kind);
+    }
+    if usage
+        .get("source")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .is_empty()
+    {
+        let has_tokens = usage
+            .get("total_tokens")
+            .and_then(|x| x.as_i64())
+            .unwrap_or(0)
+            > 0;
+        if has_tokens {
+            usage["source"] = json!("pilot");
+        } else {
+            usage.as_object_mut().map(|m| m.remove("source"));
+        }
+    }
+    usage
 }
 
 async fn set_status(
@@ -6572,7 +6891,6 @@ fn load_config() -> Result<RoverConfig> {
     }
 }
 
-/// Resolve a rover id or unambiguous prefix to a full rover id in the config.
 fn resolve_rover_id(cfg: &RoverConfig, key: &str) -> Result<String> {
     if cfg.rovers.contains_key(key) {
         return Ok(key.to_string());
@@ -6734,7 +7052,6 @@ async fn default_name() -> String {
     format!("{host}-{suffix}")
 }
 
-/// Refresh the rover's hub-side auto-tags (idempotent; leaves user tags alone).
 async fn refresh_auto_tags(
     client: &Client,
     hub: &str,
@@ -6763,7 +7080,6 @@ async fn refresh_auto_tags(
     }
 }
 
-/// The rover's hub-owned runtime config, falling back to the local config.
 async fn fetch_rover_config(
     client: &Client,
     hub: &str,
@@ -6956,7 +7272,6 @@ async fn stream_rover_config(
     }
 }
 
-/// Parse one SSE frame into (event, data), ignoring keepalive comment lines.
 fn parse_sse_frame(frame: &str) -> Option<(String, String)> {
     let mut event = String::new();
     let mut data = String::new();
@@ -7094,6 +7409,89 @@ async fn enroll(
         return Err(hub_status_error("enroll", resp).await);
     }
     Ok(resp.json().await?)
+}
+
+fn materialize_run_skills(
+    operation_directory: &Path,
+    pilot: &str,
+    skills: &[AcceptedSkill],
+) -> Result<()> {
+    validate_run_skills(skills)?;
+    rewrite_skill_root(&operation_directory.join(".ufo").join("skills"), skills)?;
+    if pilot == "codex" {
+        rewrite_skill_root(
+            &operation_directory
+                .join(".codex")
+                .join("skills")
+                .join("ufo"),
+            skills,
+        )?;
+    }
+    Ok(())
+}
+
+fn prepend_repo_context(operation_directory: &Path, prompt: String) -> Result<String> {
+    let path = operation_directory
+        .join(".ufo")
+        .join("context")
+        .join("repo.md");
+    if !path.exists() {
+        return Ok(prompt);
+    }
+    let context = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+    let context = context.trim();
+    if context.is_empty() {
+        return Ok(prompt);
+    }
+    Ok(format!(
+        "--- Repo context (.ufo/context/repo.md) ---\n{context}\n\n{prompt}"
+    ))
+}
+
+fn validate_run_skills(skills: &[AcceptedSkill]) -> Result<()> {
+    for skill in skills {
+        if !safe_operation_segment(&skill.slug) {
+            return Err(anyhow!("unsafe skill slug"));
+        }
+        for file in &skill.files {
+            clean_relative_skill_path(&file.path)?;
+        }
+    }
+    Ok(())
+}
+
+fn rewrite_skill_root(root: &Path, skills: &[AcceptedSkill]) -> Result<()> {
+    let _ = fs::remove_dir_all(root);
+    if skills.is_empty() {
+        return Ok(());
+    }
+    for skill in skills {
+        let skill_root = root.join(&skill.slug);
+        for file in &skill.files {
+            let rel = clean_relative_skill_path(&file.path)?;
+            let path = skill_root.join(rel);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(path, &file.content)?;
+        }
+    }
+    Ok(())
+}
+
+fn clean_relative_skill_path(path: &str) -> Result<PathBuf> {
+    let mut out = PathBuf::new();
+    for part in Path::new(path).components() {
+        match part {
+            std::path::Component::Normal(value) => out.push(value),
+            std::path::Component::CurDir => {}
+            _ => return Err(anyhow!("unsafe skill file path")),
+        }
+    }
+    if out.as_os_str().is_empty() {
+        return Err(anyhow!("empty skill file path"));
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

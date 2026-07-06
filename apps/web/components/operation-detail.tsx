@@ -2,9 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useTheme } from "next-themes";
-import { Antenna, Archive, ArchiveRestore, ArrowLeft, ArrowUp, ArrowUpDown, Check, ChevronDown, ChevronRight, Clock, Download, GitBranch, GitPullRequest, Grid2x2, Grid3x3, Layers, Link2, List, Loader2, MessageCircleQuestion, Moon, Paperclip, Pencil, Plus, RefreshCw, Reply, RotateCcw, ScrollText, SmilePlus, Sun, Tags, Trash2, Users, X } from "lucide-react";
+import { Antenna, Archive, ArchiveRestore, ArrowLeft, ArrowUp, ArrowUpDown, Check, ChevronDown, ChevronRight, Clock, Download, GitBranch, GitPullRequest, Grid2x2, Grid3x3, Layers, Link2, List, Loader2, MessageCircleQuestion, Moon, Paperclip, Pencil, Plus, RefreshCw, Reply, RotateCcw, ScrollText, SmilePlus, Sun, Tags, Trash2, Users, X, BookOpen } from "lucide-react";
 import { useApp } from "@/components/app-provider";
-import { del, getJSON } from "@/lib/api";
+import { del, getJSON, putJSON, withFleet } from "@/lib/api";
 import { AssetDeleteDialog } from "@/components/asset-delete-dialog";
 import { AssetKindIcon, AssetSourceIcon, assetExtension, assetInlineContentURL, assetKindLabel, assetSource, canPreviewAsset, formatAssetDate, formatBytes, isImageAsset, type AssetSource } from "@/components/asset-display";
 import { AssetPreview, AssetTextCopyButton } from "@/components/asset-preview";
@@ -16,6 +16,8 @@ import { Markdown } from "@/components/markdown";
 import { CrewOption, PilotOption } from "@/components/assignee-select";
 import { TelemetryDialog } from "@/components/telemetry-dialog";
 import { SignalsMenu } from "@/components/signals-menu";
+import { LocaleSwitcher } from "@/components/locale-switcher";
+import { formatRunUsage } from "@/lib/usage";
 import { SelectionActionsMenu, copyText, selectedTextWithin } from "@/components/selection-actions-menu";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -30,18 +32,15 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn, hideFlowControlFlags } from "@/lib/utils";
 import { appendAssetLink, assetFilePath } from "@/lib/assets";
-import { assigneeHasPilot, commentAuthor, memberLabel, pilotLabel, operationAssigneeValue, operationCode, operationWaitingOnSubOperations, PRIORITY, LABEL_COLOR, userLabel } from "@/lib/labels";
+import { monthLabel, priorityLabel, statusLabel, t as translate, useT, type MessageKey } from "@/lib/i18n";
+import { assigneeHasPilot, commentAuthor, memberLabel, pilotLabel, operationAssigneeValue, operationCode, operationWaitingOnSubOperations, PRIORITY_LEVELS, LABEL_COLOR, userLabel } from "@/lib/labels";
 import { elapsed } from "@/lib/timeline";
 import { DRAFT_SAVE_DELAY_SECONDS, formatTimestamp, useAssetPanelOpen, useAssetViewMode, useCommsOrder, useTimeFormat, type AssetViewMode, type TimeFormat } from "@/lib/view";
-import type { Asset, Comment, OperationReference, Operation, Reaction, Relation, Run, SourceAction } from "@/lib/types";
+import type { Asset, Comment, OperationReference, Operation, Reaction, Relation, Run, SourceAction, Skill } from "@/lib/types";
 
 const ACTIVE = new Set(["queued", "accepted", "starting", "running"]);
 const isActive = (r: Run) => ACTIVE.has(r.status);
 const STATUSES = ["backlog", "todo", "in_progress", "in_review", "done", "blocked", "canceled"];
-const STATUS_LABEL: Record<string, string> = {
-  backlog: "Backlog", todo: "Todo", in_progress: "In Progress", in_review: "In Review",
-  done: "Done", blocked: "Blocked", canceled: "Canceled",
-};
 const EMOJI = ["👍", "👎", "👀", "✅", "🙏", "🙌", "🎉", "💯", "❤️", "🔥", "🚀", "🙂", "☹️", "🙃", "😂", "🤣", "😅", "🤔", "🫠", "😢"];
 const COMMENT_PREVIEW_LIMIT = 30;
 const PILOT_STATUS_PREFIX = "Pilot set status: ";
@@ -51,7 +50,6 @@ const OPERATION_EDIT_DRAFT_PREFIX = "ufo.operationEditDraft.";
 const SUB_OPERATION_CREATE_DRAFT_PREFIX = "ufo.subOperationCreateDraft.";
 const COMMENT_CREATE_DRAFT_PREFIX = "ufo.commentCreateDraft.";
 const COMMENT_EDIT_DRAFT_PREFIX = "ufo.commentEditDraft.";
-const DATE_MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const REPLY_TEXTAREA_MAX_HEIGHT = 160;
 type AssetSourceFilter = "all" | AssetSource;
 type ActivityCommentRow = { comment: Comment; pilotStatus?: string; captainSplit?: string };
@@ -82,6 +80,31 @@ function missionMoveFromMetadata(metadata: Record<string, unknown> | undefined):
     to_name: typeof move.to_name === "string" ? move.to_name : undefined,
     at: typeof move.at === "string" ? move.at : undefined,
   };
+}
+
+
+type LoopNotice = {
+  routineId: string;
+  pulseId: string;
+  previousOperationId?: string;
+};
+
+function loopNoticeFromMetadata(metadata: Record<string, unknown> | undefined): LoopNotice | null {
+  const raw = metadata?.loop;
+  if (!raw || typeof raw !== "object") return null;
+  const loop = raw as Record<string, unknown>;
+  const routineId = typeof loop.routine_id === "string" ? loop.routine_id : "";
+  const pulseId = typeof loop.pulse_id === "string" ? loop.pulse_id : "";
+  if (!routineId || !pulseId) return null;
+  return {
+    routineId,
+    pulseId,
+    previousOperationId: typeof loop.previous_operation_id === "string" ? loop.previous_operation_id : undefined,
+  };
+}
+
+function shortPublicId(value: string) {
+  return value.length > 8 ? value.slice(0, 8) : value;
 }
 
 function operationEditDraftKey(operationId: string) {
@@ -130,12 +153,14 @@ function writeChangedSessionDraft(key: string, value: string, base: string) {
 
 export function OperationDetail() {
   const app = useApp();
+  const t = useT();
   const open = app.selectedOperation != null;
   const d = app.operationDetail;
   const [comment, setComment] = useState(() => {
     if (typeof window === "undefined" || !app.selectedOperation) return "";
     return readDraft(commentCreateDraftKey(app.selectedOperation)) ?? "";
   });
+  const [sendingComment, setSendingComment] = useState(false);
   const skipDraftSaveRef = useRef(true);
   const draftSaveTimerRef = useRef<number | null>(null);
   const pendingDraftSaveRef = useRef<{ key: string; value: string } | null>(null);
@@ -373,12 +398,13 @@ export function OperationDetail() {
     return (
       <div className="flex min-h-0 flex-1 flex-col bg-background">
         <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border px-4">
-          <Button variant="ghost" size="icon-sm" onClick={app.backOperation} title="Back"><ArrowLeft /></Button>
+          <Button variant="ghost" size="icon-sm" onClick={app.backOperation} title={t("common.back")}><ArrowLeft /></Button>
           <Loader2 className="size-4 animate-spin text-muted-foreground" />
-          <span className="flex-1 text-sm text-muted-foreground">Loading operation...</span>
+          <span className="flex-1 text-sm text-muted-foreground">{t("op.loading")}</span>
           <div className="flex items-center gap-2">
             <SignalsMenu />
-            <Button variant="ghost" size="icon-sm" onClick={toggleTheme} title={darkNow ? "Theme: dark" : "Theme: light"} aria-label="Toggle theme">
+            <LocaleSwitcher />
+            <Button variant="ghost" size="icon-sm" onClick={toggleTheme} title={darkNow ? t("theme.dark") : t("theme.light")} aria-label={t("theme.toggle")}>
               {darkNow ? <Moon /> : <Sun />}
             </Button>
           </div>
@@ -422,7 +448,7 @@ export function OperationDetail() {
     const ok = await app.setOperationMission(operationId, pendingMissionId);
     setMissionMoving(false);
     if (!ok) {
-      setMissionMoveError("Could not move this operation.");
+      setMissionMoveError(t("op.moveFailed"));
       return;
     }
     setPendingMissionId(null);
@@ -433,7 +459,7 @@ export function OperationDetail() {
   const fleetWorktree = worktreeValue(app.fleets.find((f) => f.id === app.fleet)?.metadata) ?? true;
   const effectiveWorktree = operationWorktree ?? missionWorktree ?? fleetWorktree;
   const worktreeSelectValue = operationWorktree === undefined ? "inherit" : operationWorktree ? "on" : "off";
-  const effectiveWorktreeLabel = effectiveWorktree ? "On" : "Off";
+  const effectiveWorktreeLabel = effectiveWorktree ? t("common.on") : t("common.off");
   const sourceActions = d.source_actions ?? [];
   const sourceRover = app.rovers.find((rover) => rover.id === d.source_rover_id);
   const sourceRepo = sourceRepoInfo(sourceActions, sourceRover?.metadata);
@@ -442,6 +468,11 @@ export function OperationDetail() {
   const pullRequests = d.pull_requests ?? [];
   const showSource = d.source_action_available || sourceActions.length > 0;
   const showPullRequests = showSource || pullRequests.length > 0;
+  const loopNotice = loopNoticeFromMetadata(d.operation.metadata as Record<string, unknown> | undefined);
+  const previousLoopOperation = loopNotice?.previousOperationId
+    ? (d.relations ?? []).find((r) => r.operation.id === loopNotice.previousOperationId)?.operation ?? null
+    : null;
+  const canManageSkills = app.myRole === "owner" || app.myRole === "admin";
   function setWorktreeOverride(v: string) {
     app.setOperationWorktree(operationId, v === "inherit" ? null : v === "on");
   }
@@ -484,7 +515,7 @@ export function OperationDetail() {
     try {
       const res = await del(`/api/v1/assets/${asset.id}`);
       if (!res.ok) {
-        setAssetDeleteError("Could not delete this attachment.");
+        setAssetDeleteError(t("op.deleteAssetFailed"));
         return;
       }
       setOperationAssets((prev) => prev.filter((item) => item.id !== asset.id));
@@ -570,7 +601,7 @@ export function OperationDetail() {
   }
   const loadOlderButton = commentsMore && (
     <Button variant="ghost" size="sm" className="w-full text-xs text-muted-foreground" onClick={loadOlderComments} disabled={loadingOlderComments}>
-      {loadingOlderComments ? "Loading earlier communications..." : "Load earlier communications"}
+      {loadingOlderComments ? t("op.loadingEarlier") : t("op.loadEarlier")}
     </Button>
   );
   const assignedPilot = assigneeHasPilot(d.operation, app.crews);
@@ -585,11 +616,21 @@ export function OperationDetail() {
   }, new Set<string>()) : new Set<string>();
   const activityRows = groupActivityRows(visibleActivity, activeRunInputCommentIds, queuedCommentIds);
   const queuedReplies = queuedCommentIds.size;
-  function sendReply() {
+  async function sendReply() {
     const body = comment.trim();
-    if (!body) return;
-    app.addComment(operationId, body);
-    setComment("");
+    if (!body || sendingComment) return;
+    setSendingComment(true);
+    try {
+      const ok = await app.addComment(operationId, body);
+      if (!ok) return;
+      clearCommentCreateDraftSaveTimer();
+      pendingDraftSaveRef.current = null;
+      commentRef.current = "";
+      setComment("");
+      localStorage.removeItem(commentCreateDraftKey(operationId));
+    } finally {
+      setSendingComment(false);
+    }
   }
   function clearReply() {
     clearCommentCreateDraftSaveTimer();
@@ -634,19 +675,21 @@ export function OperationDetail() {
               >
                 <div className="px-3 py-1">
                   <div className="flex items-start gap-2">
-                    <Textarea ref={replyTextareaRef} value={comment} onFocus={() => setInsertTarget("comment")} onChange={(e) => { commentRef.current = e.target.value; setComment(e.target.value); }} placeholder="Reply…" className="min-h-20 max-h-[160px] flex-1 resize-none overflow-hidden border-0 bg-transparent px-2 py-1.5 shadow-none focus-visible:ring-0" />
+                    <Textarea ref={replyTextareaRef} value={comment} onFocus={() => setInsertTarget("comment")} onChange={(e) => { commentRef.current = e.target.value; setComment(e.target.value); }} placeholder={t("op.replyPlaceholder")} className="min-h-20 max-h-[160px] flex-1 resize-none overflow-hidden border-0 bg-transparent px-2 py-1.5 shadow-none focus-visible:ring-0" />
                     <div className="flex w-[5.75rem] shrink-0 items-center justify-end gap-1 pt-0.5">
-                      <Button type="button" variant="ghost" size="icon-sm" className="text-muted-foreground" title="Clear reply" aria-label="Clear reply" disabled={!comment} onMouseDown={(e) => e.preventDefault()} onClick={clearReply}>
+                      <Button type="button" variant="ghost" size="icon-sm" className="text-muted-foreground" title={t("op.clearReply")} aria-label={t("op.clearReply")} disabled={!comment} onMouseDown={(e) => e.preventDefault()} onClick={clearReply}>
                         <RotateCcw className="size-3.5" />
                       </Button>
-                      <Button type="button" variant="ghost" size="icon-sm" className="text-muted-foreground" title="Add attachment" aria-label="Add attachment" disabled={assetUploading} onMouseDown={rememberUploadInsertTarget} onClick={openAssetPicker}>
+                      <Button type="button" variant="ghost" size="icon-sm" className="text-muted-foreground" title={t("op.addAttachment")} aria-label={t("op.addAttachment")} disabled={assetUploading} onMouseDown={rememberUploadInsertTarget} onClick={openAssetPicker}>
                         {assetUploading ? <Loader2 className="size-3.5 animate-spin" /> : <Paperclip className="size-3.5" />}
                       </Button>
-                      <Button type="button" size="icon-sm" className="size-8 rounded-full bg-brand/85 text-brand-foreground hover:bg-brand/95" title="Send" aria-label="Send reply" disabled={!comment.trim()} onClick={sendReply}><ArrowUp className="size-5" /></Button>
+                      <Button type="button" size="icon-sm" className="size-8 rounded-full bg-brand/85 text-brand-foreground hover:bg-brand/95" title={t("common.send")} aria-label={t("op.sendReply")} disabled={!comment.trim() || sendingComment} onClick={sendReply}>
+                        {sendingComment ? <Loader2 className="size-5 animate-spin" /> : <ArrowUp className="size-5" />}
+                      </Button>
                     </div>
                   </div>
                   <div className="flex items-center justify-between gap-2 px-2 pt-1 text-[11px] text-muted-foreground">
-                    <span>{assignedPilot ? (activeRun ? "Pilot is already working. Your reply will queue for the next turn." : "Replying resumes the pilot's session.") : ""}</span>
+                    <span>{assignedPilot ? (activeRun ? t("op.pilotWorkingQueue") : t("op.replyResumesPilot")) : ""}</span>
                   </div>
                 </div>
               </form>
@@ -683,20 +726,25 @@ export function OperationDetail() {
     <>
       <div className="flex min-h-0 flex-1 flex-col bg-background" onPaste={handlePaste} onDragOver={handleDragOver} onDrop={handleDrop}>
         <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border px-4">
-          <Button variant="ghost" size="icon-sm" onClick={app.backOperation} title="Back"><ArrowLeft /></Button>
+          <Button variant="ghost" size="icon-sm" onClick={app.backOperation} title={t("common.back")}><ArrowLeft /></Button>
           <div className="flex min-w-0 flex-1 items-center gap-2">
-            <StatusIcon status={d.operation.status} subOperations={waitingOnSubOperations} className="size-3.5" />
-            <span className="flex h-4 items-center font-mono text-[11px] font-medium uppercase text-muted-foreground">{operationCode(d.operation, app.missions)}</span>
-            <span className="flex h-4 min-w-0 items-center truncate text-sm font-medium">{d.operation.title}</span>
+            <StatusIcon status={d.operation.status} subOperations={waitingOnSubOperations} className="size-3.5 shrink-0" />
+            <p className="min-w-0 truncate text-sm font-medium leading-5">
+              <span className="mr-2 font-mono text-xs font-medium uppercase text-muted-foreground">
+                {operationCode(d.operation, app.missions)}
+              </span>
+              <span className="text-foreground">{d.operation.title}</span>
+            </p>
           </div>
           <div className="flex items-center gap-2">
             {(d.operation.status === "done" || d.operation.status === "canceled") && (
-              <Button size="sm" variant="ghost" onClick={() => app.setArchived(d.operation.id, !d.operation.archived)} title={d.operation.archived ? "Unarchive" : "Archive"}>
-                {d.operation.archived ? <ArchiveRestore /> : <Archive />} {d.operation.archived ? "Unarchive" : "Archive"}
+              <Button size="sm" variant="ghost" onClick={() => app.setArchived(d.operation.id, !d.operation.archived)} title={d.operation.archived ? t("common.unarchive") : t("common.archive")}>
+                {d.operation.archived ? <ArchiveRestore /> : <Archive />} {d.operation.archived ? t("common.unarchive") : t("common.archive")}
               </Button>
             )}
             <SignalsMenu />
-            <Button variant="ghost" size="icon-sm" onClick={toggleTheme} title={darkNow ? "Theme: dark" : "Theme: light"} aria-label="Toggle theme">
+            <LocaleSwitcher />
+            <Button variant="ghost" size="icon-sm" onClick={toggleTheme} title={darkNow ? t("theme.dark") : t("theme.light")} aria-label={t("theme.toggle")}>
               {darkNow ? <Moon /> : <Sun />}
             </Button>
           </div>
@@ -717,14 +765,14 @@ export function OperationDetail() {
                       e.preventDefault();
                       cancelOperationBodyEdit();
                     }}
-                    placeholder="Title"
+                    placeholder={t("common.title")}
                     className="h-auto px-2 py-1 text-xl font-semibold leading-snug"
                   />
                 ) : (
                   <h1 className="text-xl font-semibold leading-snug">{d.operation.title}</h1>
                 )}
                 {d.operation.orchestrating && (
-                  <Badge variant="secondary" className="gap-1 text-[10px]"><Users className="size-2.5" /> Captain Orchestrating Sub-Operations</Badge>
+                  <Badge variant="secondary" className="gap-1 text-[10px]"><Users className="size-2.5" /> {t("op.captainOrchestrating")}</Badge>
                 )}
                 <div className="space-y-1.5">
                   {editingBody ? (
@@ -760,7 +808,7 @@ export function OperationDetail() {
                 {d.operation.status === "in_review" && d.runs.some((r) => r.needs_input) && (
                   <div className="flex items-center gap-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">
                     <MessageCircleQuestion className="size-4 shrink-0 text-warning" />
-                    <span>A pilot is waiting for your input — reply below to continue.</span>
+                    <span>{t("op.handoffReply")}</span>
                   </div>
                 )}
                 {settledRun && <SettledRunBanner run={settledRun} onTelemetry={openTelemetry} />}
@@ -782,10 +830,10 @@ export function OperationDetail() {
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <h2 className="text-sm font-semibold">Communications</h2>
+                      <h2 className="text-sm font-semibold">{t("op.communications")}</h2>
                       {queuedReplies > 0 && (
                         <span
-                          title="New replies are queued for the pilot's next turn."
+                          title={t("op.queuedForNextTurn")}
                           className="inline-flex items-center gap-1 rounded-full bg-warning/10 px-1.5 py-0.5 text-[11px] text-warning ring-1 ring-warning/25"
                         >
                           <Layers className="size-3" />
@@ -798,15 +846,15 @@ export function OperationDetail() {
                         variant="ghost"
                         size="icon-sm"
                         className="size-7 text-muted-foreground"
-                        title={commsOrder === "oldest_top" ? "Oldest top" : "Oldest bottom"}
-                        aria-label="Toggle communications order"
+                        title={commsOrder === "oldest_top" ? t("comms.oldestTop") : t("comms.oldestBottom")}
+                        aria-label={t("comms.toggleOrder")}
                         onClick={() => setCommsOrder(commsOrder === "oldest_top" ? "oldest_bottom" : "oldest_top")}
                       >
                         <ArrowUpDown className="size-3.5" />
                       </Button>
                     </div>
                   </div>
-                  {d.comments.length === 0 && <p className="text-sm text-muted-foreground">No communications yet.</p>}
+                  {d.comments.length === 0 && <p className="text-sm text-muted-foreground">{t("op.noComms")}</p>}
                   {commsOrder === "oldest_top" && loadOlderButton}
                   {activityRows.map((row) => "commentGroup" in row ? (
                     <div
@@ -818,11 +866,11 @@ export function OperationDetail() {
                     >
                       <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-medium">
                         {row.status === "working" ? (
-                          <span className="text-brand">{row.commentGroup.length} Comments</span>
+                          <span className="text-brand">{t("op.commentsCount", { count: row.commentGroup.length })}</span>
                         ) : (
                           <span className="inline-flex items-center gap-1 text-warning">
                             <Clock className="size-3" />
-                            {row.commentGroup.length} Queued Comments
+                            {t("op.queuedCommentsCount", { count: row.commentGroup.length })}
                           </span>
                         )}
                       </div>
@@ -873,25 +921,25 @@ export function OperationDetail() {
             <div className="min-h-0 w-72 shrink-0 overflow-y-auto border-l border-border bg-muted/20">
               <div className="divide-y divide-border/60 text-sm">
                 <div className="space-y-0.5 p-4">
-                  <PropRow label="Status">
+                  <PropRow label={t("common.status")}>
                     <RailSelect value={d.operation.status} onValueChange={(v) => app.moveOperation(d.operation.id, v)}>
-                      {STATUSES.map((s) => <SelectItem key={s} value={s}><span className="flex items-center gap-2"><StatusIcon status={s} className="size-3.5" /> {STATUS_LABEL[s]}</span></SelectItem>)}
+                      {STATUSES.map((s) => <SelectItem key={s} value={s}><span className="flex items-center gap-2"><StatusIcon status={s} className="size-3.5" /> {statusLabel(s)}</span></SelectItem>)}
                     </RailSelect>
                   </PropRow>
-                  <PropRow label="Assignee">
-                    <RailSelect value={operationAssigneeValue(d.operation, app.user)} onValueChange={assigneeChange} placeholder="Unassigned">
+                  <PropRow label={t("common.assignee")}>
+                    <RailSelect value={operationAssigneeValue(d.operation, app.user)} onValueChange={assigneeChange} placeholder={t("common.unassigned")}>
                       <SelectItem value="me">{userLabel(app.user)}</SelectItem>
                       {sortedCrews.map((c) => <SelectItem key={`c${c.id}`} value={`crew:${c.id}`}><CrewOption crew={c} crewIcon="emoji" /></SelectItem>)}
                       {sortedPilots.map((p) => <SelectItem key={`p${p.kind}`} value={`pilot:${p.kind}`} disabled={p.rovers === 0}><PilotOption kind={p.kind} unavailable={p.rovers === 0} /></SelectItem>)}
                       {sortedMembers.map((m) => <SelectItem key={`u${m.id}`} value={`user:${m.id}`}>🧑 {m.name || m.email}</SelectItem>)}
                     </RailSelect>
                   </PropRow>
-                  <PropRow label="Priority">
+                  <PropRow label={t("common.priority")}>
                     <RailSelect value={String(d.operation.priority)} onValueChange={(v) => app.setPriority(d.operation.id, Number(v))}>
-                      {PRIORITY.map((p, i) => <SelectItem key={i} value={String(i)}><span className="flex items-center gap-2"><PriorityIcon level={i} className="size-3.5" /> {p.label}</span></SelectItem>)}
+                      {PRIORITY_LEVELS.map((i) => <SelectItem key={i} value={String(i)}><span className="flex items-center gap-2"><PriorityIcon level={i} className="size-3.5" /> {priorityLabel(i)}</span></SelectItem>)}
                     </RailSelect>
                   </PropRow>
-                  <PropRow label="Mission">
+                  <PropRow label={t("common.mission")}>
                     {d.operation.main_operation_id ? (
                       <span className="truncate font-mono text-xs" title={operationMission?.name}>{operationMission?.key ?? "—"}</span>
                     ) : (
@@ -915,63 +963,78 @@ export function OperationDetail() {
                   {missionMoveNotice && (
                     <div
                       className="mx-0 mt-1 rounded-md border border-warning/35 bg-warning/10 px-2 py-1.5 text-[11px] leading-snug text-warning"
-                      title={missionMoveNotice.at ? `Moved at ${missionMoveNotice.at}` : undefined}
+                      title={missionMoveNotice.at ? t("op.movedAt", { at: missionMoveNotice.at }) : undefined}
                     >
-                      Moved from{" "}
-                      <span className="font-mono font-medium">
-                        {missionMoveNotice.from_key}
-                      </span>
-                      {missionMoveNotice.from_name ? ` (${missionMoveNotice.from_name})` : ""}
-                      . Prior mission context no longer applies to new runs.
+                      {t("op.movedFrom", {
+                        key: missionMoveNotice.from_key,
+                        name: missionMoveNotice.from_name ? ` (${missionMoveNotice.from_name})` : "",
+                      })}
                     </div>
                   )}
                 </div>
 
                 <div className="p-4">
-                  <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium uppercase text-muted-foreground"><Tags className="size-3.5" /> Labels</p>
+                  <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium uppercase text-muted-foreground"><Tags className="size-3.5" /> {t("common.labels")}</p>
                   <Labels op={d.operation} />
+
+                {loopNotice && (
+                  <div className="border-t border-border p-4">
+                    <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium uppercase text-muted-foreground"><RefreshCw className="size-3.5" /> {t("op.loop")}</p>
+                    <div className="space-y-1 text-sm">
+                      {loopNotice.previousOperationId && (
+                        <button type="button" className="text-left text-brand hover:underline" onClick={() => app.openOperation(loopNotice.previousOperationId!)}>
+                          {t("op.loopPrevious", { id: shortPublicId(loopNotice.previousOperationId) })}
+                          {previousLoopOperation?.title ? ` · ${previousLoopOperation.title}` : ""}
+                        </button>
+                      )}
+                      <p className="text-xs text-muted-foreground">{t("op.loopPulse", { id: shortPublicId(loopNotice.pulseId) })}</p>
+                    </div>
+                  </div>
+                )}
+                {canManageSkills && <OperationSkills operationId={d.operation.id} fleetId={app.fleet} />}
+
                 </div>
 
                 <div className="p-4">
-                  <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium uppercase text-muted-foreground"><Antenna className="size-3.5" /> Dispatch · rover tags</p>
+                  <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium uppercase text-muted-foreground"><Antenna className="size-3.5" /> {t("op.dispatchRoverTags")}</p>
                   <div className="space-y-1.5">
                     <div className="flex items-start gap-2 text-xs">
-                      <span className="w-12 shrink-0 pt-1 text-muted-foreground">Need</span>
-                      <TagEditor tags={d.operation.required_tags ?? []} onChange={(t) => app.setOperationTags(d.operation.id, t, d.operation.excluded_tags ?? [])} placeholder="any" />
+                      <span className="w-12 shrink-0 pt-1 text-muted-foreground">{t("op.need")}</span>
+                      <TagEditor tags={d.operation.required_tags ?? []} onChange={(t) => app.setOperationTags(d.operation.id, t, d.operation.excluded_tags ?? [])} placeholder={t("common.any")} />
                     </div>
                     <div className="flex items-start gap-2 text-xs">
-                      <span className="w-12 shrink-0 pt-1 text-muted-foreground">Avoid</span>
-                      <TagEditor tags={d.operation.excluded_tags ?? []} onChange={(t) => app.setOperationTags(d.operation.id, d.operation.required_tags ?? [], t)} placeholder="none" />
+                      <span className="w-12 shrink-0 pt-1 text-muted-foreground">{t("op.avoid")}</span>
+                      <TagEditor tags={d.operation.excluded_tags ?? []} onChange={(t) => app.setOperationTags(d.operation.id, d.operation.required_tags ?? [], t)} placeholder={t("common.none")} />
                     </div>
                   </div>
                 </div>
 
                 <div className="p-4">
-                  <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium uppercase text-muted-foreground"><Link2 className="size-3.5" /> Relationships</p>
+                  <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium uppercase text-muted-foreground"><Link2 className="size-3.5" /> {t("op.relationships")}</p>
                   <Relationships op={d.operation} relations={d.relations ?? []} />
                 </div>
 
                 {showSource && (
                   <div className="p-4">
-                    <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium uppercase text-muted-foreground"><GitBranch className="size-3.5" /> Source</p>
+                    <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium uppercase text-muted-foreground"><GitBranch className="size-3.5" /> {t("op.source")}</p>
                     <div className="mb-2 space-y-1">
-                      <PropRow label="Repo">
-                        <span className="min-w-0 truncate font-mono text-xs" title={sourceRepo?.address}>{sourceRepo?.address ?? "Unknown until rover reports"}</span>
+                      <PropRow label={t("op.repo")}>
+                        <span className="min-w-0 truncate font-mono text-xs" title={sourceRepo?.address}>{sourceRepo?.address ?? t("op.unknownUntilRover")}</span>
                       </PropRow>
                       {sourceRepo?.path && sourceRepo.path !== sourceRepo.address && (
-                        <PropRow label="Checkout">
+                        <PropRow label={t("op.checkout")}>
                           <span className="min-w-0 truncate font-mono text-xs" title={sourceRepo.path}>{sourceRepo.path}</span>
                         </PropRow>
                       )}
-                      <PropRow label="Worktree">
+                      <PropRow label={t("op.worktree")}>
                         <RailSelect value={worktreeSelectValue} onValueChange={setWorktreeOverride}>
-                          <SelectItem value="inherit"><span className="flex items-center gap-2"><GitBranch className="size-3.5" /> Inherit ({effectiveWorktreeLabel})</span></SelectItem>
-                          <SelectItem value="on"><span className="flex items-center gap-2"><GitBranch className="size-3.5" /> On</span></SelectItem>
-                          <SelectItem value="off"><span className="flex items-center gap-2"><GitBranch className="size-3.5" /> Off</span></SelectItem>
+                          <SelectItem value="inherit"><span className="flex items-center gap-2"><GitBranch className="size-3.5" /> {t("op.worktreeInherit", { value: effectiveWorktreeLabel })}</span></SelectItem>
+                          <SelectItem value="on"><span className="flex items-center gap-2"><GitBranch className="size-3.5" /> {t("common.on")}</span></SelectItem>
+                          <SelectItem value="off"><span className="flex items-center gap-2"><GitBranch className="size-3.5" /> {t("common.off")}</span></SelectItem>
                         </RailSelect>
                       </PropRow>
-                      <PropRow label="Worktree path">
-                        <span className="min-w-0 truncate font-mono text-xs" title={operationWorktreePath || operationWorktreeName || undefined}>{operationWorktreePath || operationWorktreeName || "Pending first dispatch"}</span>
+                      <PropRow label={t("op.worktreePath")}>
+                        <span className="min-w-0 truncate font-mono text-xs" title={operationWorktreePath || operationWorktreeName || undefined}>{operationWorktreePath || operationWorktreeName || t("op.pendingFirstDispatch")}</span>
                       </PropRow>
                     </div>
                     <SourceActions operationId={d.operation.id} worktreeEnabled={effectiveWorktree} actionAvailable={d.source_action_available} actions={sourceActions} timeFormat={timeFormat} />
@@ -980,14 +1043,14 @@ export function OperationDetail() {
 
                 {showPullRequests && (
                   <div className="p-4">
-                    <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium uppercase text-muted-foreground"><GitPullRequest className="size-3.5" /> Pull requests</p>
+                    <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium uppercase text-muted-foreground"><GitPullRequest className="size-3.5" /> {t("op.pullRequests")}</p>
                     <PullRequests operationId={d.operation.id} />
                   </div>
                 )}
 
                 <div className="space-y-1.5 p-4 text-xs text-muted-foreground">
                   <div className="flex items-center justify-between gap-2">
-                    <span>Created by</span>
+                    <span>{t("op.createdBy")}</span>
                     {d.operation.created_by ? (
                       <button type="button" className="truncate text-foreground hover:underline" onClick={() => app.openUser(d.operation.created_by!)}>
                         {memberLabel(d.operation.created_by, app.user, app.members, "—")}
@@ -996,12 +1059,12 @@ export function OperationDetail() {
                       <span className="text-foreground">—</span>
                     )}
                   </div>
-                  <div className="flex items-center justify-between"><span>Created</span><span>{timestamp(d.operation.created_at)}</span></div>
-                  <div className="flex items-center justify-between"><span>Updated</span><span>{timestamp(d.operation.updated_at)}</span></div>
-                  {d.operation.started_at && <div className="flex items-center justify-between"><span>Started</span><span>{timestamp(d.operation.started_at)}</span></div>}
-                  {d.operation.finished_at && <div className="flex items-center justify-between"><span>Finished</span><span>{timestamp(d.operation.finished_at)}</span></div>}
-                  <div className="flex items-center justify-between gap-2"><span>Start</span><DateField value={d.operation.start_date} onChange={(v) => app.setDates(d.operation.id, v, d.operation.due_date)} title="Planned start date" /></div>
-                  <div className="flex items-center justify-between gap-2"><span>Due</span><DateField value={d.operation.due_date} onChange={(v) => app.setDates(d.operation.id, d.operation.start_date, v)} /></div>
+                  <div className="flex items-center justify-between"><span>{t("common.created")}</span><span>{timestamp(d.operation.created_at)}</span></div>
+                  <div className="flex items-center justify-between"><span>{t("common.updated")}</span><span>{timestamp(d.operation.updated_at)}</span></div>
+                  {d.operation.started_at && <div className="flex items-center justify-between"><span>{t("common.start")}</span><span>{timestamp(d.operation.started_at)}</span></div>}
+                  {d.operation.finished_at && <div className="flex items-center justify-between"><span>{t("op.finished")}</span><span>{timestamp(d.operation.finished_at)}</span></div>}
+                  <div className="flex items-center justify-between gap-2"><span>{t("common.start")}</span><DateField value={d.operation.start_date} onChange={(v) => app.setDates(d.operation.id, v, d.operation.due_date)} title={t("op.plannedStart")} /></div>
+                  <div className="flex items-center justify-between gap-2"><span>{t("common.due")}</span><DateField value={d.operation.due_date} onChange={(v) => app.setDates(d.operation.id, d.operation.start_date, v)} /></div>
                 </div>
               </div>
             </div>
@@ -1032,11 +1095,9 @@ export function OperationDetail() {
       >
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Move operation to another mission?</DialogTitle>
+            <DialogTitle>{t("op.moveMissionTitle")}</DialogTitle>
             <DialogDescription>
-              This changes the display code, clears the pilot session, and switches
-              stacked context to the target mission. Sub-operations move with it.
-              Fleet stays the same.
+              {t("op.moveMissionDesc")}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm">
@@ -1049,7 +1110,9 @@ export function OperationDetail() {
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="mission-move-confirm" className="block text-xs leading-snug text-muted-foreground">
-                Type <span className="font-mono text-foreground">{currentOperationCode}</span> to confirm
+                {t("op.typeToConfirm", { code: currentOperationCode }).split(currentOperationCode).map((part, i, arr) => (
+                  <span key={i}>{part}{i < arr.length - 1 ? <span className="font-mono text-foreground">{currentOperationCode}</span> : null}</span>
+                ))}
               </Label>
               <Input
                 id="mission-move-confirm"
@@ -1084,7 +1147,7 @@ export function OperationDetail() {
                 setMissionMoveError(null);
               }}
             >
-              Cancel
+              {t("common.cancel")}
             </Button>
             <Button
               type="button"
@@ -1093,7 +1156,7 @@ export function OperationDetail() {
               onClick={() => void confirmMissionMove()}
             >
               {missionMoving ? <Loader2 className="size-4 animate-spin" /> : null}
-              Move operation
+              {t("op.moveOperation")}
             </Button>
           </div>
         </DialogContent>
@@ -1139,6 +1202,7 @@ function OperationAssetsPanel({
   onInsert: (asset: Asset) => void;
   onDelete: (asset: Asset) => void;
 }) {
+  const t = useT();
   const panelRef = useRef<HTMLDivElement>(null);
   const sourceCounts = assetSourceCounts(assets);
   const filteredAssets = source === "all" ? assets : assets.filter((asset) => assetSource(asset) === source);
@@ -1201,36 +1265,36 @@ function OperationAssetsPanel({
       <div className="flex min-w-0 items-center gap-2 px-2">
         <button onClick={onToggle} className="inline-flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded py-0.5 text-left text-[11px] font-medium uppercase text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground active:bg-brand/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
           {open ? <ChevronDown className="size-3.5 shrink-0" /> : <ChevronRight className="size-3.5 shrink-0" />}
-          <span className="truncate">Attachments</span>
+          <span className="truncate">{t("op.attachments")}</span>
           {!open && <AttachmentCount count={assets.length} />}
           {loading && <Loader2 className="size-3 animate-spin" />}
         </button>
         {open && assets.length > 0 && (
           <div className="flex shrink-0 items-center rounded-md bg-muted/60 p-0.5">
-            <Button type="button" variant="ghost" size="icon-sm" className={cn("size-6 text-muted-foreground", view === "grid" && "bg-background text-foreground shadow-sm")} title="Grid view" aria-label="Grid view" aria-pressed={view === "grid"} onClick={() => onView("grid")}>
+            <Button type="button" variant="ghost" size="icon-sm" className={cn("size-6 text-muted-foreground", view === "grid" && "bg-background text-foreground shadow-sm")} title={t("op.gridView")} aria-label={t("op.gridView")} aria-pressed={view === "grid"} onClick={() => onView("grid")}>
               <Grid2x2 className="size-3.5" />
             </Button>
-            <Button type="button" variant="ghost" size="icon-sm" className={cn("size-6 text-muted-foreground", view === "compact_grid" && "bg-background text-foreground shadow-sm")} title="Compact grid view" aria-label="Compact grid view" aria-pressed={view === "compact_grid"} onClick={() => onView("compact_grid")}>
+            <Button type="button" variant="ghost" size="icon-sm" className={cn("size-6 text-muted-foreground", view === "compact_grid" && "bg-background text-foreground shadow-sm")} title={t("op.compactGridView")} aria-label={t("op.compactGridView")} aria-pressed={view === "compact_grid"} onClick={() => onView("compact_grid")}>
               <Grid3x3 className="size-3.5" />
             </Button>
-            <Button type="button" variant="ghost" size="icon-sm" className={cn("size-6 text-muted-foreground", view === "list" && "bg-background text-foreground shadow-sm")} title="List view" aria-label="List view" aria-pressed={view === "list"} onClick={() => onView("list")}>
+            <Button type="button" variant="ghost" size="icon-sm" className={cn("size-6 text-muted-foreground", view === "list" && "bg-background text-foreground shadow-sm")} title={t("op.listView")} aria-label={t("op.listView")} aria-pressed={view === "list"} onClick={() => onView("list")}>
               <List className="size-3.5" />
             </Button>
           </div>
         )}
-        <Button type="button" variant="ghost" size="icon-sm" className="size-7 text-muted-foreground" title="Add attachment" aria-label="Add attachment" disabled={uploading} onClick={onUpload}>
+        <Button type="button" variant="ghost" size="icon-sm" className="size-7 text-muted-foreground" title={t("op.addAttachment")} aria-label={t("op.addAttachment")} disabled={uploading} onClick={onUpload}>
           {uploading ? <Loader2 className="size-3.5 animate-spin" /> : <Plus className="size-3.5" />}
         </Button>
       </div>
       {open && (
         <div className="space-y-1">
           {assets.length === 0 ? (
-            <div className="px-2 py-3 text-xs text-muted-foreground">No attachments.</div>
+            <div className="px-2 py-3 text-xs text-muted-foreground">{t("op.noAttachmentsPeriod")}</div>
           ) : (
             <>
               <AssetSourceFilterBar source={source} counts={sourceCounts} onSource={onSource} />
               {filteredAssets.length === 0 ? (
-                <div className="px-2 py-3 text-xs text-muted-foreground">No matching attachments.</div>
+                <div className="px-2 py-3 text-xs text-muted-foreground">{t("op.noMatchingAttachments")}</div>
               ) : view === "list" ? (
                 <AssetList assets={filteredAssets} currentPreview={currentPreview} deletingAssetId={deletingAssetId} insertTarget={insertTarget} onPreview={onPreview} onInsert={onInsert} onDelete={onDelete} />
               ) : (
@@ -1244,7 +1308,7 @@ function OperationAssetsPanel({
                 <AssetKindIcon asset={currentPreview} />
                 <span className="min-w-0 flex-1 truncate font-medium">{currentPreview.filename}</span>
                 <AssetTextCopyButton asset={currentPreview} />
-                <Button variant="ghost" size="icon-sm" className="size-6 shrink-0 text-muted-foreground" title="Close preview" aria-label="Close preview" onClick={onClearPreview}>
+                <Button variant="ghost" size="icon-sm" className="size-6 shrink-0 text-muted-foreground" title={t("op.closePreview")} aria-label={t("op.closePreview")} onClick={onClearPreview}>
                   <X className="size-3.5" />
                 </Button>
               </div>
@@ -1289,10 +1353,11 @@ function gridPreviewTarget(root: HTMLElement | null, assets: Asset[], currentID:
 }
 
 function AssetSourceFilterBar({ source, counts, onSource }: { source: AssetSourceFilter; counts: Record<AssetSource, number>; onSource: (source: AssetSourceFilter) => void }) {
+  const t = useT();
   const options: { value: AssetSourceFilter; label: string; count: number }[] = [
-    { value: "all", label: "All", count: counts.upload + counts.output },
-    { value: "upload", label: "Uploads", count: counts.upload },
-    { value: "output", label: "Outputs", count: counts.output },
+    { value: "all", label: t("op.assetAll"), count: counts.upload + counts.output },
+    { value: "upload", label: t("op.assetUploads"), count: counts.upload },
+    { value: "output", label: t("op.assetOutputs"), count: counts.output },
   ];
   return (
     <div className="flex px-2 pb-1">
@@ -1360,7 +1425,7 @@ function AssetGrid({ assets, compact = false, currentPreview, deletingAssetId, i
         return (
           <div key={asset.id} data-asset-id={asset.id} className={tileClass}>
             {previewable ? (
-              <button type="button" className="block w-full rounded-md text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset" title={`Preview ${asset.filename}`} aria-label={`Preview ${asset.filename}`} aria-pressed={selected} onClick={(e) => { e.currentTarget.blur(); onPreview(asset); }}>
+              <button type="button" className="block w-full rounded-md text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset" title={translate("op.previewAsset", { name: asset.filename })} aria-label={translate("op.previewAsset", { name: asset.filename })} aria-pressed={selected} onClick={(e) => { e.currentTarget.blur(); onPreview(asset); }}>
                 {body}
               </button>
             ) : body}
@@ -1401,7 +1466,7 @@ function AssetList({ assets, currentPreview, deletingAssetId, insertTarget, onPr
         return (
           <div key={asset.id} data-asset-id={asset.id} className={rowClass}>
             {previewable ? (
-              <button type="button" className="flex min-w-0 flex-1 items-center gap-2 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset" title={`Preview ${asset.filename}`} aria-label={`Preview ${asset.filename}`} aria-pressed={selected} onClick={(e) => { e.currentTarget.blur(); onPreview(asset); }}>
+              <button type="button" className="flex min-w-0 flex-1 items-center gap-2 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset" title={translate("op.previewAsset", { name: asset.filename })} aria-label={translate("op.previewAsset", { name: asset.filename })} aria-pressed={selected} onClick={(e) => { e.currentTarget.blur(); onPreview(asset); }}>
                 {body}
               </button>
             ) : (
@@ -1447,15 +1512,17 @@ function AssetActions({
   onDelete: (asset: Asset) => void;
   className?: string;
 }) {
+  const t = useT();
+  const targetLabel = insertTarget === "body" ? t("op.insertTargetBody") : t("op.insertTargetReply");
   return (
     <div className={cn("flex gap-1 p-0.5", className)}>
-      <Button variant="ghost" size="icon-sm" className="size-6 text-muted-foreground" title={`Insert into ${insertTarget === "body" ? "body" : "reply"}`} aria-label={`Insert ${asset.filename} into ${insertTarget === "body" ? "body" : "reply"}`} onClick={() => onInsert(asset)}>
+      <Button variant="ghost" size="icon-sm" className="size-6 text-muted-foreground" title={insertTarget === "body" ? t("op.insertIntoBody") : t("op.insertIntoReply")} aria-label={t("op.insertAsset", { name: asset.filename, target: targetLabel })} onClick={() => onInsert(asset)}>
         <Link2 className="size-3.5" />
       </Button>
-      <Button asChild variant="ghost" size="icon-sm" className="size-6 text-muted-foreground" title="Download file" aria-label={`Download ${asset.filename}`}>
+      <Button asChild variant="ghost" size="icon-sm" className="size-6 text-muted-foreground" title={t("op.downloadFile")} aria-label={t("op.downloadAsset", { name: asset.filename })}>
         <a href={contentURL} target="_blank" rel="noreferrer"><Download className="size-3.5" /></a>
       </Button>
-      <Button variant="ghost" size="icon-sm" className="size-6 text-muted-foreground hover:text-destructive" title="Delete attachment" aria-label={`Delete ${asset.filename}`} disabled={deleting} onClick={() => onDelete(asset)}>
+      <Button variant="ghost" size="icon-sm" className="size-6 text-muted-foreground hover:text-destructive" title={t("op.deleteAttachment")} aria-label={t("op.deleteAsset", { name: asset.filename })} disabled={deleting} onClick={() => onDelete(asset)}>
         {deleting ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
       </Button>
     </div>
@@ -1475,7 +1542,6 @@ function mergeAssets(...groups: Asset[][]) {
   return merged;
 }
 
-// A compact label-left / control-right property row for the detail rail.
 function PropRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex min-h-8 items-center justify-between gap-2">
@@ -1485,7 +1551,6 @@ function PropRow({ label, children }: { label: string; children: React.ReactNode
   );
 }
 
-// Borderless compact Select for the rail (value reads as inline text until hovered).
 function RailSelect({ value, onValueChange, placeholder, children }: { value: string; onValueChange: (v: string) => void; placeholder?: string; children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   return (
@@ -1500,8 +1565,8 @@ function RailSelect({ value, onValueChange, placeholder, children }: { value: st
   );
 }
 
-// Low-key date control that still opens the native picker explicitly.
 function DateField({ value, onChange, title }: { value: string | null; onChange: (v: string | null) => void; title?: string }) {
+  const t = useT();
   const inputRef = useRef<HTMLInputElement>(null);
   function openPicker() {
     const input = inputRef.current;
@@ -1517,7 +1582,7 @@ function DateField({ value, onChange, title }: { value: string | null; onChange:
     <>
       <button type="button" onClick={openPicker} title={title} className={cn(RAIL_CONTROL_CLASS, "group inline-flex h-4 min-h-0 items-center px-1 py-0 leading-4")}>
         <span className={cn(!value && "text-muted-foreground group-hover:text-accent-foreground")}>
-          {value ? literalDateLabel(value) : "Set date"}
+          {value ? literalDateLabel(value) : t("op.setDate")}
         </span>
       </button>
       <input ref={inputRef} type="date" value={value ?? ""} onChange={(e) => onChange(e.target.value || null)} className="sr-only" tabIndex={-1} />
@@ -1530,14 +1595,14 @@ function literalDateLabel(value: string) {
   if (!match) return value;
   const month = Number(match[2]);
   const day = Number(match[3]);
-  const monthLabel = DATE_MONTH_LABELS[month - 1];
-  return monthLabel && day >= 1 && day <= 31 ? `${monthLabel} ${day}` : value;
+  if (month < 1 || month > 12 || day < 1 || day > 31) return value;
+  return `${monthLabel(month - 1)} ${day}`;
 }
 
 function pilotStatusFromComment(c: Comment) {
   if (c.author_type !== "system" || !c.body.startsWith(PILOT_STATUS_PREFIX)) return null;
   const status = c.body.slice(PILOT_STATUS_PREFIX.length).trim();
-  return STATUS_LABEL[status] ? status : null;
+  return STATUSES.includes(status) ? status : null;
 }
 
 function captainSplitFromComment(c: Comment) {
@@ -1592,7 +1657,6 @@ function groupActivityRows(rows: ActivityCommentRow[], processingIds: Set<string
 function runForPilotComment(c: Comment, runs: Run[]) {
   if (c.author_type !== "pilot" || !c.author_pilot_kind) return null;
   const at = new Date(c.created_at).getTime();
-  // Nearest preceding run by the same pilot.
   return runs
     .filter((r) => r.pilot === c.author_pilot_kind && new Date(r.created_at).getTime() <= at)
     .sort((a, b) => b.created_at.localeCompare(a.created_at))[0] ?? null;
@@ -1639,8 +1703,15 @@ function marqueeDuration(text: string) {
 }
 
 function runStatusLabel(run: Run) {
-  if (run.status === "canceled") return "Canceled";
-  return run.status.slice(0, 1).toUpperCase() + run.status.slice(1);
+  if (run.status === "canceled") return translate("op.canceled");
+  if (run.status === "failed") return translate("op.failed");
+  if (run.status === "blocked") return translate("op.blocked");
+  if (run.status === "queued") return translate("op.queued");
+  if (run.status === "accepted") return translate("op.accepted");
+  if (run.status === "starting") return translate("op.starting");
+  if (run.status === "running") return translate("op.running");
+  if (run.status === "succeeded") return translate("op.succeeded");
+  return run.status;
 }
 
 function SplitIcon() {
@@ -1684,11 +1755,12 @@ function EditActions({
   className?: string;
   buttonClassName?: string;
 }) {
+  const t = useT();
   const buttonClass = cn("text-muted-foreground", buttonClassName);
   if (!editing) {
     return (
       <div className={cn("flex items-center gap-1", className)}>
-        <Button variant="ghost" size="icon-sm" className={buttonClass} title="Edit" aria-label="Edit" onClick={onEdit}>
+        <Button variant="ghost" size="icon-sm" className={buttonClass} title={t("common.edit")} aria-label={t("common.edit")} onClick={onEdit}>
           <Pencil className="size-3.5" />
         </Button>
       </div>
@@ -1696,13 +1768,13 @@ function EditActions({
   }
   return (
     <div className={cn("flex items-center gap-1", className)}>
-      <Button variant="ghost" size="icon-sm" className={buttonClass} title="Reset draft" aria-label="Reset draft" disabled={resetDisabled} onClick={onReset}>
+      <Button variant="ghost" size="icon-sm" className={buttonClass} title={t("op.resetDraft")} aria-label={t("op.resetDraft")} disabled={resetDisabled} onClick={onReset}>
         <RotateCcw className="size-3.5" />
       </Button>
-      <Button variant="ghost" size="icon-sm" className={buttonClass} title="Cancel edit" aria-label="Cancel edit" onClick={onCancel}>
+      <Button variant="ghost" size="icon-sm" className={buttonClass} title={t("op.cancelEdit")} aria-label={t("op.cancelEdit")} onClick={onCancel}>
         <X className="size-3.5" />
       </Button>
-      <Button variant="ghost" size="icon-sm" className={buttonClass} title="Save edit" aria-label="Save edit" disabled={saveDisabled} onClick={onSave}>
+      <Button variant="ghost" size="icon-sm" className={buttonClass} title={t("op.saveEdit")} aria-label={t("op.saveEdit")} disabled={saveDisabled} onClick={onSave}>
         <Check className="size-3.5" />
       </Button>
     </div>
@@ -1711,6 +1783,7 @@ function EditActions({
 
 function CommentRow({ c, operationId, pilotStatus, captainSplit, run, queued = false, processing = false, processingFrame = true, showStatusBadge = true, onTelemetry, timeFormat, assets, onQuote }: { c: Comment; operationId: string; pilotStatus?: string; captainSplit?: string; run: Run | null; queued?: boolean; processing?: boolean; processingFrame?: boolean; showStatusBadge?: boolean; onTelemetry: (run: Run) => void; timeFormat: TimeFormat; assets: Asset[]; onQuote: (c: Comment, selectedText: string) => void }) {
   const app = useApp();
+  const t = useT();
   const rowRef = useRef<HTMLDivElement>(null);
   const quoteMenuRef = useRef<HTMLDivElement>(null);
   const quoteMenuTextRef = useRef("");
@@ -1778,7 +1851,7 @@ function CommentRow({ c, operationId, pilotStatus, captainSplit, run, queued = f
     setDraft(c.body);
   }
   async function removeComment() {
-    if (window.confirm("Delete queued comment?")) await app.deleteComment(operationId, c.id);
+    if (window.confirm(t("op.deleteQueuedComment"))) await app.deleteComment(operationId, c.id);
   }
   function hideQuoteMenu() {
     quoteMenuTextRef.current = "";
@@ -1848,12 +1921,12 @@ function CommentRow({ c, operationId, pilotStatus, captainSplit, run, queued = f
             {queued && showStatusBadge && <CommentStatusBadge />}
             {pilotStatus && (
               <span className="inline-flex items-center gap-1 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                <StatusIcon status={pilotStatus} className="size-3" /> {STATUS_LABEL[pilotStatus]}
+                <StatusIcon status={pilotStatus} className="size-3" /> {statusLabel(pilotStatus)}
               </span>
             )}
             {captainSplit && (
               <span className="inline-flex items-center gap-1 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                <SplitIcon /> {captainSplit} sub-operations
+                <SplitIcon /> {t("op.subOpsCount", { count: captainSplit })}
               </span>
             )}
           </div>
@@ -1869,20 +1942,20 @@ function CommentRow({ c, operationId, pilotStatus, captainSplit, run, queued = f
             </span>
             <div className={cn(canEditQueued ? "flex w-20 justify-end justify-self-end gap-1" : "grid w-[3.75rem] grid-cols-[1.5rem_2rem] items-center justify-end justify-self-end gap-1")}>
               {isPilot && run && (
-                <Button variant="ghost" size="icon-sm" className="size-6 justify-self-center text-muted-foreground" title="Open run log" aria-label="Open run log" onMouseDown={(e) => e.preventDefault()} onClick={() => onTelemetry(run)}>
+                <Button variant="ghost" size="icon-sm" className="size-6 justify-self-center text-muted-foreground" title={t("op.openRunLog")} aria-label={t("op.openRunLog")} onMouseDown={(e) => e.preventDefault()} onClick={() => onTelemetry(run)}>
                   <ScrollText className="size-3.5" />
                 </Button>
               )}
               {canEditQueued && !editing && (
                 <>
-                  <Button variant="ghost" size="icon-sm" className="size-6 text-muted-foreground" title="Delete queued comment" aria-label="Delete queued comment" onClick={removeComment}>
+                  <Button variant="ghost" size="icon-sm" className="size-6 text-muted-foreground" title={t("op.deleteQueuedCommentTitle")} aria-label={t("op.deleteQueuedCommentTitle")} onClick={removeComment}>
                     <Trash2 className="size-3.5" />
                   </Button>
                   <EditActions editing={false} onEdit={() => setEditing(true)} buttonClassName="size-6" />
                 </>
               )}
               {body.trim() && !systemPilotAction && (
-                <Button variant="ghost" size="icon-sm" className={cn("size-6 justify-self-center text-muted-foreground", !canEditQueued && "col-start-2")} title="Reply to comment" aria-label="Reply to comment" onMouseDown={(e) => { e.preventDefault(); clearQuoteSelection(); }} onClick={quoteComment}>
+                <Button variant="ghost" size="icon-sm" className={cn("size-6 justify-self-center text-muted-foreground", !canEditQueued && "col-start-2")} title={t("op.replyToComment")} aria-label={t("op.replyToComment")} onMouseDown={(e) => { e.preventDefault(); clearQuoteSelection(); }} onClick={quoteComment}>
                   <Reply className="size-3.5" />
                 </Button>
               )}
@@ -1926,18 +1999,18 @@ function CommentRow({ c, operationId, pilotStatus, captainSplit, run, queued = f
 }
 
 function CommentStatusBadge() {
+  const t = useT();
   return (
     <span
-      title="Queued for the pilot's next turn"
+      title={t("op.queuedBadge")}
       className="inline-flex items-center gap-1 rounded-full bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium normal-case tracking-normal text-warning"
     >
       <Clock className="size-3" />
-      Queued
+      {t("op.queued")}
     </span>
   );
 }
 
-// Shared reaction strip: existing reactions (hover → reactors) + an add-emoji menu.
 function ReactionBar({ reactions, onToggle }: { reactions: Reaction[]; onToggle: (emoji: string, on?: boolean) => void }) {
   return (
     <TooltipProvider delayDuration={150}>
@@ -1983,6 +2056,7 @@ function ReactionBar({ reactions, onToggle }: { reactions: Reaction[]; onToggle:
 
 function Labels({ op }: { op: Operation }) {
   const app = useApp();
+  const t = useT();
   const [name, setName] = useState("");
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<{ id: string; name: string; color: string } | null>(null);
@@ -2013,13 +2087,13 @@ function Labels({ op }: { op: Operation }) {
           editing?.id === l.id ? (
             <form key={l.id} onSubmit={saveRename} className={cn("inline-flex items-center gap-1 rounded-full px-1 py-0.5 text-[11px]", LABEL_COLOR[l.color] ?? LABEL_COLOR.gray)}>
               <Input value={editName} onChange={(e) => setEditName(e.target.value)} className="h-5 w-24 border-0 bg-transparent px-1 text-[11px] shadow-none" autoFocus />
-              <button type="button" onClick={cancelRename} className="opacity-70 hover:opacity-100" title="Cancel"><X className="size-2.5" /></button>
-              <button type="submit" className="opacity-70 hover:opacity-100" title="Save label"><Check className="size-2.5" /></button>
+              <button type="button" onClick={cancelRename} className="opacity-70 hover:opacity-100" title={t("common.cancel")}><X className="size-2.5" /></button>
+              <button type="submit" className="opacity-70 hover:opacity-100" title={t("op.saveLabel")}><Check className="size-2.5" /></button>
             </form>
           ) : (
             <span key={l.id} className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px]", LABEL_COLOR[l.color] ?? LABEL_COLOR.gray)}>
               {l.name}
-              <button onClick={() => startRename(l)} className="opacity-70 hover:opacity-100" title="Rename label"><Pencil className="size-2.5" /></button>
+              <button onClick={() => startRename(l)} className="opacity-70 hover:opacity-100" title={t("op.renameLabel")}><Pencil className="size-2.5" /></button>
               <button onClick={() => app.detachLabel(op.id, l.id)} className="opacity-70 hover:opacity-100"><X className="size-2.5" /></button>
             </span>
           )
@@ -2027,17 +2101,17 @@ function Labels({ op }: { op: Operation }) {
       </div>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="sm" className="h-6 px-1.5 text-xs text-muted-foreground"><Plus className="size-3" /> Add label</Button>
+          <Button variant="ghost" size="sm" className="h-6 px-1.5 text-xs text-muted-foreground"><Plus className="size-3" /> {t("op.addLabel")}</Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent className="w-56">
-          <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search labels..." className="mb-1 h-7 text-xs" />
+          <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t("op.searchLabels")} className="mb-1 h-7 text-xs" />
           <div className="max-h-44 overflow-auto">
             {available.map((l) => (
               editing?.id === l.id ? (
                 <form key={l.id} onSubmit={saveRename} className="flex items-center gap-1 p-1">
                   <Input value={editName} onChange={(e) => setEditName(e.target.value)} className="h-7 flex-1 text-xs" autoFocus />
-                  <Button type="button" variant="ghost" size="icon-sm" title="Cancel" onClick={cancelRename}><X className="size-3" /></Button>
-                  <Button type="submit" variant="ghost" size="icon-sm" title="Save label"><Check className="size-3" /></Button>
+                  <Button type="button" variant="ghost" size="icon-sm" title={t("common.cancel")} onClick={cancelRename}><X className="size-3" /></Button>
+                  <Button type="submit" variant="ghost" size="icon-sm" title={t("op.saveLabel")}><Check className="size-3" /></Button>
                 </form>
               ) : (
                 <div key={l.id} className="flex items-center rounded-sm hover:bg-accent hover:text-accent-foreground">
@@ -2045,7 +2119,7 @@ function Labels({ op }: { op: Operation }) {
                     <span className={cn("size-2 shrink-0 rounded-full", LABEL_COLOR[l.color] ?? LABEL_COLOR.gray)} />
                     <span className="truncate">{l.name}</span>
                   </button>
-                  <button type="button" onClick={() => startRename(l)} className="shrink-0 px-2 py-1.5 text-muted-foreground hover:text-foreground" title="Rename label" aria-label={`Rename ${l.name}`}>
+                  <button type="button" onClick={() => startRename(l)} className="shrink-0 px-2 py-1.5 text-muted-foreground hover:text-foreground" title={t("op.renameLabel")} aria-label={`${t("op.renameLabel")} ${l.name}`}>
                     <Pencil className="size-3" />
                   </button>
                 </div>
@@ -2063,7 +2137,7 @@ function Labels({ op }: { op: Operation }) {
               setQuery("");
             }}
           >
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="new label" className="h-7 text-xs" />
+            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={t("op.newLabel")} className="h-7 text-xs" />
           </form>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -2071,14 +2145,15 @@ function Labels({ op }: { op: Operation }) {
   );
 }
 
-const REL_LABEL: Record<string, string> = {
-  blocks: "Blocks", blocked_by: "Blocked by", relates: "Relates to",
-  duplicate: "Duplicate of", duplicated_by: "Duplicated by",
+const REL_LABEL_KEY: Record<string, MessageKey> = {
+  blocks: "relation.blocks", blocked_by: "relation.blocked_by", relates: "relation.relates",
+  duplicate: "relation.duplicate", duplicated_by: "relation.duplicated_by",
 };
 const REL_ORDER = ["blocks", "blocked_by", "relates", "duplicate", "duplicated_by"];
 
 function Relationships({ op, relations }: { op: Operation; relations: Relation[] }) {
   const app = useApp();
+  const t = useT();
   const [addKind, setAddKind] = useState<string | null>(null);
   const [q, setQ] = useState("");
   const [results, setResults] = useState<OperationReference[]>([]);
@@ -2102,7 +2177,7 @@ function Relationships({ op, relations }: { op: Operation; relations: Relation[]
     <div className="space-y-2">
       {groups.map((g) => (
         <div key={g.k} className="space-y-0.5">
-          <p className="text-[10px] uppercase tracking-wide text-muted-foreground/70">{REL_LABEL[g.k]}</p>
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground/70">{t(REL_LABEL_KEY[g.k])}</p>
           {g.items.map((r) => (
             <div key={r.id} className="group flex items-center gap-1 text-xs">
               <button onClick={() => app.openOperation(r.operation.id)} className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-left ring-inset hover:bg-brand/10 hover:text-foreground hover:ring-1 hover:ring-brand/40">
@@ -2118,26 +2193,26 @@ function Relationships({ op, relations }: { op: Operation; relations: Relation[]
       {addKind === null ? (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="sm" className="text-xs text-muted-foreground"><Plus className="size-3" /> Add relationship</Button>
+            <Button variant="ghost" size="sm" className="text-xs text-muted-foreground"><Plus className="size-3" /> {t("op.addRelationship")}</Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start">
-            {REL_ORDER.map((k) => <DropdownMenuItem key={k} onClick={() => { setAddKind(k); setQ(""); setResults([]); }}>{REL_LABEL[k]}…</DropdownMenuItem>)}
+            {REL_ORDER.map((k) => <DropdownMenuItem key={k} onClick={() => { setAddKind(k); setQ(""); setResults([]); }}>{t(REL_LABEL_KEY[k])}…</DropdownMenuItem>)}
           </DropdownMenuContent>
         </DropdownMenu>
       ) : (
         <div className="space-y-1">
           <div className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-muted-foreground/70">
-            {REL_LABEL[addKind]}
+            {t(REL_LABEL_KEY[addKind])}
             <button onClick={() => setAddKind(null)} className="ml-auto hover:text-foreground"><X className="size-3" /></button>
           </div>
-          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search operations…" className="h-7 text-xs" autoFocus />
+          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t("op.searchOperations")} className="h-7 text-xs" autoFocus />
           <div className="max-h-40 space-y-0.5 overflow-auto">
             {selfMatch && (
               <div className="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left text-xs text-muted-foreground opacity-70">
                 <StatusIcon status={selfMatch.status} className="size-3.5 shrink-0" />
                 <span className="font-mono text-[10px]">{operationCode(selfMatch as Operation, app.missions)}</span>
                 <span className="min-w-0 flex-1 truncate">{selfMatch.title}</span>
-                <span className="text-[10px] uppercase">Current</span>
+                <span className="text-[10px] uppercase">{t("op.current")}</span>
               </div>
             )}
             {results.map((o) => (
@@ -2147,7 +2222,7 @@ function Relationships({ op, relations }: { op: Operation; relations: Relation[]
                 <span className="truncate">{o.title}</span>
               </button>
             ))}
-            {q && results.length === 0 && !selfMatch && <p className="px-1.5 py-1 text-xs text-muted-foreground">No matches.</p>}
+            {q && results.length === 0 && !selfMatch && <p className="px-1.5 py-1 text-xs text-muted-foreground">{t("op.noMatches")}</p>}
           </div>
         </div>
       )}
@@ -2184,27 +2259,30 @@ function operationWorktreePathInfo(runs: Run[], actions: SourceAction[]) {
   return "";
 }
 
-const SOURCE_ACTION_LABEL: Record<SourceAction["kind"], string> = {
-  apply_to_source: "Worktree -> source",
-  create_source_branch: "Worktree -> source branch",
-  refresh_from_source: "Source -> worktree",
+const SOURCE_ACTION_LABEL_KEY: Record<SourceAction["kind"], MessageKey> = {
+  apply_to_source: "source.apply",
+  create_source_branch: "source.branch",
+  commit_to_branch: "source.commit",
+  refresh_from_source: "source.refresh",
 };
-const SOURCE_ACTION_TITLE: Record<SourceAction["kind"], string> = {
-  apply_to_source: "Apply this operation worktree's diff back to the source checkout.",
-  create_source_branch: "Commit this operation worktree's changes to a local branch in the source repo.",
-  refresh_from_source: "Update this operation worktree from the source checkout, preserving its current diff.",
+const SOURCE_ACTION_TITLE_KEY: Record<SourceAction["kind"], MessageKey> = {
+  apply_to_source: "source.applyHint",
+  create_source_branch: "source.branchHint",
+  commit_to_branch: "source.commitHint",
+  refresh_from_source: "source.refreshHint",
 };
-const SOURCE_ACTION_STATUS: Record<SourceAction["status"], string> = {
-  queued: "Queued",
-  accepted: "Running",
-  succeeded: "Done",
-  failed: "Failed",
-  conflicted: "Conflict",
+const SOURCE_ACTION_STATUS_KEY: Record<SourceAction["status"], MessageKey> = {
+  queued: "source.queued",
+  accepted: "source.running",
+  succeeded: "source.done",
+  failed: "source.failed",
+  conflicted: "source.conflict",
 };
 const SOURCE_ACTION_VISIBLE_LIMIT = 3;
 
 function SourceActions({ operationId, worktreeEnabled, actionAvailable, actions, timeFormat }: { operationId: string; worktreeEnabled: boolean; actionAvailable: boolean; actions: SourceAction[]; timeFormat: TimeFormat }) {
   const app = useApp();
+  const t = useT();
   const [busy, setBusy] = useState<SourceAction["kind"] | null>(null);
   const active = actions.some((a) => a.status === "queued" || a.status === "accepted");
   const visible = actions.slice(0, SOURCE_ACTION_VISIBLE_LIMIT);
@@ -2221,38 +2299,38 @@ function SourceActions({ operationId, worktreeEnabled, actionAvailable, actions,
   return (
     <div className="space-y-2">
       <div className="grid grid-cols-3 gap-1.5">
-        <span title={SOURCE_ACTION_TITLE.apply_to_source}>
+        <span title={t(SOURCE_ACTION_TITLE_KEY.apply_to_source)}>
           <Button type="button" variant="secondary" size="sm" className="h-7 w-full justify-center gap-1 text-[11px]" disabled={!canCreate} onClick={() => create("apply_to_source")}>
-            {busy === "apply_to_source" ? <Loader2 className="size-3 animate-spin" /> : <ArrowUp className="size-3" />} To source
+            {busy === "apply_to_source" ? <Loader2 className="size-3 animate-spin" /> : <ArrowUp className="size-3" />} {t("source.toSource")}
           </Button>
         </span>
-        <span title={SOURCE_ACTION_TITLE.create_source_branch}>
+        <span title={t(SOURCE_ACTION_TITLE_KEY.create_source_branch)}>
           <Button type="button" variant="secondary" size="sm" className="h-7 w-full justify-center gap-1 text-[11px]" disabled={!canCreate} onClick={() => create("create_source_branch")}>
-            {busy === "create_source_branch" ? <Loader2 className="size-3 animate-spin" /> : <GitBranch className="size-3" />} Branch
+            {busy === "create_source_branch" ? <Loader2 className="size-3 animate-spin" /> : <GitBranch className="size-3" />} {t("source.branchShort")}
           </Button>
         </span>
-        <span title={SOURCE_ACTION_TITLE.refresh_from_source}>
+        <span title={t(SOURCE_ACTION_TITLE_KEY.refresh_from_source)}>
           <Button type="button" variant="secondary" size="sm" className="h-7 w-full justify-center gap-1 text-[11px]" disabled={!canCreate} onClick={() => create("refresh_from_source")}>
-            {busy === "refresh_from_source" ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />} From source
+            {busy === "refresh_from_source" ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />} {t("source.fromSource")}
           </Button>
         </span>
       </div>
-      {!worktreeEnabled ? <div className="text-xs text-muted-foreground">Worktree is off.</div> : !actionAvailable && visible.length === 0 && <div className="text-xs text-muted-foreground">No source action available.</div>}
+      {!worktreeEnabled ? <div className="text-xs text-muted-foreground">{t("source.worktreeOff")}</div> : !actionAvailable && visible.length === 0 && <div className="text-xs text-muted-foreground">{t("source.notAvailable")}</div>}
       {visible.length > 0 && (
         <div className="space-y-1">
           {visible.map((action) => (
             <div key={action.id} className="space-y-0.5 rounded border border-border/70 bg-background/60 px-2 py-1.5 text-xs">
               <div className="flex min-w-0 items-center gap-1.5">
-                {action.kind === "create_source_branch" ? <GitBranch className="size-3 shrink-0 text-muted-foreground" /> : action.kind === "refresh_from_source" ? <RefreshCw className="size-3 shrink-0 text-muted-foreground" /> : <ArrowUp className="size-3 shrink-0 text-muted-foreground" />}
-                <span className="min-w-0 flex-1 truncate font-medium">{SOURCE_ACTION_LABEL[action.kind]}</span>
-                <span className={cn("shrink-0 text-[11px]", action.status === "succeeded" ? "text-success" : action.status === "failed" || action.status === "conflicted" ? "text-destructive" : "text-warning")}>{SOURCE_ACTION_STATUS[action.status]}</span>
+                {action.kind === "create_source_branch" || action.kind === "commit_to_branch" ? <GitBranch className="size-3 shrink-0 text-muted-foreground" /> : action.kind === "refresh_from_source" ? <RefreshCw className="size-3 shrink-0 text-muted-foreground" /> : <ArrowUp className="size-3 shrink-0 text-muted-foreground" />}
+                <span className="min-w-0 flex-1 truncate font-medium">{t(SOURCE_ACTION_LABEL_KEY[action.kind])}</span>
+                <span className={cn("shrink-0 text-[11px]", action.status === "succeeded" ? "text-success" : action.status === "failed" || action.status === "conflicted" ? "text-destructive" : "text-warning")}>{t(SOURCE_ACTION_STATUS_KEY[action.status])}</span>
               </div>
               {action.branch_name && <div className="truncate font-mono text-[11px] text-muted-foreground">{action.branch_name}{action.commit_sha ? ` @ ${action.commit_sha.slice(0, 8)}` : ""}</div>}
               {action.message && <div className="line-clamp-2 text-[11px] text-muted-foreground">{action.message}</div>}
               <div className="text-[10px] text-muted-foreground">{formatTimestamp(action.finished_at ?? action.updated_at, timeFormat)}</div>
             </div>
           ))}
-          {hidden > 0 && <div className="text-[10px] text-muted-foreground">{hidden} older source {hidden === 1 ? "action" : "actions"} hidden</div>}
+          {hidden > 0 && <div className="text-[10px] text-muted-foreground">{t("source.olderHidden", { count: hidden, noun: hidden === 1 ? t("source.action") : t("source.actions") })}</div>}
         </div>
       )}
     </div>
@@ -2261,6 +2339,7 @@ function SourceActions({ operationId, worktreeEnabled, actionAvailable, actions,
 
 function PullRequests({ operationId }: { operationId: string }) {
   const app = useApp();
+  const t = useT();
   const pullRequests = app.operationDetail?.pull_requests ?? [];
   const [adding, setAdding] = useState(false);
   const [url, setUrl] = useState("");
@@ -2289,17 +2368,17 @@ function PullRequests({ operationId }: { operationId: string }) {
             close();
           }}
         >
-          <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="Pull request URL..." className="h-7 text-xs" autoFocus />
-          <Button type="submit" variant="ghost" size="icon-sm" className="shrink-0 text-muted-foreground" title="Link pull request" disabled={!url.trim()}>
+          <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder={t("op.pullRequestUrl")} className="h-7 text-xs" autoFocus />
+          <Button type="submit" variant="ghost" size="icon-sm" className="shrink-0 text-muted-foreground" title={t("op.linkPullRequest")} disabled={!url.trim()}>
             <Check className="size-3" />
           </Button>
-          <Button type="button" variant="ghost" size="icon-sm" className="shrink-0 text-muted-foreground" title="Cancel" onClick={close}>
+          <Button type="button" variant="ghost" size="icon-sm" className="shrink-0 text-muted-foreground" title={t("common.cancel")} onClick={close}>
             <X className="size-3" />
           </Button>
         </form>
       ) : (
         <Button variant="ghost" size="sm" className="text-xs text-muted-foreground" onClick={() => setAdding(true)}>
-          <Plus className="size-3" /> Add pull request
+          <Plus className="size-3" /> {t("op.addPullRequest")}
         </Button>
       )}
     </div>
@@ -2308,6 +2387,7 @@ function PullRequests({ operationId }: { operationId: string }) {
 
 function ActiveRunBanner({ run, operationId, inputPreview, onTelemetry }: { run: Run; operationId: string; inputPreview: string; onTelemetry: (run: Run) => void }) {
   const app = useApp();
+  const t = useT();
   return (
     <div className="flex h-8 items-center gap-2.5">
       <Avatar className="size-6 shrink-0">
@@ -2333,10 +2413,10 @@ function ActiveRunBanner({ run, operationId, inputPreview, onTelemetry }: { run:
             <ActiveRunElapsed run={run} showIcon={false} />
           </span>
           <div className="grid h-8 w-[3.75rem] shrink-0 grid-cols-[1.5rem_2rem] items-center justify-end justify-self-end gap-1">
-            <Button variant="ghost" size="icon-sm" className="size-6 justify-self-center text-muted-foreground" title="Open run log" aria-label="Open run log" onMouseDown={(e) => e.preventDefault()} onClick={() => onTelemetry(run)}>
+            <Button variant="ghost" size="icon-sm" className="size-6 justify-self-center text-muted-foreground" title={t("op.openRunLog")} aria-label={t("op.openRunLog")} onMouseDown={(e) => e.preventDefault()} onClick={() => onTelemetry(run)}>
               <ScrollText className="size-3.5" />
             </Button>
-            <Button size="icon-sm" variant="ghost" className="size-8 justify-self-center rounded-full bg-destructive/10 text-destructive hover:bg-destructive/15" title="Stop" aria-label="Stop run" onMouseDown={(e) => e.preventDefault()} onClick={() => app.cancelRun(run.id, operationId)}>
+            <Button size="icon-sm" variant="ghost" className="size-8 justify-self-center rounded-full bg-destructive/10 text-destructive hover:bg-destructive/15" title={t("common.stop")} aria-label={t("op.stopRun")} onMouseDown={(e) => e.preventDefault()} onClick={() => app.cancelRun(run.id, operationId)}>
               <span className="block size-3 rounded-[2px] bg-destructive" aria-hidden />
             </Button>
           </div>
@@ -2347,9 +2427,11 @@ function ActiveRunBanner({ run, operationId, inputPreview, onTelemetry }: { run:
 }
 
 function SettledRunBanner({ run, onTelemetry }: { run: Run; onTelemetry: (run: Run) => void }) {
+  const t = useT();
   const tone = run.status === "canceled"
     ? "border-muted bg-muted/30 text-muted-foreground"
     : "border-destructive/25 bg-destructive/5 text-destructive";
+  const usageLine = formatRunUsage(run.usage, t);
   return (
     <div className={cn("flex items-center gap-2 rounded-md border p-2", tone)}>
       <Avatar className="size-6">
@@ -2357,12 +2439,19 @@ function SettledRunBanner({ run, onTelemetry }: { run: Run; onTelemetry: (run: R
           <PilotIcon kind={run.pilot ?? ""} size={12} />
         </AvatarFallback>
       </Avatar>
-      <div className="flex min-w-0 flex-1 items-center gap-2">
-        <span className="truncate text-sm font-medium">{pilotLabel(run.pilot ?? "pilot")}</span>
-        <span className="rounded-full bg-background/70 px-2 py-0.5 text-xs font-medium">{runStatusLabel(run)}</span>
-        <span className="text-[11px] tabular-nums opacity-80">{elapsed(run.created_at, new Date(run.updated_at).getTime())}</span>
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-sm font-medium">{pilotLabel(run.pilot ?? "pilot")}</span>
+          <span className="rounded-full bg-background/70 px-2 py-0.5 text-xs font-medium">{runStatusLabel(run)}</span>
+          <span className="text-[11px] tabular-nums opacity-80">{elapsed(run.created_at, new Date(run.updated_at).getTime())}</span>
+        </div>
+        {usageLine && (
+          <span className="truncate text-[11px] tabular-nums opacity-80" title={t("op.runCostUsage")}>
+            {usageLine}
+          </span>
+        )}
       </div>
-      <Button variant="ghost" size="icon-sm" className="size-7 text-current opacity-75 hover:opacity-100" title="Open run log" aria-label="Open run log" onMouseDown={(e) => e.preventDefault()} onClick={() => onTelemetry(run)}>
+      <Button variant="ghost" size="icon-sm" className="size-7 text-current opacity-75 hover:opacity-100" title={t("op.openRunLog")} aria-label={t("op.openRunLog")} onMouseDown={(e) => e.preventDefault()} onClick={() => onTelemetry(run)}>
         <ScrollText className="size-3.5" />
       </Button>
     </div>
@@ -2370,16 +2459,18 @@ function SettledRunBanner({ run, onTelemetry }: { run: Run; onTelemetry: (run: R
 }
 
 function SubOperationEntry({ adding, mainId, missionId, subOperations, onAdd, onDone, onCancel }: { adding: boolean; mainId: string; missionId: string | null; subOperations: Operation[]; onAdd: () => void; onDone: () => void; onCancel: () => void }) {
+  const t = useT();
   if (subOperations.length > 0) return <SubOperations mainId={mainId} missionId={missionId} subOperations={subOperations} />;
   if (adding) return <SubOperationForm mainId={mainId} missionId={missionId} onDone={onDone} onCancel={onCancel} />;
   return (
     <Button variant="ghost" size="sm" className="h-7 w-fit gap-1 px-2 text-xs text-muted-foreground" onClick={onAdd}>
-      <Plus className="size-3.5" /> Add sub-operation
+      <Plus className="size-3.5" /> {t("op.addSubOp")}
     </Button>
   );
 }
 
 function SubOperations({ mainId, missionId, subOperations }: { mainId: string; missionId: string | null; subOperations: Operation[] }) {
+  const t = useT();
   const [adding, setAdding] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const app = useApp();
@@ -2390,11 +2481,11 @@ function SubOperations({ mainId, missionId, subOperations }: { mainId: string; m
       <div className="flex min-w-0 items-center gap-2 px-2">
         <button onClick={() => setCollapsed((v) => !v)} className="inline-flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded py-0.5 text-left text-[11px] font-medium uppercase text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground active:bg-brand/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
           {collapsed ? <ChevronRight className="size-3.5 shrink-0" /> : <ChevronDown className="size-3.5 shrink-0" />}
-          <span className="truncate">Sub-operations</span>
+          <span className="truncate">{t("op.subOps")}</span>
           {subOperations.length > 0 && <span className="font-mono">{done}/{subOperations.length}</span>}
           <SubOperationPilotStack pilots={pilots} />
         </button>
-        <Button variant="ghost" size="icon-sm" className="size-5 text-muted-foreground" title="Add sub-operation" aria-label="Add sub-operation" onClick={() => { setAdding((v) => !v); setCollapsed(false); }}>
+        <Button variant="ghost" size="icon-sm" className="size-5 text-muted-foreground" title={t("op.addSubOp")} aria-label={t("op.addSubOp")} onClick={() => { setAdding((v) => !v); setCollapsed(false); }}>
           <Plus className="size-3.5" />
         </Button>
       </div>
@@ -2417,6 +2508,7 @@ function SubOperations({ mainId, missionId, subOperations }: { mainId: string; m
 
 function SubOperationForm({ mainId, missionId, onDone, onCancel }: { mainId: string; missionId: string | null; onDone: () => void; onCancel: () => void }) {
   const app = useApp();
+  const t = useT();
   const [title, setTitle] = useState(() => typeof window === "undefined" ? "" : sessionStorage.getItem(subOperationCreateDraftKey(mainId)) ?? "");
   const titleRef = useRef(title);
   titleRef.current = title;
@@ -2457,10 +2549,10 @@ function SubOperationForm({ mainId, missionId, onDone, onCancel }: { mainId: str
         if (op) { clearDraft(); onDone(); }
       }}
     >
-      <Input value={title} onChange={(e) => { titleRef.current = e.target.value; setTitle(e.target.value); }} placeholder="Sub-operation title…" className="h-7 text-xs" autoFocus />
-      <Button type="button" variant="ghost" size="icon-sm" className="size-7 text-muted-foreground" title="Clear title" aria-label="Clear title" disabled={!title} onClick={clearTitleDraft}><RotateCcw className="size-3.5" /></Button>
-      <Button type="button" variant="ghost" size="icon-sm" className="size-7 text-muted-foreground" title="Cancel" aria-label="Cancel" onClick={() => { clearDraft(); onCancel(); }}><X className="size-3.5" /></Button>
-      <Button size="sm" className="h-7 px-2 text-xs" disabled={!title.trim() || !missionId}>Add</Button>
+      <Input value={title} onChange={(e) => { titleRef.current = e.target.value; setTitle(e.target.value); }} placeholder={t("op.subOpTitle")} className="h-7 text-xs" autoFocus />
+      <Button type="button" variant="ghost" size="icon-sm" className="size-7 text-muted-foreground" title={t("op.clearTitle")} aria-label={t("op.clearTitle")} disabled={!title} onClick={clearTitleDraft}><RotateCcw className="size-3.5" /></Button>
+      <Button type="button" variant="ghost" size="icon-sm" className="size-7 text-muted-foreground" title={t("common.cancel")} aria-label={t("common.cancel")} onClick={() => { clearDraft(); onCancel(); }}><X className="size-3.5" /></Button>
+      <Button size="sm" className="h-7 px-2 text-xs" disabled={!title.trim() || !missionId}>{t("common.add")}</Button>
     </form>
   );
 }
@@ -2484,12 +2576,13 @@ function SubOperationPilotStack({ pilots }: { pilots: string[] }) {
 
 function SubOperationAssigneeIcon({ operation }: { operation: Operation }) {
   const app = useApp();
+  const t = useT();
   if (operation.assignee_type !== "pilot" || !operation.assignee_pilot_kind) return null;
   const pilot = app.pilots.find((p) => p.kind === operation.assignee_pilot_kind);
   const unavailable = !pilot || pilot.rovers === 0;
   return (
     <span
-      title={`${pilotLabel(operation.assignee_pilot_kind)}${unavailable ? " — no rover" : ""}`}
+      title={`${pilotLabel(operation.assignee_pilot_kind)}${unavailable ? t("assignee.noRover") : ""}`}
       className={cn("inline-flex size-5 shrink-0 items-center justify-center rounded-full border border-border bg-background text-muted-foreground", unavailable && "opacity-40 grayscale")}
     >
       <PilotIcon kind={operation.assignee_pilot_kind} size={12} />
@@ -2498,6 +2591,7 @@ function SubOperationAssigneeIcon({ operation }: { operation: Operation }) {
 }
 
 function ActiveRunElapsed({ run, showIcon = true }: { run: Run; showIcon?: boolean }) {
+  const t = useT();
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
@@ -2511,18 +2605,19 @@ function ActiveRunElapsed({ run, showIcon = true }: { run: Run; showIcon?: boole
       queued ? "text-warning" : "text-info",
     )}>
       {showIcon && <Icon className={cn("size-3", !queued && "animate-spin")} />}
-      {queued && "Queued "}
+      {queued && `${t("op.queued")} `}
       {elapsed(run.created_at, now)}
     </span>
   );
 }
 
 function ActiveRunPill({ run }: { run: Run }) {
+  const t = useT();
   const queued = run.status === "queued";
   return (
     <span
-      title={queued ? "Queued" : "Working"}
-      aria-label={queued ? "Queued" : "Working"}
+      title={queued ? t("op.queued") : t("op.working")}
+      aria-label={queued ? t("op.queued") : t("op.working")}
       className={cn(
       "flex size-6 shrink-0 items-center justify-center rounded-full",
       queued ? "bg-warning/10 text-warning" : "bg-info/10 text-info",
@@ -2530,4 +2625,140 @@ function ActiveRunPill({ run }: { run: Run }) {
       {queued ? <Clock className="size-3" /> : <Loader2 className="size-3 animate-spin" />}
     </span>
   );
+}
+
+function OperationSkills({ operationId, fleetId }: { operationId: string; fleetId: string }) {
+  const t = useT();
+  const [catalog, setCatalog] = useState<Skill[]>([]);
+  const [bound, setBound] = useState<Skill[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+  const [updateError, setUpdateError] = useState(false);
+  const [busySkill, setBusySkill] = useState<string | null>(null);
+  const boundIds = new Set(bound.map((skill) => skill.id));
+  const available = catalog.filter((skill) => !boundIds.has(skill.id));
+
+  useEffect(() => {
+    let ignore = false;
+    setLoading(true);
+    setLoadError(false);
+    setUpdateError(false);
+    setCatalog([]);
+    setBound([]);
+    Promise.all([
+      getJSON<Skill[]>(withFleet("/api/v1/skills", fleetId)),
+      getJSON<Skill[]>(withFleet(`/api/v1/skills?operation_id=${encodeURIComponent(operationId)}`, fleetId)),
+    ]).then(([fleetSkills, operationSkills]) => {
+      if (ignore) return;
+      if (!fleetSkills || !operationSkills) {
+        setLoadError(true);
+        return;
+      }
+      setCatalog(sortSkills(fleetSkills));
+      setBound(sortSkills(operationSkills));
+    }).catch(() => {
+      if (!ignore) setLoadError(true);
+    }).finally(() => {
+      if (!ignore) setLoading(false);
+    });
+    return () => { ignore = true; };
+  }, [fleetId, operationId]);
+
+  async function attachSkill(skillId: string) {
+    const skill = catalog.find((item) => item.id === skillId);
+    if (!skill || busySkill) return;
+    setBusySkill(skillId);
+    setUpdateError(false);
+    try {
+      const res = await putJSON(`/api/v1/operations/${operationId}/skills/${skill.id}`);
+      if (!res.ok) {
+        setUpdateError(true);
+        return;
+      }
+      setBound((prev) => sortSkills([...prev.filter((item) => item.id !== skill.id), skill]));
+    } catch {
+      setUpdateError(true);
+    } finally {
+      setBusySkill(null);
+    }
+  }
+
+  async function detachSkill(skill: Skill) {
+    if (busySkill) return;
+    setBusySkill(skill.id);
+    setUpdateError(false);
+    try {
+      const res = await del(`/api/v1/operations/${operationId}/skills/${skill.id}`);
+      if (!res.ok) {
+        setUpdateError(true);
+        return;
+      }
+      setBound((prev) => prev.filter((item) => item.id !== skill.id));
+    } catch {
+      setUpdateError(true);
+    } finally {
+      setBusySkill(null);
+    }
+  }
+
+  return (
+    <div className="p-4">
+      <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium uppercase text-muted-foreground">
+        <BookOpen className="size-3.5" /> {t("op.skills")}
+        {loading && <Loader2 className="ml-auto size-3 animate-spin" />}
+      </p>
+      <div className="space-y-2">
+        {loadError && <p className="rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">{t("op.skillsLoadError")}</p>}
+        {!loadError && updateError && <p className="rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">{t("op.skillsUpdateError")}</p>}
+        {!loading && !loadError && bound.length === 0 && <p className="text-xs text-muted-foreground">{t("skills.empty")}</p>}
+        {bound.length > 0 && (
+          <div className="space-y-1">
+            {bound.map((skill) => (
+              <div key={skill.id} className="group flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-xs hover:bg-accent/60">
+                <BookOpen className="size-3.5 shrink-0 text-muted-foreground" />
+                <span className="min-w-0 flex-1 truncate font-medium">{skill.name}</span>
+                <Badge variant="secondary" className="max-w-24 shrink-0 truncate font-mono text-[10px]">{skill.slug}</Badge>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  className="size-6 shrink-0 text-muted-foreground opacity-0 hover:text-destructive group-hover:opacity-100 group-focus-within:opacity-100"
+                  title={t("op.detachSkill", { name: skill.name })}
+                  aria-label={t("op.detachSkill", { name: skill.name })}
+                  disabled={busySkill === skill.id}
+                  onClick={() => void detachSkill(skill)}
+                >
+                  {busySkill === skill.id ? <Loader2 className="size-3 animate-spin" /> : <X className="size-3" />}
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+        {!loadError && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="sm" className="h-7 px-1.5 text-xs text-muted-foreground" disabled={loading || busySkill != null}>
+                <Plus className="size-3" /> {t("op.addSkill")}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-64">
+              {available.length === 0 ? (
+                <DropdownMenuItem disabled>{catalog.length === 0 ? t("skills.empty") : t("op.noAvailableSkills")}</DropdownMenuItem>
+              ) : available.map((skill) => (
+                <DropdownMenuItem key={skill.id} onClick={() => void attachSkill(skill.id)} className="gap-2">
+                  <BookOpen className="size-3.5 shrink-0 text-muted-foreground" />
+                  <span className="min-w-0 flex-1 truncate">{skill.name}</span>
+                  <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{skill.slug}</span>
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function sortSkills(skills: Skill[]) {
+  return [...skills].sort((a, b) => a.name.localeCompare(b.name));
 }

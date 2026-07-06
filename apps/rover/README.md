@@ -1,11 +1,13 @@
 # ufo-cli
 
-[![GitHub](https://img.shields.io/badge/GitHub-fengsi%2Fufo-181717?logo=github&style=for-the-badge)](https://github.com/fengsi/ufo)
-[![Build](https://img.shields.io/github/actions/workflow/status/fengsi/ufo/ci.yml?logo=github&style=for-the-badge)](https://github.com/fengsi/ufo/actions/workflows/ci.yml)
-[![crates.io](https://img.shields.io/crates/v/ufo-cli?style=for-the-badge)](https://crates.io/crates/ufo-cli)
-[![License](https://img.shields.io/crates/l/ufo-cli?style=for-the-badge)](https://github.com/fengsi/ufo/blob/main/LICENSE)
-[![Status](https://img.shields.io/badge/status-beta-blue?style=for-the-badge)](https://github.com/fengsi/ufo/blob/main/CHANGELOG.md)
-[![Rust](https://img.shields.io/badge/Rust-2024-B7410E?logo=rust&style=for-the-badge)](https://github.com/fengsi/ufo/blob/main/apps/rover/Cargo.toml)
+[![GitHub](https://img.shields.io/badge/GitHub-fengsi%2Fufo-181717?logo=github&style=flat-square)](https://github.com/fengsi/ufo)
+[![Build](https://img.shields.io/github/actions/workflow/status/fengsi/ufo/ci.yml?logo=github&style=flat-square)](https://github.com/fengsi/ufo/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/ufo-cli?style=flat-square)](https://crates.io/crates/ufo-cli)
+[![License](https://img.shields.io/crates/l/ufo-cli?style=flat-square)](https://github.com/fengsi/ufo/blob/main/LICENSE)
+[![Status](https://img.shields.io/badge/status-beta-blue?style=flat-square)](https://github.com/fengsi/ufo/blob/main/CHANGELOG.md)
+[![Rust](https://img.shields.io/badge/Rust-2024-B7410E?logo=rust&style=flat-square)](https://github.com/fengsi/ufo/blob/main/apps/rover/Cargo.toml)
+
+![UFO coordinating a fleet of local rovers from orbit](https://raw.githubusercontent.com/fengsi/ufo/main/.github/assets/banner.png)
 
 `ufo-cli` is the host-side rover for UFO. It enrolls a local machine into a
 UFO fleet, accepts queued operations, lets the assigned pilot drive
@@ -16,6 +18,8 @@ UFO is in public beta. Release notes call out upgrade caveats for each tagged
 release, and APIs, configuration, database schema, storage paths, and the
 rover protocol may still change before 1.0. Back up before upgrading,
 especially when testing arbitrary source commits.
+
+![Rover dashboard with rovers, operations, and events](https://raw.githubusercontent.com/fengsi/ufo/main/.github/assets/rover.png)
 
 ## Install
 
@@ -29,7 +33,7 @@ The installer puts `ufo` in `~/.local/bin` by default. Override with
 `UFO_ROVER_INSTALL_DIR=/usr/local/bin`, or pin a release with:
 
 ```bash
-curl -fsSL https://getufo.dev/install.sh | UFO_ROVER_VERSION=v0.5.0 sh
+curl -fsSL https://getufo.dev/install.sh | UFO_ROVER_VERSION=v0.6.1 sh
 ```
 
 Homebrew (macOS, Linux):
@@ -79,7 +83,10 @@ You can also pass the Hub with `UFO_HUB_URL=http://localhost:8080`.
 `ufo rover start` uses the Hub stored during enrollment.
 
 Enrollments are stored in `~/.ufo/rovers.json`, keyed by rover id. A host can
-hold enrollments for multiple fleets or servers.
+hold multiple enrollments, including enrollments for different Hubs. When you
+run `ufo rover start`, it loads the stored enrollments, keeps each ready for
+operation, and runs them concurrently according to each rover's `units` while
+reusing the same local AI CLIs on `PATH`.
 
 For code-based or non-browser enrollment, create an enrollment code from the
 Rovers panel and pass it with `UFO_ROVER_ENROLLMENT_CODE=<code> ufo rover
@@ -159,6 +166,14 @@ Set per-rover concurrency (1-100) in the web Rovers panel or during enrollment
 with `ufo rover enroll --units N` or `UFO_ROVER_UNITS=N`. `ufo rover start
 --units N` and `UFO_ROVER_UNITS` on start are only startup overrides until hub
 config is available.
+
+### Spend budget (optional enforcement)
+
+Cost/usage is always recorded when the pilot reports it. Optional accept caps
+use Hub `metadata.budget` on fleet, mission, operation, and/or rover
+(`period`, `max_runs`, `max_tokens`, `max_usd_micros`). Every set layer is
+enforced. Caps are per Hub resource — not process-wide env on multi-fleet
+hosts.
 
 ## Trust boundary
 

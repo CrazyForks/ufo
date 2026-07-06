@@ -1,5 +1,3 @@
-// Package auth holds password hashing and opaque token generation for the
-// email+password / cookie-session auth used by the Hub.
 package auth
 
 import (
@@ -23,7 +21,6 @@ const (
 	saltLen      = 16
 )
 
-// HashPassword returns an Argon2id hash of the plaintext password.
 func HashPassword(plaintext string) (string, error) {
 	salt := make([]byte, saltLen)
 	if _, err := rand.Read(salt); err != nil {
@@ -39,7 +36,6 @@ func HashPassword(plaintext string) (string, error) {
 	), nil
 }
 
-// CheckPassword reports whether plaintext matches the stored password hash.
 func CheckPassword(hash, plaintext string) bool {
 	if !strings.HasPrefix(hash, "$argon2id$") {
 		return false
@@ -105,7 +101,6 @@ func parseArgon2id(encoded string) ([]string, uint32, uint32, uint8, error) {
 	return parts, memory, time, threads, nil
 }
 
-// NewToken returns a URL-safe random token (session cookies, rover connection tokens).
 func NewToken() (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
@@ -114,7 +109,6 @@ func NewToken() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// HashToken returns an algorithm-tagged digest for high-entropy bearer tokens.
 func HashToken(token string) string {
 	sum := blake3.Sum256([]byte(token))
 	return "blake3:" + hex.EncodeToString(sum[:])

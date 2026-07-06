@@ -1,7 +1,6 @@
 import { cn } from "@/lib/utils";
-import { PRIORITY } from "@/lib/labels";
+import { priorityLabel } from "@/lib/i18n";
 
-// Priority glyphs use shape first, color second.
 const BARS = [
   { x: 1.5, y: 9, h: 5 },
   { x: 6.5, y: 5.5, h: 8.5 },
@@ -10,7 +9,7 @@ const BARS = [
 const COLOR = ["text-muted-foreground", "text-info", "text-warning", "text-destructive", "text-destructive"];
 
 export function PriorityIcon({ level, className }: { level: number; className?: string }) {
-  const label = PRIORITY[level]?.label ?? "Priority";
+  const label = priorityLabel(level);
   if (level >= 4) {
     return (
       <svg viewBox="0 0 16 16" fill="currentColor" role="img" aria-label={label} className={cn("text-destructive", className)}>

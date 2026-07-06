@@ -10,9 +10,6 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// websocketBroadcaster sends typed change events out to user WebSocket connections. Events
-// originate from PostgreSQL LISTEN/NOTIFY (so they reach every API instance), so no
-// external relay is needed.
 type websocketBroadcaster struct {
 	mu      sync.Mutex
 	byFleet map[int64]map[*websocketConn]bool
@@ -67,8 +64,6 @@ func (f *websocketBroadcaster) broadcast(fleet int64, kind string) {
 	}
 }
 
-// run consumes typed ufo_changed notifications and broadcasts them to current
-// members of the changed fleet.
 func (f *websocketBroadcaster) run(ctx context.Context, n *Notifier) {
 	sub, unsubscribe := n.Subscribe(changedChannel)
 	defer unsubscribe()
@@ -95,7 +90,6 @@ const (
 	websocketPingPeriod = 30 * time.Second
 )
 
-// websocketConnect upgrades the current user's live event stream.
 func (s *Server) websocketConnect(w http.ResponseWriter, r *http.Request) {
 	fleets, err := s.q.ListFleetsForUser(r.Context(), currentUser(r).ID)
 	if err != nil {
@@ -140,8 +134,6 @@ func (s *Server) websocketConnect(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Read pump: we don't expect client messages — just keep the pong-driven
-	// deadline fresh and detect close.
 	conn.SetReadLimit(512)
 	_ = conn.SetReadDeadline(time.Now().Add(websocketPongWait))
 	conn.SetPongHandler(func(string) error {

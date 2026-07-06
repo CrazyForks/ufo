@@ -133,6 +133,48 @@ CREATE TABLE crew_members (
     )
 );
 
+CREATE TABLE skills (
+    id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    public_id   uuid NOT NULL DEFAULT gen_random_uuid(),
+    fleet_id    bigint NOT NULL,
+    name        text NOT NULL,
+    slug        text NOT NULL,
+    description text NOT NULL DEFAULT '',
+    created_by  bigint,
+    archived    boolean NOT NULL DEFAULT FALSE,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    updated_at  timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT skills_fleet_id_slug_key UNIQUE (fleet_id, slug)
+);
+
+CREATE TABLE skill_files (
+    skill_id   bigint NOT NULL,
+    path       text NOT NULL,
+    content    text NOT NULL DEFAULT '',
+    size_bytes bigint NOT NULL DEFAULT 0 CHECK (size_bytes >= 0),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (skill_id, path)
+);
+
+CREATE TABLE skill_bindings (
+    fleet_id      bigint NOT NULL,
+    operation_id  bigint NOT NULL,
+    skill_id      bigint NOT NULL,
+    created_by    bigint,
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (operation_id, skill_id)
+);
+
+CREATE TABLE crew_skill_bindings (
+    fleet_id   bigint NOT NULL,
+    crew_id    bigint NOT NULL,
+    skill_id   bigint NOT NULL,
+    created_by bigint,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (crew_id, skill_id)
+);
+
 -- ============================ missions & operations ============================
 
 -- A mission is a fleet-scoped objective that groups operations. Its key prefixes
@@ -262,7 +304,7 @@ CREATE TABLE source_actions (
     operation_id    bigint NOT NULL,
     run_id          bigint,
     rover_id        bigint,
-    kind            text NOT NULL CHECK (kind IN ('apply_to_source', 'create_source_branch', 'refresh_from_source')),
+    kind            text NOT NULL CHECK (kind IN ('apply_to_source', 'create_source_branch', 'commit_to_branch', 'refresh_from_source')),
     status          text NOT NULL DEFAULT 'queued'
                     CHECK (status IN ('queued', 'accepted', 'succeeded', 'failed', 'conflicted')),
     branch_name     text NOT NULL DEFAULT '',
@@ -403,6 +445,29 @@ CREATE TABLE artifacts (
     created_at      timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE run_usage (
+    run_id              bigint PRIMARY KEY,
+    fleet_id            bigint NOT NULL,
+    operation_id        bigint NOT NULL,
+    rover_id            bigint,
+    pilot               text NOT NULL DEFAULT '',
+    provider            text NOT NULL DEFAULT '',
+    model               text NOT NULL DEFAULT '',
+    source              text
+                        CHECK (source IS NULL OR source IN ('pilot', 'estimate', 'run')),
+    input_tokens        bigint NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),
+    output_tokens       bigint NOT NULL DEFAULT 0 CHECK (output_tokens >= 0),
+    cache_read_tokens   bigint NOT NULL DEFAULT 0 CHECK (cache_read_tokens >= 0),
+    cache_write_tokens  bigint NOT NULL DEFAULT 0 CHECK (cache_write_tokens >= 0),
+    reasoning_tokens    bigint NOT NULL DEFAULT 0 CHECK (reasoning_tokens >= 0),
+    total_tokens        bigint NOT NULL DEFAULT 0 CHECK (total_tokens >= 0),
+    duration_ms         bigint CHECK (duration_ms IS NULL OR duration_ms >= 0),
+    cost_micros         bigint CHECK (cost_micros IS NULL OR cost_micros >= 0),
+    metadata            jsonb NOT NULL DEFAULT '{}'::jsonb
+                        CHECK (jsonb_typeof(metadata) = 'object'),
+    created_at          timestamptz NOT NULL DEFAULT now()
+);
+
 -- ============================ signals (human action queue) ============================
 
 CREATE TABLE signals (
@@ -438,6 +503,10 @@ CREATE UNIQUE INDEX rovers_public_id_idx ON rovers (public_id);
 CREATE INDEX rovers_auto_tags_idx ON rovers USING gin (auto_tags);
 CREATE INDEX rovers_tags_idx ON rovers USING gin (tags);
 CREATE INDEX crews_fleet_idx ON crews (fleet_id);
+CREATE INDEX skills_fleet_idx ON skills (fleet_id, slug) WHERE archived = FALSE;
+CREATE UNIQUE INDEX skills_public_id_idx ON skills (public_id);
+CREATE INDEX skill_bindings_fleet_idx ON skill_bindings (fleet_id, operation_id);
+CREATE INDEX crew_skill_bindings_fleet_idx ON crew_skill_bindings (fleet_id, crew_id);
 CREATE UNIQUE INDEX crews_public_id_idx ON crews (public_id);
 CREATE UNIQUE INDEX crew_members_user_idx ON crew_members (crew_id, user_id) WHERE user_id IS NOT NULL;
 CREATE UNIQUE INDEX crew_members_pilot_idx ON crew_members (crew_id, pilot_kind) WHERE pilot_kind IS NOT NULL;
@@ -486,11 +555,19 @@ CREATE INDEX runs_fleet_state_idx ON runs (fleet_id, status);
 CREATE UNIQUE INDEX runs_public_id_idx ON runs (public_id);
 CREATE UNIQUE INDEX runs_one_active_per_operation_idx ON runs (operation_id)
 WHERE status IN ('queued', 'accepted', 'starting', 'running');
+CREATE INDEX runs_mission_idx ON runs (mission_id) WHERE mission_id IS NOT NULL;
 CREATE INDEX run_events_run_idx ON run_events (run_id, id);
 CREATE INDEX run_messages_run_sequence_idx ON run_messages (run_id, sequence);
 CREATE INDEX artifacts_asset_idx ON artifacts (asset_id) WHERE asset_id IS NOT NULL;
 CREATE INDEX artifacts_run_idx ON artifacts (run_id);
 CREATE UNIQUE INDEX artifacts_public_id_idx ON artifacts (public_id);
+
+CREATE INDEX run_usage_fleet_created_idx ON run_usage (fleet_id, created_at DESC);
+CREATE INDEX run_usage_rover_created_idx ON run_usage (rover_id, created_at DESC)
+    WHERE rover_id IS NOT NULL;
+CREATE INDEX run_usage_operation_created_idx ON run_usage (operation_id, created_at DESC);
+CREATE INDEX runs_rover_finalized_idx ON runs (rover_id, finalized_at)
+    WHERE rover_id IS NOT NULL AND status IN ('succeeded', 'failed', 'canceled');
 
 CREATE UNIQUE INDEX signals_public_id_idx ON signals (public_id);
 CREATE INDEX signals_recipient_idx ON signals (fleet_id, recipient_user_id, read, archived);
@@ -510,6 +587,18 @@ ALTER TABLE rovers ADD CONSTRAINT rovers_enrollment_code_id_fkey FOREIGN KEY (en
 ALTER TABLE crews ADD CONSTRAINT crews_fleet_id_fkey FOREIGN KEY (fleet_id) REFERENCES fleets (id) ON DELETE CASCADE;
 ALTER TABLE crew_members ADD CONSTRAINT crew_members_crew_id_fkey FOREIGN KEY (crew_id) REFERENCES crews (id) ON DELETE CASCADE;
 ALTER TABLE crew_members ADD CONSTRAINT crew_members_user_id_fkey FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE;
+
+ALTER TABLE skills ADD CONSTRAINT skills_fleet_id_fkey FOREIGN KEY (fleet_id) REFERENCES fleets (id) ON DELETE CASCADE;
+ALTER TABLE skills ADD CONSTRAINT skills_created_by_fkey FOREIGN KEY (created_by) REFERENCES users (id) ON DELETE SET NULL;
+ALTER TABLE skill_files ADD CONSTRAINT skill_files_skill_id_fkey FOREIGN KEY (skill_id) REFERENCES skills (id) ON DELETE CASCADE;
+ALTER TABLE skill_bindings ADD CONSTRAINT skill_bindings_fleet_id_fkey FOREIGN KEY (fleet_id) REFERENCES fleets (id) ON DELETE CASCADE;
+ALTER TABLE skill_bindings ADD CONSTRAINT skill_bindings_operation_id_fkey FOREIGN KEY (operation_id) REFERENCES operations (id) ON DELETE CASCADE;
+ALTER TABLE skill_bindings ADD CONSTRAINT skill_bindings_skill_id_fkey FOREIGN KEY (skill_id) REFERENCES skills (id) ON DELETE CASCADE;
+ALTER TABLE skill_bindings ADD CONSTRAINT skill_bindings_created_by_fkey FOREIGN KEY (created_by) REFERENCES users (id) ON DELETE SET NULL;
+ALTER TABLE crew_skill_bindings ADD CONSTRAINT crew_skill_bindings_fleet_id_fkey FOREIGN KEY (fleet_id) REFERENCES fleets (id) ON DELETE CASCADE;
+ALTER TABLE crew_skill_bindings ADD CONSTRAINT crew_skill_bindings_crew_id_fkey FOREIGN KEY (crew_id) REFERENCES crews (id) ON DELETE CASCADE;
+ALTER TABLE crew_skill_bindings ADD CONSTRAINT crew_skill_bindings_skill_id_fkey FOREIGN KEY (skill_id) REFERENCES skills (id) ON DELETE CASCADE;
+ALTER TABLE crew_skill_bindings ADD CONSTRAINT crew_skill_bindings_created_by_fkey FOREIGN KEY (created_by) REFERENCES users (id) ON DELETE SET NULL;
 
 ALTER TABLE missions ADD CONSTRAINT missions_fleet_id_fkey FOREIGN KEY (fleet_id) REFERENCES fleets (id) ON DELETE CASCADE;
 ALTER TABLE labels ADD CONSTRAINT labels_fleet_id_fkey FOREIGN KEY (fleet_id) REFERENCES fleets (id) ON DELETE CASCADE;
@@ -556,6 +645,10 @@ ALTER TABLE run_events ADD CONSTRAINT run_events_run_id_fkey FOREIGN KEY (run_id
 ALTER TABLE run_messages ADD CONSTRAINT run_messages_run_id_fkey FOREIGN KEY (run_id) REFERENCES runs (id) ON DELETE CASCADE;
 ALTER TABLE artifacts ADD CONSTRAINT artifacts_asset_id_fkey FOREIGN KEY (asset_id) REFERENCES assets (id);
 ALTER TABLE artifacts ADD CONSTRAINT artifacts_run_id_fkey FOREIGN KEY (run_id) REFERENCES runs (id) ON DELETE CASCADE;
+ALTER TABLE run_usage ADD CONSTRAINT run_usage_run_id_fkey FOREIGN KEY (run_id) REFERENCES runs (id) ON DELETE CASCADE;
+ALTER TABLE run_usage ADD CONSTRAINT run_usage_fleet_id_fkey FOREIGN KEY (fleet_id) REFERENCES fleets (id) ON DELETE CASCADE;
+ALTER TABLE run_usage ADD CONSTRAINT run_usage_rover_id_fkey FOREIGN KEY (rover_id) REFERENCES rovers (id) ON DELETE SET NULL;
+ALTER TABLE run_usage ADD CONSTRAINT run_usage_operation_id_fkey FOREIGN KEY (operation_id) REFERENCES operations (id) ON DELETE CASCADE;
 
 ALTER TABLE signals ADD CONSTRAINT signals_fleet_id_fkey FOREIGN KEY (fleet_id) REFERENCES fleets (id) ON DELETE CASCADE;
 ALTER TABLE signals ADD CONSTRAINT signals_operation_id_fkey FOREIGN KEY (operation_id) REFERENCES operations (id) ON DELETE CASCADE;
@@ -861,3 +954,13 @@ CREATE TRIGGER pulses_changed_trigger
     AFTER INSERT OR UPDATE
     ON pulses
     FOR EACH ROW EXECUTE FUNCTION ufo_notify_pulse_changed();
+
+CREATE TRIGGER skills_updated_at_trigger
+    BEFORE UPDATE OF name, slug, description, archived
+    ON skills
+    FOR EACH ROW EXECUTE FUNCTION ufo_set_updated_at();
+
+CREATE TRIGGER skill_files_updated_at_trigger
+    BEFORE UPDATE OF content, size_bytes
+    ON skill_files
+    FOR EACH ROW EXECUTE FUNCTION ufo_set_updated_at();

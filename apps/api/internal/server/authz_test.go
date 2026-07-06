@@ -81,8 +81,6 @@ func newTestServerWithNotifier(t *testing.T) (*httptest.Server, *Server) {
 	return ts, srv
 }
 
-// do issues a request and returns the status and raw body. Auth is via the
-// client's cookie jar (UI) or a bearer token (rover); pass bearer="" for UI.
 func do(t *testing.T, c *http.Client, method, url, bearer string, body any) (int, []byte) {
 	t.Helper()
 	code, b, err := request(c, method, url, bearer, body)
@@ -141,7 +139,6 @@ func field(t *testing.T, body []byte, key string) string {
 	return s
 }
 
-// signup creates a user and returns a cookie-jar client authenticated as them.
 func signup(t *testing.T, ts *httptest.Server, name string) *http.Client {
 	t.Helper()
 	jar, _ := cookiejar.New(nil)
@@ -189,6 +186,501 @@ func testFleetFilteredURL(base, fleet, path string) string {
 
 func testFleetMemberURL(base, fleet, path string) string {
 	return base + "/v1/fleets/" + fleet + path
+}
+
+func assertAuthCookieAttrs(t *testing.T, setCookies []string) {
+	t.Helper()
+	seen := map[string]bool{}
+	for _, set := range setCookies {
+		name := sessionCookie
+		if strings.HasPrefix(set, accessCookie+"=") {
+			name = accessCookie
+		} else if !strings.HasPrefix(set, sessionCookie+"=") {
+			continue
+		}
+		seen[name] = true
+		lower := strings.ToLower(set)
+		if !strings.Contains(lower, "httponly") {
+			t.Fatalf("%s cookie missing HttpOnly: %s", name, set)
+		}
+		if !strings.Contains(lower, "samesite=lax") {
+			t.Fatalf("%s cookie missing SameSite=Lax: %s", name, set)
+		}
+		if !strings.Contains(set, "Path=/") {
+			t.Fatalf("%s cookie missing Path=/: %s", name, set)
+		}
+	}
+	if !seen[sessionCookie] || !seen[accessCookie] {
+		t.Fatalf("signup/login must set both cookies, got %v from %v", seen, setCookies)
+	}
+}
+
+// Personal fleet + Launch Bay + cookies; also logout → login and session remint.
+func TestSignupReadyForOperations(t *testing.T) {
+	ts := newTestServer(t)
+	jar, _ := cookiejar.New(nil)
+	c := &http.Client{Jar: jar}
+	email := fmt.Sprintf("signup-ready+%d@example.com", time.Now().UnixNano())
+	const password = "password123"
+
+	signupBody, _ := json.Marshal(map[string]string{
+		"email": email, "password": password, "name": "Ready User",
+	})
+	signupReq, err := http.NewRequest("POST", ts.URL+"/v1/auth/signup", bytes.NewReader(signupBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	signupReq.Header.Set("Content-Type", "application/json")
+	signupRes, err := c.Do(signupReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := io.ReadAll(signupRes.Body)
+	signupRes.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := signupRes.StatusCode
+	if code != http.StatusCreated {
+		t.Fatalf("signup: %d %s", code, b)
+	}
+	assertAuthCookieAttrs(t, signupRes.Header.Values("Set-Cookie"))
+	var authResp struct {
+		User struct {
+			Email string `json:"email"`
+			Name  string `json:"name"`
+		} `json:"user"`
+		FleetID string `json:"fleet_id"`
+	}
+	if err := json.Unmarshal(b, &authResp); err != nil || authResp.User.Email != email || authResp.User.Name != "Ready User" {
+		t.Fatalf("auth response: %v %s", err, b)
+	}
+	if authResp.FleetID == "" {
+		t.Fatalf("signup response missing fleet_id: %s", b)
+	}
+	_ = cookieValue(t, c, ts.URL, sessionCookie)
+	_ = cookieValue(t, c, ts.URL, accessCookie)
+
+	code, meB := do(t, c, "GET", ts.URL+"/v1/users/me", "", nil)
+	if code != http.StatusOK || field(t, meB, "email") != email {
+		t.Fatalf("me after signup: %d %s", code, meB)
+	}
+
+	code, fleetsB := do(t, c, "GET", ts.URL+"/v1/fleets", "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("list fleets: %d %s", code, fleetsB)
+	}
+	var fleets []map[string]any
+	if err := json.Unmarshal(fleetsB, &fleets); err != nil || len(fleets) != 1 {
+		t.Fatalf("expected 1 personal fleet, got %s", fleetsB)
+	}
+	fleetID, _ := fleets[0]["id"].(string)
+	if fleetID == "" || fleets[0]["kind"] != "personal" {
+		t.Fatalf("personal fleet: %s", fleetsB)
+	}
+	if fleetID != authResp.FleetID {
+		t.Fatalf("fleet_id response = %q, list = %q", authResp.FleetID, fleetID)
+	}
+
+	code, missionsB := do(t, c, "GET", testFleetFilteredURL(ts.URL, fleetID, "/missions"), "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("list missions: %d %s", code, missionsB)
+	}
+	var missions []map[string]any
+	if err := json.Unmarshal(missionsB, &missions); err != nil || len(missions) != 1 {
+		t.Fatalf("expected default mission, got %s", missionsB)
+	}
+	if missions[0]["name"] != defaultMissionName || missions[0]["key"] != defaultMissionKey {
+		t.Fatalf("default mission = %v, want %s/%s", missions[0], defaultMissionName, defaultMissionKey)
+	}
+	missionID, _ := missions[0]["id"].(string)
+
+	code, opB := do(t, c, "POST", ts.URL+"/v1/operations", "", map[string]any{
+		"fleet_id": fleetID, "mission_id": missionID, "title": "First op", "body": "from signup",
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("create operation after signup: %d %s", code, opB)
+	}
+	if field(t, opB, "id") == "" {
+		t.Fatalf("operation missing id: %s", opB)
+	}
+
+	logoutReq, err := http.NewRequest("POST", ts.URL+"/v1/auth/logout", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logoutRes, err := c.Do(logoutReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logoutRes.Body.Close()
+	if logoutRes.StatusCode != http.StatusNoContent {
+		t.Fatalf("logout = %d, want 204", logoutRes.StatusCode)
+	}
+	cleared := map[string]bool{}
+	for _, set := range logoutRes.Header.Values("Set-Cookie") {
+		if strings.Contains(set, sessionCookie+"=") {
+			cleared[sessionCookie] = true
+			if !strings.Contains(strings.ToLower(set), "samesite=lax") {
+				t.Fatalf("logout session clear missing SameSite=Lax: %s", set)
+			}
+		}
+		if strings.Contains(set, accessCookie+"=") {
+			cleared[accessCookie] = true
+			if !strings.Contains(strings.ToLower(set), "samesite=lax") {
+				t.Fatalf("logout access clear missing SameSite=Lax: %s", set)
+			}
+		}
+	}
+	if !cleared[sessionCookie] || !cleared[accessCookie] {
+		t.Fatalf("logout did not clear both cookies: %v", logoutRes.Header.Values("Set-Cookie"))
+	}
+	if code, _ := do(t, c, "GET", ts.URL+"/v1/users/me", "", nil); code != http.StatusUnauthorized {
+		t.Fatalf("me after logout = %d, want 401", code)
+	}
+	loginBody, _ := json.Marshal(map[string]string{
+		"email": strings.ToUpper(email), "password": password,
+	})
+	loginReq, err := http.NewRequest("POST", ts.URL+"/v1/auth/login", bytes.NewReader(loginBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginRes, err := c.Do(loginReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loginB, err := io.ReadAll(loginRes.Body)
+	loginRes.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	code = loginRes.StatusCode
+	if code != http.StatusOK {
+		t.Fatalf("login after signup: %d %s", code, loginB)
+	}
+	assertAuthCookieAttrs(t, loginRes.Header.Values("Set-Cookie"))
+	if field(t, loginB, "fleet_id") != "" {
+		t.Fatalf("login response should omit fleet_id, got %s", loginB)
+	}
+	var loginUser struct {
+		User struct {
+			Email string `json:"email"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(loginB, &loginUser); err != nil || loginUser.User.Email != email {
+		t.Fatalf("login user email = %v %s, want %s", err, loginB, email)
+	}
+	_ = cookieValue(t, c, ts.URL, sessionCookie)
+	_ = cookieValue(t, c, ts.URL, accessCookie)
+	code, meB = do(t, c, "GET", ts.URL+"/v1/users/me", "", nil)
+	if code != http.StatusOK || field(t, meB, "email") != email {
+		t.Fatalf("me after re-login: %d %s", code, meB)
+	}
+	code, fleetsB = do(t, c, "GET", ts.URL+"/v1/fleets", "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("fleets after re-login: %d %s", code, fleetsB)
+	}
+	if err := json.Unmarshal(fleetsB, &fleets); err != nil || len(fleets) != 1 || fleets[0]["id"] != fleetID {
+		t.Fatalf("fleet after re-login: %s", fleetsB)
+	}
+
+	sessionTok := cookieValue(t, c, ts.URL, sessionCookie)
+	sessionOnly, _ := cookiejar.New(nil)
+	sessionClient := &http.Client{Jar: sessionOnly}
+	sessionClient.Jar.SetCookies(mustURL(t, ts.URL), []*http.Cookie{{
+		Name: sessionCookie, Value: sessionTok, Path: "/",
+	}})
+	code, meB = do(t, sessionClient, "GET", ts.URL+"/v1/users/me", "", nil)
+	if code != http.StatusOK || field(t, meB, "email") != email {
+		t.Fatalf("me with session-only cookie: %d %s", code, meB)
+	}
+	if cookieValue(t, sessionClient, ts.URL, accessCookie) == "" {
+		t.Fatal("expected access cookie to be re-minted from valid session")
+	}
+
+	if code, b := do(t, c, "POST", ts.URL+"/v1/auth/signup", "", map[string]string{
+		"email": "not-an-email", "password": password, "name": "X",
+	}); code != http.StatusBadRequest {
+		t.Fatalf("bad email signup = %d, want 400 (%s)", code, b)
+	}
+	if code, b := do(t, c, "POST", ts.URL+"/v1/auth/signup", "", map[string]string{
+		"email": strings.Repeat("a", maxEmailLen) + "@example.com", "password": password, "name": "X",
+	}); code != http.StatusBadRequest {
+		t.Fatalf("long email signup = %d, want 400 (%s)", code, b)
+	}
+	if code, b := do(t, c, "POST", ts.URL+"/v1/auth/signup", "", map[string]string{
+		"email": "ok@example.com", "password": "short", "name": "X",
+	}); code != http.StatusBadRequest {
+		t.Fatalf("short password signup = %d, want 400 (%s)", code, b)
+	}
+	if code, b := do(t, c, "POST", ts.URL+"/v1/auth/signup", "", map[string]string{
+		"email": "longpass@example.com", "password": strings.Repeat("x", maxPasswordLen+1), "name": "X",
+	}); code != http.StatusBadRequest {
+		t.Fatalf("long password signup = %d, want 400 (%s)", code, b)
+	}
+	if code, b := do(t, c, "POST", ts.URL+"/v1/auth/signup", "", map[string]string{
+		"email": "longname@example.com", "password": password, "name": strings.Repeat("n", maxNameLen+1),
+	}); code != http.StatusBadRequest {
+		t.Fatalf("long name signup = %d, want 400 (%s)", code, b)
+	}
+	if code, _ := do(t, c, "POST", ts.URL+"/v1/auth/signup", "", map[string]string{
+		"email": email, "password": password, "name": "Dup",
+	}); code != http.StatusConflict {
+		t.Fatalf("duplicate email signup = %d, want 409", code)
+	}
+	if code, _ := do(t, c, "POST", ts.URL+"/v1/auth/login", "", map[string]string{
+		"email": email, "password": "wrong-password",
+	}); code != http.StatusUnauthorized {
+		t.Fatalf("bad password login = %d, want 401", code)
+	}
+	anonEmail := fmt.Sprintf("anon+%d@example.com", time.Now().UnixNano())
+	code, anonB := do(t, c, "POST", ts.URL+"/v1/auth/signup", "", map[string]string{
+		"email": anonEmail, "password": password,
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("signup without name: %d %s", code, anonB)
+	}
+	var anonAuth struct {
+		User struct {
+			Name  string `json:"name"`
+			Email string `json:"email"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(anonB, &anonAuth); err != nil || anonAuth.User.Email != anonEmail || !strings.HasPrefix(anonAuth.User.Name, "anon+") {
+		t.Fatalf("defaulted name response: %v %s", err, anonB)
+	}
+	code, anonFleetsB := do(t, c, "GET", ts.URL+"/v1/fleets", "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("anon fleets: %d %s", code, anonFleetsB)
+	}
+	var anonFleets []map[string]any
+	if err := json.Unmarshal(anonFleetsB, &anonFleets); err != nil || len(anonFleets) != 1 {
+		t.Fatalf("anon personal fleet: %s", anonFleetsB)
+	}
+	anonFleetID, _ := anonFleets[0]["id"].(string)
+	code, anonMissionsB := do(t, c, "GET", testFleetFilteredURL(ts.URL, anonFleetID, "/missions"), "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("anon missions: %d %s", code, anonMissionsB)
+	}
+	var anonMissions []map[string]any
+	if err := json.Unmarshal(anonMissionsB, &anonMissions); err != nil || len(anonMissions) != 1 {
+		t.Fatalf("anon default mission: %s", anonMissionsB)
+	}
+	if anonMissions[0]["name"] != defaultMissionName || anonMissions[0]["key"] != defaultMissionKey {
+		t.Fatalf("anon default mission = %v", anonMissions[0])
+	}
+}
+
+func mustURL(t *testing.T, raw string) *neturl.URL {
+	t.Helper()
+	u, err := neturl.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse url: %v", err)
+	}
+	return u
+}
+
+func TestSignupThenAcceptFleetInvite(t *testing.T) {
+	ts := newTestServer(t)
+	owner := signup(t, ts, "invite-owner")
+	code, fleetB := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Crew Fleet"})
+	if code != http.StatusCreated {
+		t.Fatalf("create group fleet: %d %s", code, fleetB)
+	}
+	fleetID := field(t, fleetB, "id")
+	inviteeEmail := fmt.Sprintf("invitee+%d@example.com", time.Now().UnixNano())
+	code, invB := do(t, owner, "POST", ts.URL+"/v1/invitations", "", map[string]any{
+		"fleet_id": fleetID, "email": inviteeEmail, "role": "member",
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("invite: %d %s", code, invB)
+	}
+	inviteID := field(t, invB, "id")
+
+	jar, _ := cookiejar.New(nil)
+	invitee := &http.Client{Jar: jar}
+	code, signB := do(t, invitee, "POST", ts.URL+"/v1/auth/signup", "", map[string]string{
+		"email": strings.ToUpper(inviteeEmail), "password": "password123", "name": "Invitee",
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("invitee signup: %d %s", code, signB)
+	}
+	var signAuth struct {
+		FleetID string `json:"fleet_id"`
+		User    struct {
+			Email string `json:"email"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(signB, &signAuth); err != nil || signAuth.FleetID == "" {
+		t.Fatalf("invitee signup missing fleet_id: %v %s", err, signB)
+	}
+	if signAuth.User.Email != strings.ToLower(inviteeEmail) {
+		t.Fatalf("signup email = %q, want lowercased %q", signAuth.User.Email, strings.ToLower(inviteeEmail))
+	}
+	_ = cookieValue(t, invitee, ts.URL, sessionCookie)
+	_ = cookieValue(t, invitee, ts.URL, accessCookie)
+
+	code, fleetsB := do(t, invitee, "GET", ts.URL+"/v1/fleets", "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("invitee fleets: %d %s", code, fleetsB)
+	}
+	var fleets []map[string]any
+	if err := json.Unmarshal(fleetsB, &fleets); err != nil || len(fleets) != 1 || fleets[0]["kind"] != "personal" {
+		t.Fatalf("expected personal fleet only before accept: %s", fleetsB)
+	}
+	personalID, _ := fleets[0]["id"].(string)
+	if personalID != signAuth.FleetID {
+		t.Fatalf("signup fleet_id = %q, list = %q", signAuth.FleetID, personalID)
+	}
+	code, missionsB := do(t, invitee, "GET", testFleetFilteredURL(ts.URL, personalID, "/missions"), "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("invitee missions: %d %s", code, missionsB)
+	}
+	var missions []map[string]any
+	if err := json.Unmarshal(missionsB, &missions); err != nil || len(missions) != 1 {
+		t.Fatalf("invitee default mission: %s", missionsB)
+	}
+	if missions[0]["name"] != defaultMissionName || missions[0]["key"] != defaultMissionKey {
+		t.Fatalf("invitee default mission = %v", missions[0])
+	}
+	missionID, _ := missions[0]["id"].(string)
+	code, opB := do(t, invitee, "POST", ts.URL+"/v1/operations", "", map[string]any{
+		"fleet_id": personalID, "mission_id": missionID, "title": "Before accept", "body": "personal inbox",
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("invitee create op on personal fleet: %d %s", code, opB)
+	}
+
+	code, mineB := do(t, invitee, "GET", ts.URL+"/v1/invitations/mine", "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("invitations/mine: %d %s", code, mineB)
+	}
+	var mine []map[string]any
+	if err := json.Unmarshal(mineB, &mine); err != nil || len(mine) != 1 || mine[0]["id"] != inviteID {
+		t.Fatalf("pending invite: %s", mineB)
+	}
+	if mine[0]["fleet_id"] != fleetID {
+		t.Fatalf("pending invite fleet_id = %v, want %s", mine[0]["fleet_id"], fleetID)
+	}
+	code, accB := do(t, invitee, "PATCH", ts.URL+"/v1/invitations/"+inviteID, "", map[string]string{"status": "accepted"})
+	if code != http.StatusOK {
+		t.Fatalf("accept invite: %d %s", code, accB)
+	}
+	code, fleetsB = do(t, invitee, "GET", ts.URL+"/v1/fleets", "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("fleets after accept: %d %s", code, fleetsB)
+	}
+	if err := json.Unmarshal(fleetsB, &fleets); err != nil || len(fleets) != 2 {
+		t.Fatalf("expected personal + group fleet after accept, got %s", fleetsB)
+	}
+	foundGroup := false
+	for _, f := range fleets {
+		if f["id"] == fleetID {
+			foundGroup = true
+			break
+		}
+	}
+	if !foundGroup {
+		t.Fatalf("group fleet missing after accept: %s", fleetsB)
+	}
+	code, groupMissionsB := do(t, invitee, "GET", testFleetFilteredURL(ts.URL, fleetID, "/missions"), "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("group missions after accept: %d %s", code, groupMissionsB)
+	}
+	var groupMissions []map[string]any
+	if err := json.Unmarshal(groupMissionsB, &groupMissions); err != nil || len(groupMissions) != 1 {
+		t.Fatalf("group default mission: %s", groupMissionsB)
+	}
+	groupMissionID, _ := groupMissions[0]["id"].(string)
+	code, groupOpB := do(t, invitee, "POST", ts.URL+"/v1/operations", "", map[string]any{
+		"fleet_id": fleetID, "mission_id": groupMissionID, "title": "After accept", "body": "group inbox",
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("invitee create op on group fleet: %d %s", code, groupOpB)
+	}
+}
+
+func TestCreateFleetSeedsDefaultMission(t *testing.T) {
+	ts := newTestServer(t)
+	owner := signup(t, ts, "fleet-seed")
+	code, b := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Acme"})
+	if code != http.StatusCreated {
+		t.Fatalf("create fleet: %d %s", code, b)
+	}
+	fleetID := field(t, b, "id")
+	code, missionsB := do(t, owner, "GET", testFleetFilteredURL(ts.URL, fleetID, "/missions"), "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("list missions: %d %s", code, missionsB)
+	}
+	var missions []map[string]any
+	if err := json.Unmarshal(missionsB, &missions); err != nil || len(missions) != 1 {
+		t.Fatalf("expected default mission on new fleet, got %s", missionsB)
+	}
+	if missions[0]["key"] != defaultMissionKey {
+		t.Fatalf("mission key = %v, want %s", missions[0]["key"], defaultMissionKey)
+	}
+}
+
+func TestSkillCatalogOwnerAdminOnlyAndValidatesFiles(t *testing.T) {
+	ts := newTestServer(t)
+	owner := signup(t, ts, "skill-owner")
+	member := signup(t, ts, "skill-member")
+	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Skills"})
+	fq := field(t, fb, "id")
+	joinFleet(t, ts, owner, member, fq, "member")
+
+	valid := map[string]any{
+		"fleet_id":    fq,
+		"name":        "Review Helper",
+		"description": "Keep reviews crisp",
+		"files":       []map[string]string{{"path": "SKILL.md", "content": "Lead with findings.\n"}},
+	}
+	if code, b := do(t, member, "POST", ts.URL+"/v1/skills", "", valid); code != http.StatusForbidden {
+		t.Fatalf("member create skill = %d, want 403 (%s)", code, b)
+	}
+	if code, b := do(t, owner, "POST", ts.URL+"/v1/skills", "", map[string]any{
+		"fleet_id": fq,
+		"name":     "No root",
+		"files":    []map[string]string{{"path": "notes.md", "content": "missing root"}},
+	}); code != http.StatusBadRequest {
+		t.Fatalf("missing SKILL.md = %d, want 400 (%s)", code, b)
+	}
+	code, created := do(t, owner, "POST", ts.URL+"/v1/skills", "", valid)
+	if code != http.StatusCreated {
+		t.Fatalf("create skill: %d %s", code, created)
+	}
+	skillID := field(t, created, "id")
+	if field(t, created, "slug") != "review-helper" || !strings.Contains(string(created), "Lead with findings.") {
+		t.Fatalf("created skill missing slug/files: %s", created)
+	}
+	if code, b := do(t, owner, "POST", ts.URL+"/v1/skills", "", valid); code != http.StatusConflict {
+		t.Fatalf("duplicate slug = %d, want 409 (%s)", code, b)
+	}
+	if code, b := do(t, member, "GET", testFleetFilteredURL(ts.URL, fq, "/skills"), "", nil); code != http.StatusForbidden {
+		t.Fatalf("member list skills = %d, want 403 (%s)", code, b)
+	}
+	if code, b := do(t, owner, "PATCH", ts.URL+"/v1/skills/"+skillID, "", map[string]any{
+		"name":  "Review Helper",
+		"slug":  "review-helper",
+		"files": []map[string]string{{"path": "SKILL.md", "content": "Updated.\n"}, {"path": "refs/checklist.md", "content": "tests"}},
+	}); code != http.StatusOK || !strings.Contains(string(b), "refs/checklist.md") {
+		t.Fatalf("update skill: %d %s", code, b)
+	}
+	if code, b := do(t, owner, "DELETE", ts.URL+"/v1/skills/"+skillID, "", nil); code != http.StatusNoContent {
+		t.Fatalf("archive skill: %d %s", code, b)
+	}
+	code, listed := do(t, owner, "GET", testFleetFilteredURL(ts.URL, fq, "/skills"), "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("list active skills: %d %s", code, listed)
+	}
+	var active []map[string]any
+	if err := json.Unmarshal(listed, &active); err != nil || len(active) != 0 {
+		t.Fatalf("archived skill should be hidden: %v %s", err, listed)
+	}
+	if code, b := do(t, owner, "GET", testFleetFilteredURL(ts.URL, fq, "/skills?include_archived=true"), "", nil); code != http.StatusOK || !strings.Contains(string(b), `"archived":true`) {
+		t.Fatalf("list archived skills: %d %s", code, b)
+	}
 }
 
 func TestUserCanRenameSelf(t *testing.T) {
@@ -523,8 +1015,6 @@ func TestConcurrentInvariants(t *testing.T) {
 	})
 }
 
-// TestOwnerOrAdminGatingAndTokenMasking covers findings #3: only owners/admins may
-// manage rover credentials, and listings never expose full enrollment codes.
 func TestOwnerOrAdminGatingAndTokenMasking(t *testing.T) {
 	ts := newTestServer(t)
 	owner := signup(t, ts, "owner")
@@ -579,7 +1069,6 @@ func TestOwnerOrAdminGatingAndTokenMasking(t *testing.T) {
 		t.Fatalf("enrollment code stored unsafely: got %q", storedCodeHash)
 	}
 
-	// Member is forbidden from listing/creating/deleting codes and deleting rovers.
 	for _, tc := range []struct {
 		method, path string
 	}{
@@ -612,8 +1101,6 @@ func TestOwnerOrAdminGatingAndTokenMasking(t *testing.T) {
 	}
 }
 
-// TestRoverRunOwnership covers finding #2: a rover may not mutate a run it did
-// not accept.
 func TestRoverRunOwnership(t *testing.T) {
 	ts := newTestServer(t)
 	owner := signup(t, ts, "owner")
@@ -624,8 +1111,6 @@ func TestRoverRunOwnership(t *testing.T) {
 	fleet := field(t, b, "id")
 	fq := fleet
 
-	// Two rovers enrolled via two one-time codes. Only rover A advertises the
-	// required pilot capability, so rover B must not steal and block the run.
 	enroll := func(autoTags ...string) string {
 		_, tb := do(t, owner, "POST", ts.URL+"/v1/enrollment-codes", "", map[string]any{"fleet_id": fq, "name": "r"})
 		enrollmentCode := field(t, tb, "code")
@@ -635,8 +1120,6 @@ func TestRoverRunOwnership(t *testing.T) {
 	roverA := enroll("os:macos", "arch:aarch64", "pilot:claude")
 	roverB := enroll("os:linux", "arch:x86_64", "pilot:codex")
 
-	// A mission + an operation assigned to the claude pilot → auto-queues a run
-	// (rover A advertises pilot:claude, so the claude pilot has a rover to drive).
 	_, mb := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fq, "name": "M", "key": "M"})
 	mission := field(t, mb, "id")
 	code, ob := do(t, owner, "POST", ts.URL+"/v1/operations", "", map[string]any{
@@ -676,7 +1159,6 @@ func TestRoverRunOwnership(t *testing.T) {
 	}
 	assertRunStatus("queued", 1, 0)
 
-	// Rover B is otherwise tag-compatible, but it cannot accept a Claude run.
 	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", roverB, nil); code != http.StatusNoContent {
 		t.Fatalf("rover B accept = %d, want 204 (%s)", code, b)
 	}
@@ -1066,14 +1548,11 @@ func TestRoverTagRefreshNotifiesFleet(t *testing.T) {
 	}
 }
 
-// TestTenantIsolation covers the fleet-scoped user lookup: a user outside a fleet
-// can't be assigned operations or added to its crews even if their id is known.
 func TestTenantIsolation(t *testing.T) {
 	ts := newTestServer(t)
 	owner := signup(t, ts, "owner")
 	outsider := signup(t, ts, "outsider")
 
-	// outsider's public id (they are NOT a member of the owner's group fleet).
 	_, ob := do(t, outsider, "GET", ts.URL+"/v1/users/me", "", nil)
 	outsiderID := field(t, ob, "id")
 
@@ -1648,6 +2127,477 @@ func TestRoutineSchedulePulseCreatesAcceptableOperation(t *testing.T) {
 	if !strings.Contains(prompt, "Context:\nremember fleet context") {
 		t.Fatalf("scheduled routine prompt missing context: %q", prompt)
 	}
+	code, detail := do(t, owner, "GET", ts.URL+"/v1/operations/"+field(t, accept, "operation_id"), "", nil)
+	if code != http.StatusOK || !strings.Contains(string(detail), "Opened by routine pulse") {
+		t.Fatalf("expected system pulse provenance comment: %d %s", code, detail)
+	}
+}
+
+func TestRoutinePulseSkipsWhenLoopOperationOpen(t *testing.T) {
+	ts := newTestServer(t)
+	owner := signup(t, ts, "loop-skip")
+	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Loop"})
+	fq := field(t, fb, "id")
+
+	_, tb := do(t, owner, "POST", ts.URL+"/v1/enrollment-codes", "", map[string]any{"fleet_id": fq, "name": "r"})
+	_, eb := do(t, &http.Client{}, "POST", ts.URL+"/v1/rovers", field(t, tb, "code"), map[string]any{"name": "r", "auto_tags": []string{"pilot:claude"}})
+	rover := field(t, eb, "token")
+
+	_, mb := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fq, "name": "M", "key": "M"})
+	code, rb := do(t, owner, "POST", ts.URL+"/v1/routines", "", map[string]any{
+		"fleet_id": fq, "title": "loop", "body": "work", "mission_id": field(t, mb, "id"),
+		"metadata": map[string]any{
+			"trigger": map[string]any{"kind": "manual"},
+			"operation": map[string]any{
+				"assignee":          map[string]any{"type": "pilot", "id": "claude"},
+				"start_immediately": true,
+				"skip_if_active":    true,
+			},
+		},
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("create routine = %d (%s)", code, rb)
+	}
+	routine := field(t, rb, "id")
+
+	code, first := do(t, owner, "POST", ts.URL+"/v1/pulses", "", map[string]string{"routine_id": routine})
+	if code != http.StatusCreated || field(t, first, "status") != "succeeded" {
+		t.Fatalf("first pulse = %d %s", code, first)
+	}
+	if code, accept := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil); code != http.StatusOK {
+		t.Fatalf("accept first = %d %s", code, accept)
+	}
+
+	code, second := do(t, owner, "POST", ts.URL+"/v1/pulses", "", map[string]string{"routine_id": routine})
+	if code != http.StatusCreated {
+		t.Fatalf("second pulse = %d (%s)", code, second)
+	}
+	if status := field(t, second, "status"); status != "skipped" {
+		t.Fatalf("second pulse status = %q, want skipped (%s)", status, second)
+	}
+	if op := field(t, second, "operation_id"); op != "" {
+		t.Fatalf("skipped pulse should not open an operation, got %q", op)
+	}
+}
+
+func TestRoutineRePulseOnOperationClose(t *testing.T) {
+	ts := newTestServer(t)
+	owner := signup(t, ts, "re-pulse-close")
+	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Loop continuous"})
+	fq := field(t, fb, "id")
+	_, tb := do(t, owner, "POST", ts.URL+"/v1/enrollment-codes", "", map[string]any{"fleet_id": fq, "name": "r"})
+	_, eb := do(t, &http.Client{}, "POST", ts.URL+"/v1/rovers", field(t, tb, "code"), map[string]any{"name": "r", "auto_tags": []string{"pilot:claude"}})
+	rover := field(t, eb, "token")
+	_, mb := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fq, "name": "M", "key": "M"})
+	code, rb := do(t, owner, "POST", ts.URL+"/v1/routines", "", map[string]any{
+		"fleet_id": fq, "title": "continuous", "body": "iterate", "mission_id": field(t, mb, "id"),
+		"metadata": map[string]any{
+			"trigger": map[string]any{"kind": "manual"},
+			"operation": map[string]any{
+				"assignee":          map[string]any{"type": "pilot", "id": "claude"},
+				"start_immediately": true,
+				"skip_if_active":    true,
+				"re_pulse_on_close": true,
+			},
+		},
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("create routine = %d %s", code, rb)
+	}
+	routine := field(t, rb, "id")
+	code, first := do(t, owner, "POST", ts.URL+"/v1/pulses", "", map[string]string{"routine_id": routine})
+	if code != http.StatusCreated || field(t, first, "status") != "succeeded" {
+		t.Fatalf("first pulse = %d %s", code, first)
+	}
+	op1 := field(t, first, "operation_id")
+	code, accept := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
+	if code != http.StatusOK {
+		t.Fatalf("accept = %d %s", code, accept)
+	}
+	runID := field(t, accept, "id")
+	// Pilot finishes and closes the op → re-pulse should open the next loop iteration.
+	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+runID+"/result", rover, map[string]any{
+		"status": "succeeded", "operation_status": "done",
+	}); code != http.StatusNoContent {
+		t.Fatalf("result+done = %d %s", code, b)
+	}
+	code, accept2 := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
+	if code != http.StatusOK {
+		t.Fatalf("accept after re-pulse = %d %s (want new loop op)", code, accept2)
+	}
+	op2 := field(t, accept2, "operation_id")
+	if op2 == "" || op2 == op1 {
+		t.Fatalf("expected a new operation after re-pulse, got op1=%q op2=%q accept=%s", op1, op2, accept2)
+	}
+	// Continuity: new op should relate to the previous one.
+	code, detail2 := do(t, owner, "GET", ts.URL+"/v1/operations/"+op2, "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("get op2 = %d %s", code, detail2)
+	}
+	if !strings.Contains(string(detail2), op1) && !strings.Contains(string(detail2), "Continues from") && !strings.Contains(string(detail2), "relates") {
+		// relations list or system comment should mention continuity
+		if !strings.Contains(string(detail2), "previous_operation_id") && !strings.Contains(strings.ToLower(string(detail2)), "continues") {
+			t.Fatalf("expected continuity link/comment on re-pulsed op: %s", detail2)
+		}
+	}
+	// Open second op: another pulse should skip (skip_if_active).
+	code, skip := do(t, owner, "POST", ts.URL+"/v1/pulses", "", map[string]string{"routine_id": routine})
+	if code != http.StatusCreated || field(t, skip, "status") != "skipped" {
+		t.Fatalf("manual pulse while open = %d %s, want skipped", code, skip)
+	}
+}
+
+func TestRoutineAutoCommitDefersRePulseUntilCommitSucceeds(t *testing.T) {
+	ts := newTestServer(t)
+	owner := signup(t, ts, "auto-commit-loop")
+	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Self-dev"})
+	fq := field(t, fb, "id")
+	_, tb := do(t, owner, "POST", ts.URL+"/v1/enrollment-codes", "", map[string]any{"fleet_id": fq, "name": "r"})
+	_, eb := do(t, &http.Client{}, "POST", ts.URL+"/v1/rovers", field(t, tb, "code"), map[string]any{"name": "r", "auto_tags": []string{"pilot:claude"}})
+	rover := field(t, eb, "token")
+	_, mb := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fq, "name": "M", "key": "M"})
+	code, rb := do(t, owner, "POST", ts.URL+"/v1/routines", "", map[string]any{
+		"fleet_id": fq, "title": "self-dev", "body": "iterate UFO", "mission_id": field(t, mb, "id"),
+		"metadata": map[string]any{
+			"trigger": map[string]any{"kind": "manual"},
+			"operation": map[string]any{
+				"assignee":           map[string]any{"type": "pilot", "id": "claude"},
+				"start_immediately":  true,
+				"skip_if_active":     true,
+				"re_pulse_on_close":  true,
+				"auto_commit_branch": "dev-auto",
+			},
+		},
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("create routine = %d %s", code, rb)
+	}
+	routine := field(t, rb, "id")
+	code, first := do(t, owner, "POST", ts.URL+"/v1/pulses", "", map[string]string{"routine_id": routine})
+	if code != http.StatusCreated || field(t, first, "status") != "succeeded" {
+		t.Fatalf("first pulse = %d %s", code, first)
+	}
+	op1 := field(t, first, "operation_id")
+	code, accept := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
+	if code != http.StatusOK {
+		t.Fatalf("accept = %d %s", code, accept)
+	}
+	if got := field(t, accept, "worktree_base_ref"); got != "dev-auto" {
+		t.Fatalf("worktree_base_ref = %q, want dev-auto (%s)", got, accept)
+	}
+	if prompt := field(t, accept, "prompt"); !strings.Contains(prompt, "Self-development loop") || !strings.Contains(prompt, "dev-auto") {
+		t.Fatalf("accept prompt missing self-dev instructions: %s", prompt)
+	}
+	runID := field(t, accept, "id")
+	// Non-empty diff artifact is required to pin a worktree for source actions.
+	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+runID+"/artifacts", rover, map[string]any{
+		"kind": "diff", "name": "git.diff", "content": "diff --git a/x b/x\n+hello\n",
+	}); code != http.StatusCreated && code != http.StatusOK {
+		t.Fatalf("upload diff artifact = %d %s", code, b)
+	}
+	// Finish as done: should queue auto-commit and NOT re-pulse yet.
+	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+runID+"/result", rover, map[string]any{
+		"status": "succeeded", "operation_status": "done",
+	}); code != http.StatusNoContent {
+		t.Fatalf("result+done = %d %s", code, b)
+	}
+	code, detail := do(t, owner, "GET", ts.URL+"/v1/operations/"+op1, "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("detail = %d %s", code, detail)
+	}
+	var detailBody struct {
+		SourceActions []struct {
+			Kind       string         `json:"kind"`
+			Status     string         `json:"status"`
+			BranchName string         `json:"branch_name"`
+			ID         string         `json:"id"`
+			Metadata   map[string]any `json:"metadata"`
+		} `json:"source_actions"`
+		Operation struct {
+			Status string `json:"status"`
+		} `json:"operation"`
+	}
+	if err := json.Unmarshal(detail, &detailBody); err != nil {
+		t.Fatalf("decode detail: %v", err)
+	}
+	if detailBody.Operation.Status != "done" {
+		t.Fatalf("op status = %q, want done", detailBody.Operation.Status)
+	}
+	if len(detailBody.SourceActions) == 0 || detailBody.SourceActions[0].Kind != "commit_to_branch" || detailBody.SourceActions[0].BranchName != "dev-auto" {
+		t.Fatalf("expected queued commit_to_branch dev-auto, got %+v", detailBody.SourceActions)
+	}
+	if detailBody.SourceActions[0].Status != "queued" && detailBody.SourceActions[0].Status != "accepted" {
+		t.Fatalf("auto-commit status = %q", detailBody.SourceActions[0].Status)
+	}
+	if v, _ := detailBody.SourceActions[0].Metadata["re_pulse_on_success"].(bool); !v {
+		t.Fatalf("expected re_pulse_on_success metadata, got %+v", detailBody.SourceActions[0].Metadata)
+	}
+	// No second loop op yet.
+	code, acceptPending := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
+	if code == http.StatusOK {
+		t.Fatalf("expected no re-pulse before auto-commit succeeds, got accept %s", acceptPending)
+	}
+	// Rover completes auto-commit → re-pulse should open next iteration.
+	actionID := detailBody.SourceActions[0].ID
+	// Accept the source action first if still queued.
+	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/source-actions/accept", rover, nil); code != http.StatusOK && code != http.StatusNoContent {
+		t.Fatalf("accept source action = %d %s", code, b)
+	}
+	if code, b := do(t, &http.Client{}, "PATCH", ts.URL+"/v1/source-actions/"+actionID, rover, map[string]any{
+		"status": "succeeded", "branch_name": "dev-auto", "commit_sha": "abc123",
+		"message":  "committed self-dev iteration",
+		"metadata": map[string]any{"had_changes": true, "re_pulse_on_success": true},
+	}); code != http.StatusOK {
+		t.Fatalf("complete source action = %d %s", code, b)
+	}
+	code, accept2 := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
+	if code != http.StatusOK {
+		t.Fatalf("accept after auto-commit = %d %s (want next loop op)", code, accept2)
+	}
+	op2 := field(t, accept2, "operation_id")
+	if op2 == "" || op2 == op1 {
+		t.Fatalf("expected new operation after auto-commit re-pulse, op1=%q op2=%q", op1, op2)
+	}
+	if got := field(t, accept2, "worktree_base_ref"); got != "dev-auto" {
+		t.Fatalf("next iteration worktree_base_ref = %q, want dev-auto", got)
+	}
+}
+
+func TestPilotHandoffBeforeHumanReviewOnNeedsInput(t *testing.T) {
+	ts := newTestServer(t)
+	owner := signup(t, ts, "pilot-handoff")
+	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Handoff"})
+	fq := field(t, fb, "id")
+	_, tb1 := do(t, owner, "POST", ts.URL+"/v1/enrollment-codes", "", map[string]any{"fleet_id": fq, "name": "r1"})
+	_, eb1 := do(t, &http.Client{}, "POST", ts.URL+"/v1/rovers", field(t, tb1, "code"), map[string]any{"name": "r1", "auto_tags": []string{"pilot:claude"}})
+	roverClaude := field(t, eb1, "token")
+	_, tb2 := do(t, owner, "POST", ts.URL+"/v1/enrollment-codes", "", map[string]any{"fleet_id": fq, "name": "r2"})
+	_, eb2 := do(t, &http.Client{}, "POST", ts.URL+"/v1/rovers", field(t, tb2, "code"), map[string]any{"name": "r2", "auto_tags": []string{"pilot:codex"}})
+	roverCodex := field(t, eb2, "token")
+	do(t, &http.Client{}, "PATCH", ts.URL+"/v1/rovers/"+field(t, eb1, "id"), roverClaude, map[string]any{"auto_tags": []string{"pilot:claude"}})
+	do(t, &http.Client{}, "PATCH", ts.URL+"/v1/rovers/"+field(t, eb2, "id"), roverCodex, map[string]any{"auto_tags": []string{"pilot:codex"}})
+	_, mb := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fq, "name": "M", "key": "M"})
+	status, ob := do(t, owner, "POST", ts.URL+"/v1/operations", "", map[string]any{
+		"fleet_id": fq, "title": "needs help", "mission_id": field(t, mb, "id"),
+		"assignee_type": "pilot", "assignee_id": "claude",
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("create op = %d %s", status, ob)
+	}
+	opID := field(t, ob, "id")
+	status, accept := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", roverClaude, nil)
+	if status != http.StatusOK {
+		t.Fatalf("accept claude = %d %s", status, accept)
+	}
+	runID := field(t, accept, "id")
+	if status, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+runID+"/result", roverClaude, map[string]any{
+		"status": "succeeded", "needs_input": true,
+	}); status != http.StatusNoContent {
+		t.Fatalf("result needs_input = %d %s", status, b)
+	}
+	status, accept2 := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", roverCodex, nil)
+	if status != http.StatusOK {
+		t.Fatalf("accept after handoff = %d %s", status, accept2)
+	}
+	if field(t, accept2, "operation_id") != opID {
+		t.Fatalf("handoff should continue same operation, got %s want %s", field(t, accept2, "operation_id"), opID)
+	}
+	status, detail := do(t, owner, "GET", ts.URL+"/v1/operations/"+opID, "", nil)
+	if status != http.StatusOK {
+		t.Fatalf("detail = %d", status)
+	}
+	if !strings.Contains(string(detail), "Pilot handoff") {
+		t.Fatalf("expected handoff system comment: %s", detail)
+	}
+	_, sigs := do(t, owner, "GET", testFleetFilteredURL(ts.URL, fq, "/signals"), "", nil)
+	if strings.Contains(string(sigs), "input_requested") {
+		t.Fatalf("should not notify human input while another pilot was handed off: %s", sigs)
+	}
+}
+
+func TestRoutineRePulseDisabledNoAutoPulse(t *testing.T) {
+	ts := newTestServer(t)
+	owner := signup(t, ts, "re-pulse-off")
+	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "One shot"})
+	fq := field(t, fb, "id")
+	_, tb := do(t, owner, "POST", ts.URL+"/v1/enrollment-codes", "", map[string]any{"fleet_id": fq, "name": "r"})
+	do(t, &http.Client{}, "POST", ts.URL+"/v1/rovers", field(t, tb, "code"), map[string]any{"name": "r", "auto_tags": []string{"pilot:claude"}})
+	_, mb := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fq, "name": "M", "key": "M"})
+	code, rb := do(t, owner, "POST", ts.URL+"/v1/routines", "", map[string]any{
+		"fleet_id": fq, "title": "once", "body": "work", "mission_id": field(t, mb, "id"),
+		"metadata": map[string]any{
+			"trigger": map[string]any{"kind": "manual"},
+			"operation": map[string]any{
+				"assignee":          map[string]any{"type": "pilot", "id": "claude"},
+				"start_immediately": true,
+				"re_pulse_on_close": false,
+			},
+		},
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("create = %d %s", code, rb)
+	}
+	routine := field(t, rb, "id")
+	code, first := do(t, owner, "POST", ts.URL+"/v1/pulses", "", map[string]string{"routine_id": routine})
+	if code != http.StatusCreated {
+		t.Fatalf("pulse = %d %s", code, first)
+	}
+	op1 := field(t, first, "operation_id")
+	if code, b := do(t, owner, "PATCH", ts.URL+"/v1/operations/"+op1, "", map[string]any{"status": "done"}); code != http.StatusOK {
+		t.Fatalf("close = %d %s", code, b)
+	}
+	// No second operation should appear for this routine.
+	_, list := do(t, owner, "GET", testFleetFilteredURL(ts.URL, fq, "/operations"), "", nil)
+	var ops []map[string]any
+	if err := json.Unmarshal(list, &ops); err != nil {
+		t.Fatalf("list ops: %v %s", err, list)
+	}
+	if len(ops) != 1 {
+		t.Fatalf("operations after close with re_pulse off = %d, want 1 (%s)", len(ops), list)
+	}
+}
+
+func TestRoutineRePulseRespectsSchedulePause(t *testing.T) {
+	ts := newTestServer(t)
+	owner := signup(t, ts, "re-pulse-pause")
+	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Paused loop"})
+	fq := field(t, fb, "id")
+	_, tb := do(t, owner, "POST", ts.URL+"/v1/enrollment-codes", "", map[string]any{"fleet_id": fq, "name": "r"})
+	do(t, &http.Client{}, "POST", ts.URL+"/v1/rovers", field(t, tb, "code"), map[string]any{"name": "r", "auto_tags": []string{"pilot:claude"}})
+	_, mb := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fq, "name": "M", "key": "M"})
+	code, rb := do(t, owner, "POST", ts.URL+"/v1/routines", "", map[string]any{
+		"fleet_id": fq, "title": "scheduled loop", "body": "work", "mission_id": field(t, mb, "id"),
+		"metadata": map[string]any{
+			"trigger": map[string]any{"kind": "schedule", "cron": "@hourly", "enabled": true},
+			"operation": map[string]any{
+				"assignee":          map[string]any{"type": "pilot", "id": "claude"},
+				"start_immediately": true,
+				"re_pulse_on_close": true,
+			},
+		},
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("create = %d %s", code, rb)
+	}
+	routine := field(t, rb, "id")
+	// Force a first pulse via manual API still works for schedule routines.
+	code, first := do(t, owner, "POST", ts.URL+"/v1/pulses", "", map[string]string{"routine_id": routine})
+	if code != http.StatusCreated || field(t, first, "status") != "succeeded" {
+		t.Fatalf("first pulse = %d %s", code, first)
+	}
+	op1 := field(t, first, "operation_id")
+	if code, b := do(t, owner, "PATCH", ts.URL+"/v1/operations/"+op1, "", map[string]any{"status": "done"}); code != http.StatusOK {
+		t.Fatalf("close = %d %s", code, b)
+	}
+	_, list := do(t, owner, "GET", testFleetFilteredURL(ts.URL, fq, "/operations"), "", nil)
+	var ops []map[string]any
+	if err := json.Unmarshal(list, &ops); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(ops) != 1 {
+		t.Fatalf("schedule re-pulse on close created ops = %d, want 1 (%s)", len(ops), list)
+	}
+}
+
+func TestRoutineRePulseFailureSignals(t *testing.T) {
+	ts := newTestServer(t)
+	owner := signup(t, ts, "re-pulse-fail")
+	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Fail loop"})
+	fq := field(t, fb, "id")
+	_, mb := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fq, "name": "M", "key": "M"})
+	code, rb := do(t, owner, "POST", ts.URL+"/v1/routines", "", map[string]any{
+		"fleet_id": fq, "title": "will fail re-pulse", "body": "work", "mission_id": field(t, mb, "id"),
+		"metadata": map[string]any{
+			"trigger": map[string]any{"kind": "manual"},
+			"operation": map[string]any{
+				"assignee":          map[string]any{"type": "pilot", "id": "claude"},
+				"start_immediately": false,
+				"re_pulse_on_close": true,
+			},
+		},
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("create = %d %s", code, rb)
+	}
+	routine := field(t, rb, "id")
+	code, first := do(t, owner, "POST", ts.URL+"/v1/pulses", "", map[string]string{"routine_id": routine})
+	if code != http.StatusCreated || field(t, first, "status") != "succeeded" {
+		t.Fatalf("pulse = %d %s", code, first)
+	}
+	op1 := field(t, first, "operation_id")
+	// Point the routine at an invalid user assignee so the next pulse fails.
+	code, _ = do(t, owner, "PATCH", ts.URL+"/v1/routines/"+routine, "", map[string]any{
+		"mission_id": field(t, mb, "id"), "title": "will fail re-pulse", "body": "work",
+		"metadata": map[string]any{
+			"trigger": map[string]any{"kind": "manual"},
+			"operation": map[string]any{
+				"assignee":          map[string]any{"type": "user", "id": "00000000-0000-4000-8000-000000000099"},
+				"start_immediately": false,
+				"re_pulse_on_close": true,
+			},
+		},
+	})
+	if code != http.StatusOK && code != http.StatusBadRequest {
+		// Invalid assignee may be rejected at PATCH; force via direct pulse after corrupting metadata in DB.
+	}
+	if code == http.StatusBadRequest {
+		ctx := context.Background()
+		conn, err := pgx.Connect(ctx, database.HubTestURL())
+		if err != nil {
+			t.Fatalf("connect: %v", err)
+		}
+		defer conn.Close(ctx)
+		meta := `{"trigger":{"kind":"manual"},"operation":{"assignee":{"type":"user","id":"00000000-0000-4000-8000-000000000099"},"start_immediately":false,"re_pulse_on_close":true,"skip_if_active":true}}`
+		if _, err := conn.Exec(ctx, `UPDATE routines SET metadata = $1::jsonb WHERE public_id = $2`, meta, routine); err != nil {
+			t.Fatalf("corrupt metadata: %v", err)
+		}
+	}
+	if code, b := do(t, owner, "PATCH", ts.URL+"/v1/operations/"+op1, "", map[string]any{"status": "done"}); code != http.StatusOK {
+		t.Fatalf("close = %d %s", code, b)
+	}
+	_, sigs := do(t, owner, "GET", testFleetFilteredURL(ts.URL, fq, "/signals"), "", nil)
+	if !strings.Contains(string(sigs), "routine_pulse_failed") {
+		t.Fatalf("expected routine_pulse_failed signal after re-pulse failure, got %s", sigs)
+	}
+}
+
+func TestRoutineSchedulePauseClearsNextPulse(t *testing.T) {
+	ts := newTestServer(t)
+	owner := signup(t, ts, "pause-routine")
+	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Pause"})
+	fq := field(t, fb, "id")
+	_, mb := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fq, "name": "M", "key": "M"})
+	code, rb := do(t, owner, "POST", ts.URL+"/v1/routines", "", map[string]any{
+		"fleet_id": fq, "title": "hourly", "body": "work", "mission_id": field(t, mb, "id"),
+		"metadata": map[string]any{
+			"trigger":   map[string]any{"kind": "schedule", "cron": "@hourly", "enabled": true},
+			"operation": map[string]any{"assignee": map[string]any{"type": "pilot", "id": "claude"}},
+		},
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("create = %d %s", code, rb)
+	}
+	if field(t, rb, "next_pulse_at") == "" {
+		t.Fatalf("expected next_pulse_at when enabled: %s", rb)
+	}
+	routine := field(t, rb, "id")
+	code, paused := do(t, owner, "PATCH", ts.URL+"/v1/routines/"+routine, "", map[string]any{
+		"mission_id": field(t, mb, "id"), "title": "hourly", "body": "work",
+		"metadata": map[string]any{
+			"trigger":   map[string]any{"kind": "schedule", "cron": "@hourly", "enabled": false},
+			"operation": map[string]any{"assignee": map[string]any{"type": "pilot", "id": "claude"}},
+		},
+	})
+	if code != http.StatusOK {
+		t.Fatalf("pause = %d %s", code, paused)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(paused, &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["next_pulse_at"] != nil {
+		t.Fatalf("paused schedule should clear next_pulse_at, got %#v", body["next_pulse_at"])
+	}
 }
 
 func TestWebEnrollmentRegistersCode(t *testing.T) {
@@ -2040,6 +2990,186 @@ func TestRoverConnectionRequiresSupportedVersion(t *testing.T) {
 	code, body = do(t, &http.Client{}, "POST", ts.URL+"/v1/assets", roverToken, map[string]any{"run_id": roverID, "filename": "x.txt", "content_type": "text/plain", "byte_size": 1})
 	if code != http.StatusUpgradeRequired {
 		t.Fatalf("asset write with unsupported rover version = %d, want 426 (%s)", code, body)
+	}
+}
+
+func TestFleetBudgetBlocksAccept(t *testing.T) {
+	ts := newTestServer(t)
+	owner := signup(t, ts, "fleet-budget-owner")
+	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Capped fleet"})
+	fq := field(t, fb, "id")
+	// Fleet-level max_runs=1 (tenant policy), rover unlimited.
+	if code, b := do(t, owner, "PATCH", ts.URL+"/v1/fleets/"+fq, "", map[string]any{
+		"metadata": map[string]any{"budget": map[string]any{"period": "calendar_week", "max_runs": 1}},
+	}); code != http.StatusOK {
+		t.Fatalf("set fleet budget: %d %s", code, b)
+	}
+	_, tb := do(t, owner, "POST", ts.URL+"/v1/enrollment-codes", "", map[string]any{"fleet_id": fq, "name": "r"})
+	_, eb := do(t, &http.Client{}, "POST", ts.URL+"/v1/rovers", field(t, tb, "code"), map[string]any{"name": "donor", "auto_tags": []string{"pilot:claude"}})
+	rover := field(t, eb, "token")
+	roverID := field(t, eb, "id")
+	if code, b := do(t, &http.Client{}, "PATCH", ts.URL+"/v1/rovers/"+roverID, rover, map[string]any{
+		"auto_tags": []string{"pilot:claude"},
+	}); code != http.StatusNoContent {
+		t.Fatalf("tags: %d %s", code, b)
+	}
+	_, mb := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fq, "name": "M", "key": "FB"})
+	mission := field(t, mb, "id")
+	do(t, owner, "POST", ts.URL+"/v1/operations", "", map[string]any{
+		"fleet_id": fq, "title": "first", "mission_id": mission,
+		"assignee_type": "pilot", "assignee_id": "claude",
+	})
+	code, accept := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
+	if code != http.StatusOK {
+		t.Fatalf("first accept: %d %s", code, accept)
+	}
+	runID := field(t, accept, "id")
+	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+runID+"/result", rover, map[string]any{"status": "succeeded"}); code != http.StatusNoContent {
+		t.Fatalf("result: %d %s", code, b)
+	}
+	do(t, owner, "POST", ts.URL+"/v1/operations", "", map[string]any{
+		"fleet_id": fq, "title": "second", "mission_id": mission,
+		"assignee_type": "pilot", "assignee_id": "claude",
+	})
+	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil); code != http.StatusNoContent {
+		t.Fatalf("second accept after fleet max_runs=1 = %d, want 204 (%s)", code, b)
+	}
+}
+
+func TestMissionBudgetBlockedRunDoesNotStarveAccept(t *testing.T) {
+	ts := newTestServer(t)
+	owner := signup(t, ts, "mission-budget-owner")
+	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Mission budget fleet"})
+	fq := field(t, fb, "id")
+	_, tb := do(t, owner, "POST", ts.URL+"/v1/enrollment-codes", "", map[string]any{"fleet_id": fq, "name": "r"})
+	_, eb := do(t, &http.Client{}, "POST", ts.URL+"/v1/rovers", field(t, tb, "code"), map[string]any{"name": "donor", "auto_tags": []string{"pilot:claude"}})
+	rover := field(t, eb, "token")
+	roverID := field(t, eb, "id")
+	if code, b := do(t, &http.Client{}, "PATCH", ts.URL+"/v1/rovers/"+roverID, rover, map[string]any{
+		"auto_tags": []string{"pilot:claude"},
+	}); code != http.StatusNoContent {
+		t.Fatalf("tags: %d %s", code, b)
+	}
+	_, cappedBody := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fq, "name": "Capped", "key": "CAP"})
+	cappedMission := field(t, cappedBody, "id")
+	if code, b := do(t, owner, "PATCH", ts.URL+"/v1/missions/"+cappedMission, "", map[string]any{
+		"name": "Capped",
+		"key":  "CAP",
+		"metadata": map[string]any{
+			"budget": map[string]any{"period": "calendar_week", "max_runs": 1},
+		},
+	}); code != http.StatusOK {
+		t.Fatalf("set mission budget: %d %s", code, b)
+	}
+	_, openBody := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fq, "name": "Open", "key": "OPN"})
+	openMission := field(t, openBody, "id")
+
+	do(t, owner, "POST", ts.URL+"/v1/operations", "", map[string]any{
+		"fleet_id": fq, "title": "first", "mission_id": cappedMission,
+		"assignee_type": "pilot", "assignee_id": "claude",
+	})
+	code, accept := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
+	if code != http.StatusOK {
+		t.Fatalf("first accept: %d %s", code, accept)
+	}
+	runID := field(t, accept, "id")
+	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+runID+"/result", rover, map[string]any{"status": "succeeded"}); code != http.StatusNoContent {
+		t.Fatalf("result: %d %s", code, b)
+	}
+	do(t, owner, "POST", ts.URL+"/v1/operations", "", map[string]any{
+		"fleet_id": fq, "title": "blocked oldest", "mission_id": cappedMission,
+		"assignee_type": "pilot", "assignee_id": "claude",
+	})
+	_, runnableBody := do(t, owner, "POST", ts.URL+"/v1/operations", "", map[string]any{
+		"fleet_id": fq, "title": "runnable next", "mission_id": openMission,
+		"assignee_type": "pilot", "assignee_id": "claude",
+	})
+	runnableOperation := field(t, runnableBody, "id")
+
+	code, accept = do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
+	if code != http.StatusOK {
+		t.Fatalf("accept after blocked mission run: %d %s", code, accept)
+	}
+	if got := field(t, accept, "operation_id"); got != runnableOperation {
+		t.Fatalf("accepted operation %q, want runnable %q (%s)", got, runnableOperation, accept)
+	}
+}
+
+func TestRoverDonationBudgetMaxRunsAndUsage(t *testing.T) {
+	ts := newTestServer(t)
+	owner := signup(t, ts, "budget-owner")
+	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Budget fleet"})
+	fq := field(t, fb, "id")
+	_, tb := do(t, owner, "POST", ts.URL+"/v1/enrollment-codes", "", map[string]any{"fleet_id": fq, "name": "r"})
+	_, eb := do(t, &http.Client{}, "POST", ts.URL+"/v1/rovers", field(t, tb, "code"), map[string]any{"name": "donor", "auto_tags": []string{"pilot:claude"}})
+	rover := field(t, eb, "token")
+	roverID := field(t, eb, "id")
+	if code, b := do(t, &http.Client{}, "PATCH", ts.URL+"/v1/rovers/"+roverID, rover, map[string]any{
+		"auto_tags": []string{"pilot:claude"},
+		"metadata":  map[string]any{"budget": map[string]any{"period": "calendar_week", "max_runs": 1}},
+	}); code != http.StatusNoContent {
+		t.Fatalf("set budget: %d %s", code, b)
+	}
+	_, mb := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fq, "name": "M", "key": "BUD"})
+	mission := field(t, mb, "id")
+
+	do(t, owner, "POST", ts.URL+"/v1/operations", "", map[string]any{
+		"fleet_id": fq, "title": "first", "mission_id": mission,
+		"assignee_type": "pilot", "assignee_id": "claude",
+	})
+	code, accept := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
+	if code != http.StatusOK {
+		t.Fatalf("first accept: %d %s", code, accept)
+	}
+	runID := field(t, accept, "id")
+	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+runID+"/result", rover, map[string]any{
+		"status": "succeeded",
+		"usage": map[string]any{
+			"provider": "claude", "model": "test", "input_tokens": 10, "output_tokens": 5,
+			"total_tokens": 15, "duration_ms": 1234, "source": "pilot",
+		},
+	}); code != http.StatusNoContent {
+		t.Fatalf("result: %d %s", code, b)
+	}
+	code, detail := do(t, owner, "GET", ts.URL+"/v1/runs/"+runID, "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("get run: %d %s", code, detail)
+	}
+	var runDetailBody struct {
+		Run struct {
+			Usage *struct {
+				TotalTokens int64  `json:"total_tokens"`
+				Source      string `json:"source"`
+			} `json:"usage"`
+		} `json:"run"`
+	}
+	if err := json.Unmarshal(detail, &runDetailBody); err != nil {
+		t.Fatal(err)
+	}
+	if runDetailBody.Run.Usage == nil || runDetailBody.Run.Usage.TotalTokens != 15 {
+		t.Fatalf("usage on detail = %+v", runDetailBody.Run.Usage)
+	}
+
+	do(t, owner, "POST", ts.URL+"/v1/operations", "", map[string]any{
+		"fleet_id": fq, "title": "second", "mission_id": mission,
+		"assignee_type": "pilot", "assignee_id": "claude",
+	})
+	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil); code != http.StatusNoContent {
+		t.Fatalf("second accept after max_runs=1 = %d, want 204 (%s)", code, b)
+	}
+
+	if code, b := do(t, &http.Client{}, "PATCH", ts.URL+"/v1/rovers/"+roverID, rover, map[string]any{
+		"metadata": map[string]any{"budget": map[string]any{"period": "calendar_week", "max_tokens": 10}},
+	}); code != http.StatusNoContent {
+		t.Fatalf("token budget: %d %s", code, b)
+	}
+	// First run already reported 15 tokens this period — accept must block.
+	do(t, owner, "POST", ts.URL+"/v1/operations", "", map[string]any{
+		"fleet_id": fq, "title": "third", "mission_id": mission,
+		"assignee_type": "pilot", "assignee_id": "claude",
+	})
+	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil); code != http.StatusNoContent {
+		t.Fatalf("accept after max_tokens = %d, want 204 (%s)", code, b)
 	}
 }
 

@@ -1,21 +1,25 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Bot, Plus, Shield, Trash2, UserRound, X } from "lucide-react";
+import { Bot, BookOpen, Loader2, Plus, Shield, Trash2, UserRound, X } from "lucide-react";
 import { useApp } from "@/components/app-provider";
 import { PilotIcon } from "@/components/pilot-icon";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { del, getJSON, putJSON, withFleet } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 import { pilotLabel, userLabel } from "@/lib/labels";
 import { SECTION_ICONS } from "@/lib/section-icons";
+import type { Crew, CrewMember, Pilot, Skill } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import type { Crew, CrewMember, Pilot } from "@/lib/types";
 
 export function CrewsView() {
   const app = useApp();
+  const t = useT();
   const [crewName, setCrewName] = useState("");
   const canManage = app.myRole === "owner" || app.myRole === "admin";
 
@@ -23,21 +27,21 @@ export function CrewsView() {
     <div className="mx-auto grid h-full max-w-5xl gap-4 overflow-y-auto p-4 lg:grid-cols-[minmax(0,1fr)_20rem] lg:overflow-hidden">
       <Card className="flex min-h-0 flex-col">
         <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base"><SECTION_ICONS.crews className="size-4" /> Crews</CardTitle>
+          <CardTitle className="flex items-center gap-2 text-base"><SECTION_ICONS.crews className="size-4" /> {t("crews.title")}</CardTitle>
         </CardHeader>
         <CardContent className="flex min-h-0 flex-1 flex-col space-y-3">
-          <p className="text-xs text-muted-foreground">Crews are dispatch groups. Staff them with people and pilots, then assign operations to the crew.</p>
+          <p className="text-xs text-muted-foreground">{t("crews.hint")}</p>
           {canManage && (
             <form
               className="flex gap-2"
               onSubmit={(e) => { e.preventDefault(); if (crewName.trim()) { app.addCrew(crewName); setCrewName(""); } }}
             >
-              <Input value={crewName} onChange={(e) => setCrewName(e.target.value)} placeholder="New crew name" className="flex-1" />
-              <Button type="submit"><Plus /> Crew</Button>
+              <Input value={crewName} onChange={(e) => setCrewName(e.target.value)} placeholder={t("crews.newPlaceholder")} className="flex-1" />
+              <Button type="submit"><Plus /> {t("crews.addCrew")}</Button>
             </form>
           )}
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
-            {app.crews.length === 0 && <p className="text-sm text-muted-foreground">{canManage ? "No crews yet. Create one, then add people and pilots to it." : "No crews yet."}</p>}
+            {app.crews.length === 0 && <p className="text-sm text-muted-foreground">{canManage ? t("crews.emptyManage") : t("crews.empty")}</p>}
             {app.crews.map((c) => <CrewCard key={c.id} crew={c} canManage={canManage} />)}
           </div>
         </CardContent>
@@ -45,17 +49,17 @@ export function CrewsView() {
 
       <Card className="flex min-h-0 flex-col">
         <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base"><Bot className="size-4" /> Pilots</CardTitle>
+          <CardTitle className="flex items-center gap-2 text-base"><Bot className="size-4" /> {t("crews.pilots")}</CardTitle>
         </CardHeader>
         <CardContent className="flex min-h-0 flex-1 flex-col space-y-3">
-          <p className="text-xs text-muted-foreground">Each pilot shows how many enrolled rovers it can start, and how many are online.</p>
+          <p className="text-xs text-muted-foreground">{t("crews.pilotsHint")}</p>
           {app.pilots.length > 0 && (
             <div className="grid grid-cols-[minmax(0,1fr)_6.75rem] px-2 text-[9px] font-medium uppercase text-muted-foreground">
-              <span>Pilot</span>
+              <span>{t("crews.pilot")}</span>
               <span className="grid grid-cols-[1fr_1px_1fr] items-center gap-1.5 px-1.5 text-center">
-                <span>Online</span>
+                <span>{t("crews.online")}</span>
                 <span aria-hidden />
-                <span>Enrolled</span>
+                <span>{t("crews.enrolled")}</span>
               </span>
             </div>
           )}
@@ -69,7 +73,7 @@ export function CrewsView() {
                 <PilotAvailability pilot={p} />
               </li>
             ))}
-            {app.pilots.length === 0 && <p className="text-sm text-muted-foreground">No pilots yet. Enroll a rover to make a pilot available.</p>}
+            {app.pilots.length === 0 && <p className="text-sm text-muted-foreground">{t("crews.noPilots")}</p>}
           </ul>
         </CardContent>
       </Card>
@@ -78,18 +82,19 @@ export function CrewsView() {
 }
 
 function PilotAvailability({ pilot }: { pilot: Pilot }) {
+  const t = useT();
   const unavailable = pilot.rovers === 0;
   if (unavailable) {
     return (
       <span
-        aria-label="0 online, 0 enrolled"
+        aria-label={t("crews.noRoversAria")}
         className="inline-flex h-5 w-[6.75rem] shrink-0 items-center justify-center rounded-full border border-destructive/20 bg-destructive/5 px-1.5 text-[10px] font-medium uppercase text-destructive/75"
       >
-        no rovers
+        {t("crews.noRovers")}
       </span>
     );
   }
-  const label = `${pilot.online_rovers} online, ${pilot.rovers} enrolled`;
+  const label = t("crews.onlineEnrolled", { online: pilot.online_rovers, enrolled: pilot.rovers });
   return (
     <span
       aria-label={label}
@@ -113,6 +118,7 @@ function displayCount(value: number) {
 }
 
 function CrewName({ id, name, canManage, onRename }: { id: string; name: string; canManage: boolean; onRename: (id: string, name: string) => void }) {
+  const t = useT();
   const [value, setValue] = useState(name);
   const [editing, setEditing] = useState(false);
   useEffect(() => setValue(name), [name]);
@@ -135,7 +141,7 @@ function CrewName({ id, name, canManage, onRename }: { id: string; name: string;
   return (
     <Input
       autoFocus
-      aria-label="Crew name"
+      aria-label={t("crews.nameAria")}
       className="h-7 w-full border-transparent px-1 shadow-none"
       value={value}
       onBlur={save}
@@ -153,8 +159,9 @@ function CrewName({ id, name, canManage, onRename }: { id: string; name: string;
 
 function CrewCard({ crew, canManage }: { crew: Crew; canManage: boolean }) {
   const app = useApp();
+  const t = useT();
   const members = crew.members ?? [];
-  const sortedMembers = [...members].sort((a, b) => memberTypeRank(a) - memberTypeRank(b) || Number(b.role === "captain") - Number(a.role === "captain") || memberName(a, app).localeCompare(memberName(b, app)));
+  const sortedMembers = [...members].sort((a, b) => memberTypeRank(a) - memberTypeRank(b) || Number(b.role === "captain") - Number(a.role === "captain") || memberName(a, app, t("crews.memberFallback")).localeCompare(memberName(b, app, t("crews.memberFallback"))));
   const captain = sortedMembers.find((m) => m.role === "captain");
   const captainValue = captain ? memberValue(captain, app.user.id) : "";
 
@@ -165,20 +172,20 @@ function CrewCard({ crew, canManage }: { crew: Crew; canManage: boolean }) {
         {canManage && <Button variant="ghost" size="icon-sm" onClick={() => app.delCrew(crew.id)}><Trash2 /></Button>}
       </CardHeader>
       <CardContent className="space-y-2">
-        {members.length === 0 && <p className="text-xs text-muted-foreground">{canManage ? "No members yet — add people and pilots below." : "No members yet."}</p>}
+        {members.length === 0 && <p className="text-xs text-muted-foreground">{canManage ? t("crews.noMembersManage") : t("crews.noMembers")}</p>}
         {canManage && members.length > 0 && (
           <div className="flex items-center gap-2 rounded-md border border-border/70 bg-muted/20 px-2 py-2">
             <div className="flex w-24 items-center gap-1.5 text-xs font-medium uppercase text-muted-foreground">
-              <Shield className="size-3.5" /> Captain
+              <Shield className="size-3.5" /> {t("crews.captain")}
             </div>
             <Select value={captainValue} onValueChange={(v) => app.addMember(crew.id, v, "captain", app.user.id)}>
-              <SelectTrigger className="h-8 flex-1 text-xs"><SelectValue placeholder="Select captain" /></SelectTrigger>
+              <SelectTrigger className="h-8 flex-1 text-xs"><SelectValue placeholder={t("crews.selectCaptain")} /></SelectTrigger>
               <SelectContent>
                 {sortedMembers.map((m) => (
                   <SelectItem key={`${m.member_type}${m.member_id}`} value={memberValue(m, app.user.id)}>
                     <span className="flex items-center gap-2">
                       {m.member_type === "pilot" ? <PilotIcon kind={m.member_id} /> : <UserRound className="size-4 text-muted-foreground" />}
-                      {memberName(m, app)}
+                      {memberName(m, app, t("crews.memberFallback"))}
                     </span>
                   </SelectItem>
                 ))}
@@ -191,7 +198,7 @@ function CrewCard({ crew, canManage }: { crew: Crew; canManage: boolean }) {
         </ul>
         {canManage && (
           <Select value="" onValueChange={(v) => app.addMember(crew.id, v, "member", app.user.id)}>
-            <SelectTrigger className="mt-1 h-8 text-xs"><SelectValue placeholder="+ Add a person or pilot…" /></SelectTrigger>
+            <SelectTrigger className="mt-1 h-8 text-xs"><SelectValue placeholder={t("crews.addPersonOrPilot")} /></SelectTrigger>
             <SelectContent>
               <SelectItem value="me">🧑 {userLabel(app.user)}</SelectItem>
               {app.members.filter((m) => m.id !== app.user.id).map((m) => (
@@ -199,13 +206,14 @@ function CrewCard({ crew, canManage }: { crew: Crew; canManage: boolean }) {
               ))}
               {app.pilots.map((p) => (
                 <SelectItem key={p.kind} value={`pilot:${p.kind}`} disabled={p.rovers === 0}>
-                  <span className="flex items-center gap-2"><PilotIcon kind={p.kind} /> {pilotLabel(p.kind)}{p.rovers === 0 && " (no rover)"}</span>
+                  <span className="flex items-center gap-2"><PilotIcon kind={p.kind} /> {pilotLabel(p.kind)}{p.rovers === 0 && t("crews.noRoverSuffix")}</span>
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
         )}
-      </CardContent>
+              {canManage && <CrewSkills crewId={crew.id} fleetId={app.fleet} />}
+</CardContent>
     </Card>
   );
 }
@@ -218,17 +226,18 @@ function memberTypeRank(m: CrewMember) {
   return m.member_type === "user" ? 0 : 1;
 }
 
-function memberName(m: CrewMember, app: ReturnType<typeof useApp>) {
+function memberName(m: CrewMember, app: ReturnType<typeof useApp>, fallback: string) {
   if (m.member_type === "pilot") return pilotLabel(m.member_id);
   if (m.member_id === app.user.id) return userLabel(app.user);
   const u = app.members.find((x) => x.id === m.member_id);
-  return u?.name || u?.email || "member";
+  return u?.name || u?.email || fallback;
 }
 
 function MemberRow({ crewId, m, canManage }: { crewId: string; m: CrewMember; canManage: boolean }) {
   const app = useApp();
+  const t = useT();
   const isPilot = m.member_type === "pilot";
-  const name = memberName(m, app);
+  const name = memberName(m, app, t("crews.memberFallback"));
   return (
     <li className="flex items-center gap-2 rounded-md px-2 py-1 text-sm hover:bg-muted/50">
       {isPilot ? <PilotIcon kind={m.member_id} /> : <UserRound className="size-4 text-muted-foreground" />}
@@ -239,9 +248,145 @@ function MemberRow({ crewId, m, canManage }: { crewId: string; m: CrewMember; ca
           {name}
         </button>
       )}
-      {m.role === "captain" && <Badge variant="secondary" className="gap-1 text-[10px]"><Shield className="size-3.5" /> Captain</Badge>}
-      <span className="text-[10px] uppercase text-muted-foreground">{isPilot ? "pilot" : "person"}</span>
+      {m.role === "captain" && <Badge variant="secondary" className="gap-1 text-[10px]"><Shield className="size-3.5" /> {t("crews.captain")}</Badge>}
+      <span className="text-[10px] uppercase text-muted-foreground">{isPilot ? t("crews.pilotType") : t("crews.person")}</span>
       {canManage && <Button variant="ghost" size="icon-sm" onClick={() => app.removeMember(crewId, m.member_type, m.member_id)}><X /></Button>}
     </li>
   );
+}
+
+function CrewSkills({ crewId, fleetId }: { crewId: string; fleetId: string }) {
+  const t = useT();
+  const [catalog, setCatalog] = useState<Skill[]>([]);
+  const [bound, setBound] = useState<Skill[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+  const [updateError, setUpdateError] = useState(false);
+  const [busySkill, setBusySkill] = useState<string | null>(null);
+  const boundIds = new Set(bound.map((skill) => skill.id));
+  const available = catalog.filter((skill) => !boundIds.has(skill.id));
+
+  useEffect(() => {
+    let ignore = false;
+    setLoading(true);
+    setLoadError(false);
+    setUpdateError(false);
+    setCatalog([]);
+    setBound([]);
+    Promise.all([
+      getJSON<Skill[]>(withFleet("/api/v1/skills", fleetId)),
+      getJSON<Skill[]>(withFleet(`/api/v1/skills?crew_id=${encodeURIComponent(crewId)}`, fleetId)),
+    ]).then(([fleetSkills, crewSkills]) => {
+      if (ignore) return;
+      if (!fleetSkills || !crewSkills) {
+        setLoadError(true);
+        return;
+      }
+      setCatalog(sortSkills(fleetSkills));
+      setBound(sortSkills(crewSkills));
+    }).catch(() => {
+      if (!ignore) setLoadError(true);
+    }).finally(() => {
+      if (!ignore) setLoading(false);
+    });
+    return () => { ignore = true; };
+  }, [crewId, fleetId]);
+
+  async function attachSkill(skillId: string) {
+    const skill = catalog.find((item) => item.id === skillId);
+    if (!skill || busySkill) return;
+    setBusySkill(skillId);
+    setUpdateError(false);
+    try {
+      const res = await putJSON(`/api/v1/crews/${crewId}/skills/${skill.id}`);
+      if (!res.ok) {
+        setUpdateError(true);
+        return;
+      }
+      setBound((prev) => sortSkills([...prev.filter((item) => item.id !== skill.id), skill]));
+    } catch {
+      setUpdateError(true);
+    } finally {
+      setBusySkill(null);
+    }
+  }
+
+  async function detachSkill(skill: Skill) {
+    if (busySkill) return;
+    setBusySkill(skill.id);
+    setUpdateError(false);
+    try {
+      const res = await del(`/api/v1/crews/${crewId}/skills/${skill.id}`);
+      if (!res.ok) {
+        setUpdateError(true);
+        return;
+      }
+      setBound((prev) => prev.filter((item) => item.id !== skill.id));
+    } catch {
+      setUpdateError(true);
+    } finally {
+      setBusySkill(null);
+    }
+  }
+
+  return (
+    <div className="rounded-md border border-border/70 bg-muted/20 px-2 py-2">
+      <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium uppercase text-muted-foreground">
+        <BookOpen className="size-3.5" /> {t("op.skills")}
+        {loading && <Loader2 className="ml-auto size-3 animate-spin" />}
+      </p>
+      <div className="space-y-1.5">
+        {loadError && <p className="rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">{t("crews.skillsLoadError")}</p>}
+        {!loadError && updateError && <p className="rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">{t("crews.skillsUpdateError")}</p>}
+        {!loading && !loadError && bound.length === 0 && <p className="text-xs text-muted-foreground">{t("crews.noSkillsBound")}</p>}
+        {bound.length > 0 && (
+          <div className="space-y-1">
+            {bound.map((skill) => (
+              <div key={skill.id} className="group flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-xs hover:bg-accent/60">
+                <BookOpen className="size-3.5 shrink-0 text-muted-foreground" />
+                <span className="min-w-0 flex-1 truncate font-medium">{skill.name}</span>
+                <Badge variant="secondary" className="max-w-24 shrink-0 truncate font-mono text-[10px]">{skill.slug}</Badge>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  className="size-6 shrink-0 text-muted-foreground opacity-0 hover:text-destructive group-hover:opacity-100 group-focus-within:opacity-100"
+                  title={t("op.detachSkill", { name: skill.name })}
+                  aria-label={t("op.detachSkill", { name: skill.name })}
+                  disabled={busySkill === skill.id}
+                  onClick={() => void detachSkill(skill)}
+                >
+                  {busySkill === skill.id ? <Loader2 className="size-3 animate-spin" /> : <X className="size-3" />}
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+        {!loadError && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="sm" className="h-7 px-1.5 text-xs text-muted-foreground" disabled={loading || busySkill != null}>
+                <Plus className="size-3" /> {t("op.addSkill")}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-64">
+              {available.length === 0 ? (
+                <DropdownMenuItem disabled>{catalog.length === 0 ? t("skills.empty") : t("op.noAvailableSkills")}</DropdownMenuItem>
+              ) : available.map((skill) => (
+                <DropdownMenuItem key={skill.id} onClick={() => void attachSkill(skill.id)} className="gap-2">
+                  <BookOpen className="size-3.5 shrink-0 text-muted-foreground" />
+                  <span className="min-w-0 flex-1 truncate">{skill.name}</span>
+                  <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{skill.slug}</span>
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function sortSkills(skills: Skill[]) {
+  return [...skills].sort((a, b) => a.slug.localeCompare(b.slug) || a.name.localeCompare(b.name));
 }

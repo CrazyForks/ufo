@@ -71,6 +71,14 @@ type CrewMember struct {
 	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
 }
 
+type CrewSkillBinding struct {
+	FleetID   int64              `json:"fleet_id"`
+	CrewID    int64              `json:"crew_id"`
+	SkillID   int64              `json:"skill_id"`
+	CreatedBy pgtype.Int8        `json:"created_by"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
 type EnrollmentCode struct {
 	ID            int64              `json:"id"`
 	PublicID      pgtype.UUID        `json:"public_id"`
@@ -295,6 +303,27 @@ type RunMessage struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
+type RunUsage struct {
+	RunID            int64              `json:"run_id"`
+	FleetID          int64              `json:"fleet_id"`
+	OperationID      int64              `json:"operation_id"`
+	RoverID          pgtype.Int8        `json:"rover_id"`
+	Pilot            string             `json:"pilot"`
+	Provider         string             `json:"provider"`
+	Model            string             `json:"model"`
+	Source           pgtype.Text        `json:"source"`
+	InputTokens      int64              `json:"input_tokens"`
+	OutputTokens     int64              `json:"output_tokens"`
+	CacheReadTokens  int64              `json:"cache_read_tokens"`
+	CacheWriteTokens int64              `json:"cache_write_tokens"`
+	ReasoningTokens  int64              `json:"reasoning_tokens"`
+	TotalTokens      int64              `json:"total_tokens"`
+	DurationMs       pgtype.Int8        `json:"duration_ms"`
+	CostMicros       pgtype.Int8        `json:"cost_micros"`
+	Metadata         []byte             `json:"metadata"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+}
+
 type Session struct {
 	TokenHash string             `json:"token_hash"`
 	UserID    int64              `json:"user_id"`
@@ -316,6 +345,36 @@ type Signal struct {
 	Archived        bool               `json:"archived"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+}
+
+type Skill struct {
+	ID          int64              `json:"id"`
+	PublicID    pgtype.UUID        `json:"public_id"`
+	FleetID     int64              `json:"fleet_id"`
+	Name        string             `json:"name"`
+	Slug        string             `json:"slug"`
+	Description string             `json:"description"`
+	CreatedBy   pgtype.Int8        `json:"created_by"`
+	Archived    bool               `json:"archived"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
+type SkillBinding struct {
+	FleetID     int64              `json:"fleet_id"`
+	OperationID int64              `json:"operation_id"`
+	SkillID     int64              `json:"skill_id"`
+	CreatedBy   pgtype.Int8        `json:"created_by"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type SkillFile struct {
+	SkillID   int64              `json:"skill_id"`
+	Path      string             `json:"path"`
+	Content   string             `json:"content"`
+	SizeBytes int64              `json:"size_bytes"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
 }
 
 type SourceAction struct {

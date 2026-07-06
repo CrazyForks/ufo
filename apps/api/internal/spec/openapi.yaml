@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: UFO Hub API
-  version: 0.5.0
+  version: 0.6.1
   license:
     name: BSD-3-Clause
     url: https://opensource.org/license/bsd-3-clause
@@ -109,7 +109,7 @@ paths:
     post:
       tags: [auth]
       operationId: signup
-      summary: Create an account (auto-creates a fleet and membership) and access cookie
+      summary: Create an account (personal fleet + fleet_id, default Launch Bay mission, session + access cookie)
       requestBody:
         required: true
         content:
@@ -117,18 +117,23 @@ paths:
             schema: { $ref: "#/components/schemas/SignupRequest" }
       responses:
         "201":
-          description: Created (sets ufo_access httpOnly JWT cookie)
+          description: Created (sets ufo_session + ufo_access httpOnly cookies)
           content:
             application/json:
               schema: { $ref: "#/components/schemas/AuthResponse" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "429":
+          description: Too many signup attempts from this client IP
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /v1/auth/login:
     post:
       tags: [auth]
       operationId: login
-      summary: Sign in and set the access cookie
+      summary: Sign in and set session + access cookies
       requestBody:
         required: true
         content:
@@ -136,11 +141,16 @@ paths:
             schema: { $ref: "#/components/schemas/LoginRequest" }
       responses:
         "200":
-          description: OK (sets ufo_access httpOnly JWT cookie)
+          description: OK (sets ufo_session + ufo_access httpOnly cookies)
           content:
             application/json:
               schema: { $ref: "#/components/schemas/AuthResponse" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "429":
+          description: Too many login attempts from this client IP
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /v1/auth/logout:
     post:
@@ -176,7 +186,7 @@ paths:
           application/json:
             schema:
               type: object
-              properties: { name: { type: string } }
+              properties: { name: { type: string, minLength: 1, maxLength: 80 } }
       responses:
         "200":
           description: Updated
@@ -554,6 +564,29 @@ paths:
         "200": { description: OK }
         "400": { $ref: "#/components/responses/BadRequest" }
 
+  /v1/usage:
+    get:
+      tags: [ui]
+      operationId: getUsage
+      summary: Fleet and mission usage totals for a calendar period
+      security: [{ accessCookie: [] }, { userBearer: [] }]
+      parameters:
+        - name: fleet_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: period
+          in: query
+          schema: { type: string, enum: [calendar_week, calendar_month], default: calendar_week }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UsageSummary" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   /v1/source-actions:
     post:
       tags: [ui]
@@ -569,8 +602,8 @@ paths:
               required: [operation_id, kind]
               properties:
                 operation_id: { type: string, format: uuid, description: operation public id }
-                kind: { type: string, enum: [apply_to_source, create_source_branch, refresh_from_source] }
-                branch_name: { type: string, description: Optional local branch name for kind=create_source_branch }
+                kind: { type: string, enum: [apply_to_source, create_source_branch, commit_to_branch, refresh_from_source] }
+                branch_name: { type: string, description: "Local branch name; required for commit_to_branch, optional for create_source_branch" }
       responses:
         "201":
           description: Queued
@@ -862,6 +895,31 @@ paths:
         "204": { description: Detached }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /v1/operations/{id}/skills/{skill_id}:
+    put:
+      tags: [ui]
+      operationId: attachOperationSkill
+      summary: Attach a fleet skill to an operation (owner/admin only)
+      security: [{ accessCookie: [] }, { userBearer: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { name: skill_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Attached }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [ui]
+      operationId: detachOperationSkill
+      summary: Detach a fleet skill from an operation (owner/admin only)
+      security: [{ accessCookie: [] }, { userBearer: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { name: skill_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Detached }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+
   /v1/operations/{id}/reactions/{emoji}:
     put:
       tags: [ui]
@@ -1122,6 +1180,134 @@ paths:
         - { name: member_id, in: path, required: true, schema: { type: string }, description: "user public id, or pilot kind" }
       responses:
         "204": { description: Removed }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/skills:
+    get:
+      tags: [ui]
+      operationId: listSkills
+      summary: List fleet skills (owner/admin only)
+      description: |
+        Fleet-scoped skill catalog. Optional filters:
+        `operation_id` lists skills bound to that operation;
+        `crew_id` lists skills bound to that crew.
+        At most one of `operation_id` or `crew_id` may be set.
+      security: [{ accessCookie: [] }, { userBearer: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/FleetIdQuery" }
+        - name: operation_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+          description: When set, return only skills bound to this operation (same fleet as fleet_id).
+        - name: crew_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+          description: When set, return only skills bound to this crew (same fleet as fleet_id).
+        - name: include_archived
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+          description: Ignored when operation_id or crew_id is set (bound lists exclude archived).
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Skill" } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [ui]
+      operationId: createSkill
+      summary: Create a fleet skill (owner/admin only)
+      security: [{ accessCookie: [] }, { userBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateSkillRequest" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Skill" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+
+  /v1/skills/{id}:
+    get:
+      tags: [ui]
+      operationId: getSkill
+      summary: Get a fleet skill with files (owner/admin only)
+      security: [{ accessCookie: [] }, { userBearer: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Skill" } } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [ui]
+      operationId: updateSkill
+      summary: Replace skill metadata and files (owner/admin only)
+      security: [{ accessCookie: [] }, { userBearer: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateSkillRequest" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Skill" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+    delete:
+      tags: [ui]
+      operationId: deleteSkill
+      summary: Archive a fleet skill (owner/admin only)
+      security: [{ accessCookie: [] }, { userBearer: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "204": { description: Archived }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+
+  /v1/crews/{id}/skills/{skill_id}:
+    put:
+      tags: [ui]
+      operationId: attachCrewSkill
+      summary: Attach a fleet skill to a crew (owner/admin only)
+      security: [{ accessCookie: [] }, { userBearer: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { name: skill_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Attached }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [ui]
+      operationId: detachCrewSkill
+      summary: Detach a fleet skill from a crew (owner/admin only)
+      security: [{ accessCookie: [] }, { userBearer: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { name: skill_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Detached }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
@@ -1743,6 +1929,7 @@ paths:
         "409": { $ref: "#/components/responses/Conflict" }
         "426": { $ref: "#/components/responses/UpgradeRequired" }
 
+
 components:
   securitySchemes:
     accessCookie:
@@ -1784,7 +1971,7 @@ components:
       description: Required when authenticating with an enrollment code or rover connection token; ignored for user-authenticated requests.
       schema:
         type: string
-        example: "0.5.0"
+        example: "0.6.1"
 
   responses:
     BadRequest:
@@ -1820,6 +2007,61 @@ components:
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
   schemas:
+    SkillFileInput:
+      type: object
+      required: [path, content]
+      properties:
+        path: { type: string, example: SKILL.md, description: Slash path relative to the skill root; escaping the root is rejected. }
+        content: { type: string, maxLength: 262144 }
+    SkillFile:
+      type: object
+      properties:
+        path: { type: string, example: SKILL.md }
+        content: { type: string }
+        size_bytes: { type: integer, format: int64 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    Skill:
+      type: object
+      description: Fleet-scoped skill directory. The files array includes stored text files and must contain root SKILL.md.
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        slug: { type: string, description: Fleet-unique directory slug under .ufo/skills }
+        description: { type: string }
+        archived: { type: boolean }
+        files: { type: array, items: { $ref: "#/components/schemas/SkillFile" } }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    CreateSkillRequest:
+      type: object
+      required: [fleet_id, name, files]
+      properties:
+        fleet_id: { type: string, format: uuid }
+        name: { type: string, minLength: 1 }
+        slug: { type: string, maxLength: 80, description: Optional; derived from name when omitted. }
+        description: { type: string }
+        files:
+          type: array
+          minItems: 1
+          maxItems: 128
+          items: { $ref: "#/components/schemas/SkillFileInput" }
+
+    UpdateSkillRequest:
+      type: object
+      required: [name, files]
+      properties:
+        name: { type: string, minLength: 1 }
+        slug: { type: string, maxLength: 80, description: Optional; derived from name when omitted. }
+        description: { type: string }
+        files:
+          type: array
+          minItems: 1
+          maxItems: 128
+          items: { $ref: "#/components/schemas/SkillFileInput" }
+
     Error:
       type: object
       properties: { error: { type: string } }
@@ -1848,6 +2090,10 @@ components:
       properties:
         user: { $ref: "#/components/schemas/Me" }
         expires_at: { type: string, format: date-time }
+        fleet_id:
+          type: string
+          format: uuid
+          description: Personal fleet public id (signup only). Clients should store this as the active fleet before the first board boot.
 
     Fleet:
       type: object
@@ -2105,7 +2351,7 @@ components:
         operation_id: { type: string, format: uuid }
         run_id: { type: string, format: uuid, nullable: true }
         rover_id: { type: string, format: uuid, nullable: true }
-        kind: { type: string, enum: [apply_to_source, create_source_branch, refresh_from_source] }
+        kind: { type: string, enum: [apply_to_source, create_source_branch, commit_to_branch, refresh_from_source] }
         status: { type: string, enum: [queued, accepted, succeeded, failed, conflicted] }
         branch_name: { type: string }
         commit_sha: { type: string }
@@ -2254,6 +2500,58 @@ components:
         key: { type: string, description: Operation prefix (alphanumeric; unique within the fleet) }
         metadata: { type: object, additionalProperties: true }
 
+    RunUsage:
+      type: object
+      description: Token/cost facts for a finalized run (donation budget + audit).
+      properties:
+        provider: { type: string }
+        model: { type: string }
+        source: { type: string, nullable: true, enum: [pilot, estimate, run] }
+        input_tokens: { type: integer, format: int64 }
+        output_tokens: { type: integer, format: int64 }
+        cache_read_tokens: { type: integer, format: int64 }
+        cache_write_tokens: { type: integer, format: int64 }
+        reasoning_tokens: { type: integer, format: int64 }
+        total_tokens: { type: integer, format: int64 }
+        duration_ms: { type: integer, format: int64, nullable: true }
+        cost_micros: { type: integer, format: int64, nullable: true }
+        metadata: { type: object, additionalProperties: true }
+        created_at: { type: string, format: date-time }
+
+    UsageTotals:
+      type: object
+      required: [runs, total_tokens, cost_micros]
+      properties:
+        runs: { type: integer, format: int64 }
+        total_tokens: { type: integer, format: int64 }
+        cost_micros: { type: integer, format: int64 }
+        max_runs: { type: integer, format: int64, nullable: true }
+        max_tokens: { type: integer, format: int64, nullable: true }
+        max_usd_micros: { type: integer, format: int64, nullable: true }
+
+    MissionUsage:
+      allOf:
+        - { $ref: "#/components/schemas/UsageTotals" }
+        - type: object
+          required: [id, key, name]
+          properties:
+            id: { type: string, format: uuid }
+            key: { type: string }
+            name: { type: string }
+
+    UsageSummary:
+      type: object
+      required: [period, period_key, start_at, end_at, fleet, missions]
+      properties:
+        period: { type: string, enum: [calendar_week, calendar_month] }
+        period_key: { type: string }
+        start_at: { type: string, format: date-time }
+        end_at: { type: string, format: date-time }
+        fleet: { $ref: "#/components/schemas/UsageTotals" }
+        missions:
+          type: array
+          items: { $ref: "#/components/schemas/MissionUsage" }
+
     Run:
       type: object
       properties:
@@ -2265,6 +2563,7 @@ components:
           enum: [queued, accepted, starting, running, blocked, succeeded, failed, canceled]
         needs_input: { type: boolean, description: pilot ended this run awaiting a human answer }
         metadata: { type: object, additionalProperties: true, readOnly: true }
+        usage: { $ref: "#/components/schemas/RunUsage", description: Present on run detail when reported }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
@@ -2406,6 +2705,7 @@ components:
         operation_created_at: { type: string, format: date-time }
         operation_worktree_name: { type: string }
         worktree_enabled: { type: boolean }
+        worktree_base_ref: { type: string, description: "Preferred git ref for new operation worktrees (e.g. auto_commit_branch for self-development loops)" }
         status: { type: string }
         pilot: { type: string, pattern: "^[a-z][a-z0-9_-]{0,31}$" }
         command: { type: string, description: "Resume prompt carried to the pilot, if any" }
@@ -2425,8 +2725,14 @@ components:
         operation_title: { type: string }
         operation_created_at: { type: string, format: date-time }
         operation_worktree_name: { type: string }
-        kind: { type: string, enum: [apply_to_source, create_source_branch, refresh_from_source] }
+        kind: { type: string, enum: [apply_to_source, create_source_branch, commit_to_branch, refresh_from_source] }
         branch_name: { type: string }
+        drop_worktree_on_success:
+          type: boolean
+          description: >
+            From routine metadata.operation.drop_worktree_on_commit on auto-commit
+            source actions. When true and the action succeeds, the rover deletes
+            the operation worktree. Absent or false keeps the worktree.
 
     CompleteSourceActionRequest:
       type: object
@@ -2454,16 +2760,16 @@ components:
       type: object
       required: [email, password]
       properties:
-        email: { type: string }
-        password: { type: string, minLength: 8 }
-        name: { type: string }
+        email: { type: string, format: email, maxLength: 254, description: Lowercased and trimmed by the Hub }
+        password: { type: string, minLength: 8, maxLength: 128 }
+        name: { type: string, maxLength: 80, description: Optional display name; defaults to the email local-part (truncated to 80 chars) }
 
     LoginRequest:
       type: object
       required: [email, password]
       properties:
-        email: { type: string }
-        password: { type: string }
+        email: { type: string, format: email, maxLength: 254 }
+        password: { type: string, maxLength: 128 }
 
     CreateOperationRequest:
       type: object
@@ -2595,3 +2901,19 @@ components:
         operations: { type: array, description: "explicit first-class operations to create in the current mission; these are not sub-operations; they inherit the current operation assignee and normal auto-run behavior", items: { type: object, required: [title], properties: { title: { type: string }, body: { type: string } } } }
         sub_operations: { type: array, description: "captain's split into parallel sub-operations (top-level crew operation only; capped at 8)", items: { type: object, required: [title], properties: { title: { type: string }, body: { type: string }, assignee: { type: string, description: optional crew-member pilot kind; default = distributed available crew pilot } } } }
         sub_operations_feedback: { type: array, description: "captain feedback for existing sub-operations; posts each body to that same sub-operation and resumes its pilot", items: { type: object, required: [operation_id, body], properties: { operation_id: { type: string }, body: { type: string } } } }
+        usage:
+          type: object
+          description: Optional usage facts for audit and token/cost donation budgets
+          properties:
+            provider: { type: string }
+            model: { type: string }
+            source: { type: string, nullable: true, enum: [pilot, estimate, run] }
+            input_tokens: { type: integer, format: int64 }
+            output_tokens: { type: integer, format: int64 }
+            cache_read_tokens: { type: integer, format: int64 }
+            cache_write_tokens: { type: integer, format: int64 }
+            reasoning_tokens: { type: integer, format: int64 }
+            total_tokens: { type: integer, format: int64 }
+            duration_ms: { type: integer, format: int64 }
+            cost_micros: { type: integer, format: int64, nullable: true }
+            metadata: { type: object, additionalProperties: true }

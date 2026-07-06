@@ -7,6 +7,7 @@ import { AssetKindIcon, assetCodeLanguage, assetInlineContentURL, canPreviewAsse
 import { SelectionActionsMenu, copyText, selectedTextWithin } from "@/components/selection-actions-menu";
 import { Button } from "@/components/ui/button";
 import { apiFetch } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import type { Asset } from "@/lib/types";
 
@@ -153,6 +154,7 @@ function formatTextPreview(asset: Asset, text: string) {
 }
 
 export function AssetTextCopyButton({ asset, className }: { asset: Asset; className?: string }) {
+  const t = useT();
   if (!canPreviewAsset(asset) || isImageAsset(asset) || isPdfAsset(asset)) return null;
   async function copyAssetText() {
     const res = await apiFetch(assetInlineContentURL(asset));
@@ -160,7 +162,7 @@ export function AssetTextCopyButton({ asset, className }: { asset: Asset; classN
     await copyText(await res.text());
   }
   return (
-    <Button variant="ghost" size="icon-sm" className={cn("size-6 shrink-0 text-muted-foreground", className)} title="Copy text" aria-label={`Copy text from ${asset.filename}`} onClick={() => void copyAssetText()}>
+    <Button variant="ghost" size="icon-sm" className={cn("size-6 shrink-0 text-muted-foreground", className)} title={t("asset.copyText")} aria-label={t("asset.copyTextFrom", { name: asset.filename })} onClick={() => void copyAssetText()}>
       <Copy className="size-3.5" />
     </Button>
   );

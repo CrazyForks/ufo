@@ -4,6 +4,7 @@ import localFont from "next/font/local";
 import "./globals.css";
 import { ThemeProvider } from "@/components/theme-provider";
 import { Toaster } from "@/components/ui/sonner";
+import { I18nProvider } from "@/lib/i18n";
 
 const inter = localFont({
   src: "./fonts/inter-latin-var.woff2",
@@ -27,10 +28,12 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en" suppressHydrationWarning className={`${inter.variable} ${geistMono.variable}`}>
       <body className="min-h-svh bg-background text-foreground antialiased">
-        <ThemeProvider attribute="class" defaultTheme="system" enableSystem themes={["light", "dark", "console-light", "console-dark", "console-system"]} disableTransitionOnChange>
-          {children}
-          <Toaster position="bottom-right" />
-        </ThemeProvider>
+        <I18nProvider>
+          <ThemeProvider attribute="class" defaultTheme="system" enableSystem themes={["light", "dark", "console-light", "console-dark", "console-system"]} disableTransitionOnChange>
+            {children}
+            <Toaster position="bottom-right" />
+          </ThemeProvider>
+        </I18nProvider>
       </body>
     </html>
   );

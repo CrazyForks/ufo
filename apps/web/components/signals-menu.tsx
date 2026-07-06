@@ -5,6 +5,7 @@ import { Archive, Eye, type LucideIcon, MessageCircleQuestion, Radio, TriangleAl
 import { useApp } from "@/components/app-provider";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { useT } from "@/lib/i18n";
 import { resolveUserMention } from "@/lib/user-mentions";
 import { cn } from "@/lib/utils";
 
@@ -33,13 +34,14 @@ function mentionedUserId(text: string, app: ReturnType<typeof useApp>): string |
 
 export function SignalsMenu() {
   const app = useApp();
+  const t = useT();
   const [open, setOpen] = useState(false);
   const unread = app.signals.filter((s) => !s.read).length;
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <Button variant="ghost" size="icon-sm" className="relative" title="Signals">
+        <Button variant="ghost" size="icon-sm" className="relative" title={t("signals.title")}>
           <Radio />
           {unread > 0 && (
             <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-brand px-1 text-[10px] font-medium text-brand-foreground">
@@ -50,13 +52,13 @@ export function SignalsMenu() {
       </PopoverTrigger>
       <PopoverContent align="end" className="w-96 p-0">
         <div className="flex items-center justify-between border-b border-border px-3 py-2">
-          <p className="text-xs font-semibold">Signals</p>
-          {unread > 0 && <span className="text-xs text-muted-foreground">{unread} unread</span>}
+          <p className="text-xs font-semibold">{t("signals.title")}</p>
+          {unread > 0 && <span className="text-xs text-muted-foreground">{t("signals.unread", { count: unread })}</span>}
         </div>
         {app.signals.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-2 px-4 py-10 text-muted-foreground">
             <Radio className="size-6" />
-            <p className="text-xs">All clear — nothing needs you.</p>
+            <p className="text-xs">{t("signals.allClear")}</p>
           </div>
         ) : (
           <div className="max-h-[70vh] divide-y divide-border overflow-y-auto">
@@ -85,17 +87,17 @@ export function SignalsMenu() {
                           className="text-brand hover:underline"
                           onClick={(e) => { e.stopPropagation(); app.openUser(mentioned); setOpen(false); }}
                         >
-                          Profile
+                          {t("signals.profile")}
                         </button>
                       )}
                     </div>
                   </div>
-                  {!it.read && <span className="mt-1.5 size-2 shrink-0 rounded-full bg-brand" title="Unread" />}
+                  {!it.read && <span className="mt-1.5 size-2 shrink-0 rounded-full bg-brand" title={t("signals.unreadTitle")} />}
                   <Button
                     variant="ghost"
                     size="icon-sm"
                     onClick={(e) => { e.stopPropagation(); app.archiveSignal(it.id); }}
-                    title="Archive"
+                    title={t("signals.archive")}
                   >
                     <Archive />
                   </Button>

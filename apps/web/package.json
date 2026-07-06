@@ -1,6 +1,6 @@
 {
   "name": "ufo-web",
-  "version": "0.5.0",
+  "version": "0.6.1",
   "private": true,
   "description": "UFO web UI — the operations board (Next.js).",
   "license": "BSD-3-Clause",
@@ -39,7 +39,7 @@
     "react-dom": "19.2.7",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
-    "shiki": "^4.3.0",
+    "shiki": "^4.3.1",
     "sonner": "^2.0.7",
     "tailwind-merge": "^3.6.0"
   },

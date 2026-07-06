@@ -19,10 +19,11 @@ WHERE id = (
     JOIN operations o ON o.id = r.operation_id
     JOIN rovers rv ON rv.id = $1 AND rv.fleet_id = $2
     WHERE r.status = 'queued' AND r.fleet_id = $2
+      AND NOT (r.id = ANY($3::bigint[]))
       AND (r.required_rover_id IS NULL OR r.required_rover_id = $1) -- session affinity pin
-      AND ('pilot:' || r.pilot) = ANY($3::text[]) -- pilot capability tag
-      AND NOT (o.excluded_tags && $3::text[])      -- deny boundary
-      AND o.required_tags <@ $3::text[]            -- allow list
+      AND ('pilot:' || r.pilot) = ANY($4::text[]) -- pilot capability tag
+      AND NOT (o.excluded_tags && $4::text[])      -- deny boundary
+      AND o.required_tags <@ $4::text[]            -- allow list
       AND (
           SELECT COUNT(*)::bigint FROM runs active
           WHERE active.rover_id = $1
@@ -36,9 +37,10 @@ RETURNING id, public_id, fleet_id, operation_id, mission_id, rover_id, required_
 `
 
 type AcceptNextRunParams struct {
-	RoverID   pgtype.Int8 `json:"rover_id"`
-	FleetID   int64       `json:"fleet_id"`
-	RoverTags []string    `json:"rover_tags"`
+	RoverID       pgtype.Int8 `json:"rover_id"`
+	FleetID       int64       `json:"fleet_id"`
+	SkippedRunIds []int64     `json:"skipped_run_ids"`
+	RoverTags     []string    `json:"rover_tags"`
 }
 
 // Atomically grab the oldest queued run in a fleet and attribute it to the
@@ -48,7 +50,12 @@ type AcceptNextRunParams struct {
 // its tags (checked first), and its allow list must be a subset. Hub enforces
 // rover.units: the accepting rover must have fewer active runs than units.
 func (q *Queries) AcceptNextRun(ctx context.Context, arg AcceptNextRunParams) (Run, error) {
-	row := q.db.QueryRow(ctx, acceptNextRun, arg.RoverID, arg.FleetID, arg.RoverTags)
+	row := q.db.QueryRow(ctx, acceptNextRun,
+		arg.RoverID,
+		arg.FleetID,
+		arg.SkippedRunIds,
+		arg.RoverTags,
+	)
 	var i Run
 	err := row.Scan(
 		&i.ID,
@@ -172,6 +179,29 @@ func (q *Queries) AddCrewPilot(ctx context.Context, arg AddCrewPilotParams) erro
 	return err
 }
 
+const addCrewSkill = `-- name: AddCrewSkill :exec
+INSERT INTO crew_skill_bindings (fleet_id, crew_id, skill_id, created_by)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT DO NOTHING
+`
+
+type AddCrewSkillParams struct {
+	FleetID   int64       `json:"fleet_id"`
+	CrewID    int64       `json:"crew_id"`
+	SkillID   int64       `json:"skill_id"`
+	CreatedBy pgtype.Int8 `json:"created_by"`
+}
+
+func (q *Queries) AddCrewSkill(ctx context.Context, arg AddCrewSkillParams) error {
+	_, err := q.db.Exec(ctx, addCrewSkill,
+		arg.FleetID,
+		arg.CrewID,
+		arg.SkillID,
+		arg.CreatedBy,
+	)
+	return err
+}
+
 const addCrewUser = `-- name: AddCrewUser :exec
 INSERT INTO crew_members (crew_id, member_type, user_id, role)
 VALUES ($1, 'user', $2, $3)
@@ -200,6 +230,29 @@ type AddOperationLabelParams struct {
 
 func (q *Queries) AddOperationLabel(ctx context.Context, arg AddOperationLabelParams) error {
 	_, err := q.db.Exec(ctx, addOperationLabel, arg.OperationID, arg.LabelID)
+	return err
+}
+
+const addOperationSkill = `-- name: AddOperationSkill :exec
+INSERT INTO skill_bindings (fleet_id, operation_id, skill_id, created_by)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT DO NOTHING
+`
+
+type AddOperationSkillParams struct {
+	FleetID     int64       `json:"fleet_id"`
+	OperationID int64       `json:"operation_id"`
+	SkillID     int64       `json:"skill_id"`
+	CreatedBy   pgtype.Int8 `json:"created_by"`
+}
+
+func (q *Queries) AddOperationSkill(ctx context.Context, arg AddOperationSkillParams) error {
+	_, err := q.db.Exec(ctx, addOperationSkill,
+		arg.FleetID,
+		arg.OperationID,
+		arg.SkillID,
+		arg.CreatedBy,
+	)
 	return err
 }
 
@@ -366,6 +419,20 @@ type ArchiveSignalParams struct {
 
 func (q *Queries) ArchiveSignal(ctx context.Context, arg ArchiveSignalParams) error {
 	_, err := q.db.Exec(ctx, archiveSignal, arg.ID, arg.FleetID, arg.RecipientUserID)
+	return err
+}
+
+const archiveSkill = `-- name: ArchiveSkill :exec
+UPDATE skills SET archived = TRUE WHERE id = $1 AND fleet_id = $2
+`
+
+type ArchiveSkillParams struct {
+	ID      int64 `json:"id"`
+	FleetID int64 `json:"fleet_id"`
+}
+
+func (q *Queries) ArchiveSkill(ctx context.Context, arg ArchiveSkillParams) error {
+	_, err := q.db.Exec(ctx, archiveSkill, arg.ID, arg.FleetID)
 	return err
 }
 
@@ -541,6 +608,28 @@ func (q *Queries) CancelRun(ctx context.Context, arg CancelRunParams) (Run, erro
 	return i, err
 }
 
+const claimLoopRePulse = `-- name: ClaimLoopRePulse :one
+UPDATE operations
+SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{loop,re_pulsed}', 'true'::jsonb, true),
+    updated_at = now()
+WHERE id = $1
+  AND fleet_id = $2
+  AND COALESCE(metadata -> 'loop' ->> 're_pulsed', 'false') <> 'true'
+RETURNING id
+`
+
+type ClaimLoopRePulseParams struct {
+	ID      int64 `json:"id"`
+	FleetID int64 `json:"fleet_id"`
+}
+
+func (q *Queries) ClaimLoopRePulse(ctx context.Context, arg ClaimLoopRePulseParams) (int64, error) {
+	row := q.db.QueryRow(ctx, claimLoopRePulse, arg.ID, arg.FleetID)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
 const completeSourceAction = `-- name: CompleteSourceAction :one
 UPDATE source_actions
 SET status = $1,
@@ -666,6 +755,103 @@ func (q *Queries) CountFleetOwners(ctx context.Context, fleetID int64) (int64, e
 	return count, err
 }
 
+const countFleetTerminalRunsInRange = `-- name: CountFleetTerminalRunsInRange :one
+SELECT COUNT(*)::bigint AS count
+FROM runs
+WHERE fleet_id = $1
+  AND status IN ('succeeded', 'failed', 'canceled')
+  AND COALESCE(finalized_at, updated_at) >= $2
+  AND COALESCE(finalized_at, updated_at) < $3
+`
+
+type CountFleetTerminalRunsInRangeParams struct {
+	FleetID int64              `json:"fleet_id"`
+	StartAt pgtype.Timestamptz `json:"start_at"`
+	EndAt   pgtype.Timestamptz `json:"end_at"`
+}
+
+func (q *Queries) CountFleetTerminalRunsInRange(ctx context.Context, arg CountFleetTerminalRunsInRangeParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countFleetTerminalRunsInRange, arg.FleetID, arg.StartAt, arg.EndAt)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countMissionTerminalRunsInRange = `-- name: CountMissionTerminalRunsInRange :one
+SELECT COUNT(*)::bigint AS count
+FROM runs
+WHERE mission_id = $1
+  AND status IN ('succeeded', 'failed', 'canceled')
+  AND COALESCE(finalized_at, updated_at) >= $2
+  AND COALESCE(finalized_at, updated_at) < $3
+`
+
+type CountMissionTerminalRunsInRangeParams struct {
+	MissionID pgtype.Int8        `json:"mission_id"`
+	StartAt   pgtype.Timestamptz `json:"start_at"`
+	EndAt     pgtype.Timestamptz `json:"end_at"`
+}
+
+func (q *Queries) CountMissionTerminalRunsInRange(ctx context.Context, arg CountMissionTerminalRunsInRangeParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countMissionTerminalRunsInRange, arg.MissionID, arg.StartAt, arg.EndAt)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countOpenLoopOperationsForRoutine = `-- name: CountOpenLoopOperationsForRoutine :one
+SELECT COUNT(*)::bigint AS count
+FROM operations o
+WHERE o.fleet_id = $1
+  AND o.metadata -> 'loop' ->> 'routine_id' = $2
+  AND (
+    o.status NOT IN ('done', 'canceled')
+    OR EXISTS (
+      SELECT 1
+      FROM source_actions sa
+      WHERE sa.operation_id = o.id
+        AND sa.fleet_id = o.fleet_id
+        AND sa.status IN ('queued', 'accepted')
+        AND sa.kind IN ('commit_to_branch', 'create_source_branch')
+        AND COALESCE(sa.metadata ->> 're_pulse_on_success', 'false') = 'true'
+    )
+  )
+`
+
+type CountOpenLoopOperationsForRoutineParams struct {
+	FleetID         int64  `json:"fleet_id"`
+	RoutinePublicID []byte `json:"routine_public_id"`
+}
+
+func (q *Queries) CountOpenLoopOperationsForRoutine(ctx context.Context, arg CountOpenLoopOperationsForRoutineParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countOpenLoopOperationsForRoutine, arg.FleetID, arg.RoutinePublicID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countOperationTerminalRunsInRange = `-- name: CountOperationTerminalRunsInRange :one
+SELECT COUNT(*)::bigint AS count
+FROM runs
+WHERE operation_id = $1
+  AND status IN ('succeeded', 'failed', 'canceled')
+  AND COALESCE(finalized_at, updated_at) >= $2
+  AND COALESCE(finalized_at, updated_at) < $3
+`
+
+type CountOperationTerminalRunsInRangeParams struct {
+	OperationID int64              `json:"operation_id"`
+	StartAt     pgtype.Timestamptz `json:"start_at"`
+	EndAt       pgtype.Timestamptz `json:"end_at"`
+}
+
+func (q *Queries) CountOperationTerminalRunsInRange(ctx context.Context, arg CountOperationTerminalRunsInRangeParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countOperationTerminalRunsInRange, arg.OperationID, arg.StartAt, arg.EndAt)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countOperationsByMission = `-- name: CountOperationsByMission :many
 SELECT m.public_id AS mission_id, COUNT(*)::bigint AS count
 FROM operations o JOIN missions m ON m.id = o.mission_id
@@ -758,6 +944,28 @@ func (q *Queries) CountOperationsByStatus(ctx context.Context, arg CountOperatio
 		return nil, err
 	}
 	return items, nil
+}
+
+const countRoverTerminalRunsInRange = `-- name: CountRoverTerminalRunsInRange :one
+SELECT COUNT(*)::bigint AS count
+FROM runs
+WHERE rover_id = $1
+  AND status IN ('succeeded', 'failed', 'canceled')
+  AND COALESCE(finalized_at, updated_at) >= $2
+  AND COALESCE(finalized_at, updated_at) < $3
+`
+
+type CountRoverTerminalRunsInRangeParams struct {
+	RoverID pgtype.Int8        `json:"rover_id"`
+	StartAt pgtype.Timestamptz `json:"start_at"`
+	EndAt   pgtype.Timestamptz `json:"end_at"`
+}
+
+func (q *Queries) CountRoverTerminalRunsInRange(ctx context.Context, arg CountRoverTerminalRunsInRangeParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countRoverTerminalRunsInRange, arg.RoverID, arg.StartAt, arg.EndAt)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
 }
 
 const createAsset = `-- name: CreateAsset :one
@@ -1519,11 +1727,73 @@ func (q *Queries) CreateSignal(ctx context.Context, arg CreateSignalParams) (Sig
 	return i, err
 }
 
+const createSkill = `-- name: CreateSkill :one
+
+INSERT INTO skills (fleet_id, name, slug, description, created_by)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id, public_id, fleet_id, name, slug, description, created_by, archived, created_at, updated_at
+`
+
+type CreateSkillParams struct {
+	FleetID     int64       `json:"fleet_id"`
+	Name        string      `json:"name"`
+	Slug        string      `json:"slug"`
+	Description string      `json:"description"`
+	CreatedBy   pgtype.Int8 `json:"created_by"`
+}
+
+// ========================== skills ============================
+func (q *Queries) CreateSkill(ctx context.Context, arg CreateSkillParams) (Skill, error) {
+	row := q.db.QueryRow(ctx, createSkill,
+		arg.FleetID,
+		arg.Name,
+		arg.Slug,
+		arg.Description,
+		arg.CreatedBy,
+	)
+	var i Skill
+	err := row.Scan(
+		&i.ID,
+		&i.PublicID,
+		&i.FleetID,
+		&i.Name,
+		&i.Slug,
+		&i.Description,
+		&i.CreatedBy,
+		&i.Archived,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const createSkillFile = `-- name: CreateSkillFile :exec
+INSERT INTO skill_files (skill_id, path, content, size_bytes)
+VALUES ($1, $2, $3, $4)
+`
+
+type CreateSkillFileParams struct {
+	SkillID   int64  `json:"skill_id"`
+	Path      string `json:"path"`
+	Content   string `json:"content"`
+	SizeBytes int64  `json:"size_bytes"`
+}
+
+func (q *Queries) CreateSkillFile(ctx context.Context, arg CreateSkillFileParams) error {
+	_, err := q.db.Exec(ctx, createSkillFile,
+		arg.SkillID,
+		arg.Path,
+		arg.Content,
+		arg.SizeBytes,
+	)
+	return err
+}
+
 const createSourceAction = `-- name: CreateSourceAction :one
-INSERT INTO source_actions (fleet_id, operation_id, run_id, rover_id, kind, branch_name, created_by)
+INSERT INTO source_actions (fleet_id, operation_id, run_id, rover_id, kind, branch_name, metadata, created_by)
 VALUES (
   $1, $2, $3, $4,
-  $5, $6, $7
+  $5, $6, $7, $8
 )
 RETURNING id, public_id, fleet_id, operation_id, run_id, rover_id, kind, status, branch_name, commit_sha, base_sha, source_head_sha, message, metadata, created_by, created_at, updated_at, accepted_at, finished_at
 `
@@ -1535,6 +1805,7 @@ type CreateSourceActionParams struct {
 	RoverID     pgtype.Int8 `json:"rover_id"`
 	Kind        string      `json:"kind"`
 	BranchName  string      `json:"branch_name"`
+	Metadata    []byte      `json:"metadata"`
 	CreatedBy   pgtype.Int8 `json:"created_by"`
 }
 
@@ -1546,6 +1817,7 @@ func (q *Queries) CreateSourceAction(ctx context.Context, arg CreateSourceAction
 		arg.RoverID,
 		arg.Kind,
 		arg.BranchName,
+		arg.Metadata,
 		arg.CreatedBy,
 	)
 	var i SourceAction
@@ -1758,6 +2030,15 @@ DELETE FROM sessions WHERE token_hash = $1
 
 func (q *Queries) DeleteSession(ctx context.Context, tokenHash string) error {
 	_, err := q.db.Exec(ctx, deleteSession, tokenHash)
+	return err
+}
+
+const deleteSkillFiles = `-- name: DeleteSkillFiles :exec
+DELETE FROM skill_files WHERE skill_id = $1
+`
+
+func (q *Queries) DeleteSkillFiles(ctx context.Context, skillID int64) error {
+	_, err := q.db.Exec(ctx, deleteSkillFiles, skillID)
 	return err
 }
 
@@ -2842,6 +3123,32 @@ func (q *Queries) GetRoutineByPublicIDAnyFleet(ctx context.Context, publicID pgt
 	return i, err
 }
 
+const getRoverByID = `-- name: GetRoverByID :one
+SELECT id, public_id, fleet_id, name, enrollment_code_id, token_hash, units, auto_tags, tags, metadata, created_at, updated_at, last_seen_at
+FROM rovers WHERE id = $1
+`
+
+func (q *Queries) GetRoverByID(ctx context.Context, id int64) (Rover, error) {
+	row := q.db.QueryRow(ctx, getRoverByID, id)
+	var i Rover
+	err := row.Scan(
+		&i.ID,
+		&i.PublicID,
+		&i.FleetID,
+		&i.Name,
+		&i.EnrollmentCodeID,
+		&i.TokenHash,
+		&i.Units,
+		&i.AutoTags,
+		&i.Tags,
+		&i.Metadata,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.LastSeenAt,
+	)
+	return i, err
+}
+
 const getRoverByPublicID = `-- name: GetRoverByPublicID :one
 SELECT id, public_id, fleet_id, name, enrollment_code_id, token_hash, units, auto_tags, tags, metadata, created_at, updated_at, last_seen_at
 FROM rovers WHERE public_id = $1
@@ -3053,6 +3360,40 @@ func (q *Queries) GetRunIDForRover(ctx context.Context, arg GetRunIDForRoverPara
 	return id, err
 }
 
+const getRunUsage = `-- name: GetRunUsage :one
+SELECT run_id, fleet_id, operation_id, rover_id, pilot, provider, model, source,
+    input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens,
+    total_tokens, duration_ms, cost_micros, metadata, created_at
+FROM run_usage
+WHERE run_id = $1
+`
+
+func (q *Queries) GetRunUsage(ctx context.Context, runID int64) (RunUsage, error) {
+	row := q.db.QueryRow(ctx, getRunUsage, runID)
+	var i RunUsage
+	err := row.Scan(
+		&i.RunID,
+		&i.FleetID,
+		&i.OperationID,
+		&i.RoverID,
+		&i.Pilot,
+		&i.Provider,
+		&i.Model,
+		&i.Source,
+		&i.InputTokens,
+		&i.OutputTokens,
+		&i.CacheReadTokens,
+		&i.CacheWriteTokens,
+		&i.ReasoningTokens,
+		&i.TotalTokens,
+		&i.DurationMs,
+		&i.CostMicros,
+		&i.Metadata,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getSessionUser = `-- name: GetSessionUser :one
 SELECT u.id, u.public_id, u.email, u.password_hash, u.name, u.created_at, u.updated_at FROM sessions s
 JOIN users u ON u.id = s.user_id
@@ -3115,6 +3456,30 @@ func (q *Queries) GetSignalIDByPublicID(ctx context.Context, arg GetSignalIDByPu
 	var id int64
 	err := row.Scan(&id)
 	return id, err
+}
+
+const getSkillByPublicID = `-- name: GetSkillByPublicID :one
+SELECT id, public_id, fleet_id, name, slug, description, created_by, archived, created_at, updated_at
+FROM skills
+WHERE public_id = $1
+`
+
+func (q *Queries) GetSkillByPublicID(ctx context.Context, publicID pgtype.UUID) (Skill, error) {
+	row := q.db.QueryRow(ctx, getSkillByPublicID, publicID)
+	var i Skill
+	err := row.Scan(
+		&i.ID,
+		&i.PublicID,
+		&i.FleetID,
+		&i.Name,
+		&i.Slug,
+		&i.Description,
+		&i.CreatedBy,
+		&i.Archived,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
@@ -3570,6 +3935,52 @@ func (q *Queries) ListCrewMembers(ctx context.Context, crewID int64) ([]CrewMemb
 	return items, nil
 }
 
+const listCrewSkills = `-- name: ListCrewSkills :many
+SELECT s.id, s.public_id, s.fleet_id, s.name, s.slug, s.description,
+       s.created_by, s.archived, s.created_at, s.updated_at
+FROM crew_skill_bindings b JOIN skills s ON s.id = b.skill_id
+WHERE b.crew_id = $1
+  AND b.fleet_id = $2
+  AND s.archived = FALSE
+ORDER BY s.slug, s.id
+`
+
+type ListCrewSkillsParams struct {
+	CrewID  int64 `json:"crew_id"`
+	FleetID int64 `json:"fleet_id"`
+}
+
+func (q *Queries) ListCrewSkills(ctx context.Context, arg ListCrewSkillsParams) ([]Skill, error) {
+	rows, err := q.db.Query(ctx, listCrewSkills, arg.CrewID, arg.FleetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Skill{}
+	for rows.Next() {
+		var i Skill
+		if err := rows.Scan(
+			&i.ID,
+			&i.PublicID,
+			&i.FleetID,
+			&i.Name,
+			&i.Slug,
+			&i.Description,
+			&i.CreatedBy,
+			&i.Archived,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listCrews = `-- name: ListCrews :many
 SELECT id, public_id, fleet_id, name, created_at, updated_at FROM crews WHERE fleet_id = $1 ORDER BY id
 `
@@ -3855,6 +4266,82 @@ func (q *Queries) ListMembers(ctx context.Context, fleetID int64) ([]ListMembers
 	return items, nil
 }
 
+const listMissionUsageInRange = `-- name: ListMissionUsageInRange :many
+SELECT
+    m.public_id,
+    m.key,
+    m.name,
+    m.metadata,
+    COALESCE(rc.runs, 0)::bigint AS runs,
+    COALESCE(uc.total_tokens, 0)::bigint AS total_tokens,
+    COALESCE(uc.cost_micros, 0)::bigint AS cost_micros
+FROM missions m
+LEFT JOIN LATERAL (
+    SELECT COUNT(*)::bigint AS runs
+    FROM runs r
+    WHERE r.mission_id = m.id
+      AND r.status IN ('succeeded', 'failed', 'canceled')
+      AND COALESCE(r.finalized_at, r.updated_at) >= $1
+      AND COALESCE(r.finalized_at, r.updated_at) < $2
+) rc ON true
+LEFT JOIN LATERAL (
+    SELECT
+        COALESCE(SUM(u.total_tokens), 0)::bigint AS total_tokens,
+        COALESCE(SUM(u.cost_micros), 0)::bigint AS cost_micros
+    FROM run_usage u
+    JOIN runs r ON r.id = u.run_id
+    WHERE r.mission_id = m.id
+      AND u.created_at >= $1
+      AND u.created_at < $2
+) uc ON true
+WHERE m.fleet_id = $3
+ORDER BY m.key, m.id
+`
+
+type ListMissionUsageInRangeParams struct {
+	StartAt pgtype.Timestamptz `json:"start_at"`
+	EndAt   pgtype.Timestamptz `json:"end_at"`
+	FleetID int64              `json:"fleet_id"`
+}
+
+type ListMissionUsageInRangeRow struct {
+	PublicID    pgtype.UUID `json:"public_id"`
+	Key         string      `json:"key"`
+	Name        string      `json:"name"`
+	Metadata    []byte      `json:"metadata"`
+	Runs        int64       `json:"runs"`
+	TotalTokens int64       `json:"total_tokens"`
+	CostMicros  int64       `json:"cost_micros"`
+}
+
+func (q *Queries) ListMissionUsageInRange(ctx context.Context, arg ListMissionUsageInRangeParams) ([]ListMissionUsageInRangeRow, error) {
+	rows, err := q.db.Query(ctx, listMissionUsageInRange, arg.StartAt, arg.EndAt, arg.FleetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListMissionUsageInRangeRow{}
+	for rows.Next() {
+		var i ListMissionUsageInRangeRow
+		if err := rows.Scan(
+			&i.PublicID,
+			&i.Key,
+			&i.Name,
+			&i.Metadata,
+			&i.Runs,
+			&i.TotalTokens,
+			&i.CostMicros,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listMissions = `-- name: ListMissions :many
 SELECT id, public_id, fleet_id, name, key, next_sequence, metadata, created_at, updated_at FROM missions WHERE fleet_id = $1 ORDER BY id
 `
@@ -3917,6 +4404,52 @@ func (q *Queries) ListMutualFleets(ctx context.Context, arg ListMutualFleetsPara
 			&i.Name,
 			&i.Kind,
 			&i.Metadata,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOperationSkills = `-- name: ListOperationSkills :many
+SELECT s.id, s.public_id, s.fleet_id, s.name, s.slug, s.description,
+       s.created_by, s.archived, s.created_at, s.updated_at
+FROM skill_bindings b JOIN skills s ON s.id = b.skill_id
+WHERE b.operation_id = $1
+  AND b.fleet_id = $2
+  AND s.archived = FALSE
+ORDER BY s.slug, s.id
+`
+
+type ListOperationSkillsParams struct {
+	OperationID int64 `json:"operation_id"`
+	FleetID     int64 `json:"fleet_id"`
+}
+
+func (q *Queries) ListOperationSkills(ctx context.Context, arg ListOperationSkillsParams) ([]Skill, error) {
+	rows, err := q.db.Query(ctx, listOperationSkills, arg.OperationID, arg.FleetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Skill{}
+	for rows.Next() {
+		var i Skill
+		if err := rows.Scan(
+			&i.ID,
+			&i.PublicID,
+			&i.FleetID,
+			&i.Name,
+			&i.Slug,
+			&i.Description,
+			&i.CreatedBy,
+			&i.Archived,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -4587,6 +5120,73 @@ func (q *Queries) ListRelationsForOperation(ctx context.Context, operationID int
 	return items, nil
 }
 
+const listResolvedOperationSkills = `-- name: ListResolvedOperationSkills :many
+WITH args AS (
+    SELECT $1::bigint AS operation_id,
+           $2::bigint AS fleet_id
+)
+SELECT s.id, s.public_id, s.fleet_id, s.name, s.slug, s.description,
+       s.created_by, s.archived, s.created_at, s.updated_at
+FROM skills s CROSS JOIN args
+WHERE s.fleet_id = args.fleet_id
+  AND s.archived = FALSE
+  AND (
+      EXISTS (
+          SELECT 1
+          FROM skill_bindings b
+          WHERE b.skill_id = s.id
+            AND b.operation_id = args.operation_id
+            AND b.fleet_id = args.fleet_id
+      )
+      OR EXISTS (
+          SELECT 1
+          FROM operations o
+          JOIN crew_skill_bindings b ON b.crew_id = o.assignee_id AND b.fleet_id = o.fleet_id
+          WHERE o.id = args.operation_id
+            AND o.fleet_id = args.fleet_id
+            AND o.assignee_type = 'crew'
+            AND b.skill_id = s.id
+      )
+  )
+ORDER BY s.slug, s.id
+`
+
+type ListResolvedOperationSkillsParams struct {
+	OperationID int64 `json:"operation_id"`
+	FleetID     int64 `json:"fleet_id"`
+}
+
+func (q *Queries) ListResolvedOperationSkills(ctx context.Context, arg ListResolvedOperationSkillsParams) ([]Skill, error) {
+	rows, err := q.db.Query(ctx, listResolvedOperationSkills, arg.OperationID, arg.FleetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Skill{}
+	for rows.Next() {
+		var i Skill
+		if err := rows.Scan(
+			&i.ID,
+			&i.PublicID,
+			&i.FleetID,
+			&i.Name,
+			&i.Slug,
+			&i.Description,
+			&i.CreatedBy,
+			&i.Archived,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRoutines = `-- name: ListRoutines :many
 SELECT id, public_id, fleet_id, mission_id, title, body, metadata, operation_metadata, created_by, created_at, updated_at, next_pulse_at, last_pulsed_at
 FROM routines WHERE fleet_id = $1 ORDER BY id DESC
@@ -4791,6 +5391,53 @@ func (q *Queries) ListRunMessages(ctx context.Context, runID int64) ([]RunMessag
 	return items, nil
 }
 
+const listRunUsageByRunIDs = `-- name: ListRunUsageByRunIDs :many
+SELECT run_id, fleet_id, operation_id, rover_id, pilot, provider, model, source,
+    input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens,
+    total_tokens, duration_ms, cost_micros, metadata, created_at
+FROM run_usage
+WHERE run_id = ANY($1::bigint[])
+`
+
+func (q *Queries) ListRunUsageByRunIDs(ctx context.Context, runIds []int64) ([]RunUsage, error) {
+	rows, err := q.db.Query(ctx, listRunUsageByRunIDs, runIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RunUsage{}
+	for rows.Next() {
+		var i RunUsage
+		if err := rows.Scan(
+			&i.RunID,
+			&i.FleetID,
+			&i.OperationID,
+			&i.RoverID,
+			&i.Pilot,
+			&i.Provider,
+			&i.Model,
+			&i.Source,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.CacheReadTokens,
+			&i.CacheWriteTokens,
+			&i.ReasoningTokens,
+			&i.TotalTokens,
+			&i.DurationMs,
+			&i.CostMicros,
+			&i.Metadata,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRuns = `-- name: ListRuns :many
 SELECT id, public_id, fleet_id, operation_id, mission_id, rover_id, required_rover_id, pilot, command, status, session_id, needs_input, requested_status, metadata, created_at, updated_at, heartbeat_at, finalized_at
 FROM runs WHERE fleet_id = $1 ORDER BY id DESC
@@ -4910,6 +5557,83 @@ func (q *Queries) ListSignals(ctx context.Context, arg ListSignalsParams) ([]Sig
 			&i.Title,
 			&i.Body,
 			&i.Read,
+			&i.Archived,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSkillFiles = `-- name: ListSkillFiles :many
+SELECT skill_id, path, content, size_bytes, created_at, updated_at
+FROM skill_files
+WHERE skill_id = $1
+ORDER BY path
+`
+
+func (q *Queries) ListSkillFiles(ctx context.Context, skillID int64) ([]SkillFile, error) {
+	rows, err := q.db.Query(ctx, listSkillFiles, skillID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SkillFile{}
+	for rows.Next() {
+		var i SkillFile
+		if err := rows.Scan(
+			&i.SkillID,
+			&i.Path,
+			&i.Content,
+			&i.SizeBytes,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSkills = `-- name: ListSkills :many
+SELECT id, public_id, fleet_id, name, slug, description, created_by, archived, created_at, updated_at
+FROM skills
+WHERE fleet_id = $1 AND ($2::bool OR archived = FALSE)
+ORDER BY slug, id
+`
+
+type ListSkillsParams struct {
+	FleetID         int64 `json:"fleet_id"`
+	IncludeArchived bool  `json:"include_archived"`
+}
+
+func (q *Queries) ListSkills(ctx context.Context, arg ListSkillsParams) ([]Skill, error) {
+	rows, err := q.db.Query(ctx, listSkills, arg.FleetID, arg.IncludeArchived)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Skill{}
+	for rows.Next() {
+		var i Skill
+		if err := rows.Scan(
+			&i.ID,
+			&i.PublicID,
+			&i.FleetID,
+			&i.Name,
+			&i.Slug,
+			&i.Description,
+			&i.CreatedBy,
 			&i.Archived,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -5109,6 +5833,39 @@ func (q *Queries) LockFleet(ctx context.Context, id int64) error {
 	return err
 }
 
+const lockRoutine = `-- name: LockRoutine :one
+SELECT id, public_id, fleet_id, mission_id, title, body, metadata, operation_metadata, created_by, created_at, updated_at, next_pulse_at, last_pulsed_at FROM routines
+WHERE id = $1
+  AND fleet_id = $2
+FOR UPDATE
+`
+
+type LockRoutineParams struct {
+	ID      int64 `json:"id"`
+	FleetID int64 `json:"fleet_id"`
+}
+
+func (q *Queries) LockRoutine(ctx context.Context, arg LockRoutineParams) (Routine, error) {
+	row := q.db.QueryRow(ctx, lockRoutine, arg.ID, arg.FleetID)
+	var i Routine
+	err := row.Scan(
+		&i.ID,
+		&i.PublicID,
+		&i.FleetID,
+		&i.MissionID,
+		&i.Title,
+		&i.Body,
+		&i.Metadata,
+		&i.OperationMetadata,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.NextPulseAt,
+		&i.LastPulsedAt,
+	)
+	return i, err
+}
+
 const markRunFinalized = `-- name: MarkRunFinalized :one
 UPDATE runs
 SET status = $1, finalized_at = now()
@@ -5180,6 +5937,50 @@ type MergeAssetChecksumsParams struct {
 
 func (q *Queries) MergeAssetChecksums(ctx context.Context, arg MergeAssetChecksumsParams) error {
 	_, err := q.db.Exec(ctx, mergeAssetChecksums, arg.Checksums, arg.ID)
+	return err
+}
+
+const mergeFleetMetadata = `-- name: MergeFleetMetadata :exec
+UPDATE fleets SET metadata = metadata || $1::jsonb WHERE id = $2
+`
+
+type MergeFleetMetadataParams struct {
+	Metadata []byte `json:"metadata"`
+	ID       int64  `json:"id"`
+}
+
+func (q *Queries) MergeFleetMetadata(ctx context.Context, arg MergeFleetMetadataParams) error {
+	_, err := q.db.Exec(ctx, mergeFleetMetadata, arg.Metadata, arg.ID)
+	return err
+}
+
+const mergeMissionMetadata = `-- name: MergeMissionMetadata :exec
+UPDATE missions SET metadata = metadata || $1::jsonb WHERE id = $2
+`
+
+type MergeMissionMetadataParams struct {
+	Metadata []byte `json:"metadata"`
+	ID       int64  `json:"id"`
+}
+
+func (q *Queries) MergeMissionMetadata(ctx context.Context, arg MergeMissionMetadataParams) error {
+	_, err := q.db.Exec(ctx, mergeMissionMetadata, arg.Metadata, arg.ID)
+	return err
+}
+
+const mergeOperationMetadata = `-- name: MergeOperationMetadata :exec
+UPDATE operations SET metadata = metadata || $1::jsonb
+WHERE id = $2 AND fleet_id = $3
+`
+
+type MergeOperationMetadataParams struct {
+	Metadata []byte `json:"metadata"`
+	ID       int64  `json:"id"`
+	FleetID  int64  `json:"fleet_id"`
+}
+
+func (q *Queries) MergeOperationMetadata(ctx context.Context, arg MergeOperationMetadataParams) error {
+	_, err := q.db.Exec(ctx, mergeOperationMetadata, arg.Metadata, arg.ID, arg.FleetID)
 	return err
 }
 
@@ -5550,6 +6351,21 @@ func (q *Queries) RemoveCrewPilot(ctx context.Context, arg RemoveCrewPilotParams
 	return err
 }
 
+const removeCrewSkill = `-- name: RemoveCrewSkill :exec
+DELETE FROM crew_skill_bindings
+WHERE crew_id = $1 AND skill_id = $2
+`
+
+type RemoveCrewSkillParams struct {
+	CrewID  int64 `json:"crew_id"`
+	SkillID int64 `json:"skill_id"`
+}
+
+func (q *Queries) RemoveCrewSkill(ctx context.Context, arg RemoveCrewSkillParams) error {
+	_, err := q.db.Exec(ctx, removeCrewSkill, arg.CrewID, arg.SkillID)
+	return err
+}
+
 const removeCrewUser = `-- name: RemoveCrewUser :exec
 DELETE FROM crew_members WHERE crew_id = $1 AND member_type = 'user' AND user_id = $2
 `
@@ -5592,6 +6408,21 @@ type RemoveOperationLabelParams struct {
 
 func (q *Queries) RemoveOperationLabel(ctx context.Context, arg RemoveOperationLabelParams) error {
 	_, err := q.db.Exec(ctx, removeOperationLabel, arg.OperationID, arg.LabelID)
+	return err
+}
+
+const removeOperationSkill = `-- name: RemoveOperationSkill :exec
+DELETE FROM skill_bindings
+WHERE operation_id = $1 AND skill_id = $2
+`
+
+type RemoveOperationSkillParams struct {
+	OperationID int64 `json:"operation_id"`
+	SkillID     int64 `json:"skill_id"`
+}
+
+func (q *Queries) RemoveOperationSkill(ctx context.Context, arg RemoveOperationSkillParams) error {
+	_, err := q.db.Exec(ctx, removeOperationSkill, arg.OperationID, arg.SkillID)
 	return err
 }
 
@@ -5645,6 +6476,46 @@ func (q *Queries) RequeueExpiredRuns(ctx context.Context, leaseSeconds float64) 
 		return nil, err
 	}
 	return items, nil
+}
+
+const requeueRun = `-- name: RequeueRun :one
+UPDATE runs
+SET status = 'queued', heartbeat_at = NULL, rover_id = NULL
+WHERE id = $1 AND fleet_id = $2
+  AND status IN ('accepted', 'starting', 'running')
+  AND finalized_at IS NULL
+RETURNING id, public_id, fleet_id, operation_id, mission_id, rover_id, required_rover_id, pilot, command, status, session_id, needs_input, requested_status, metadata, created_at, updated_at, heartbeat_at, finalized_at
+`
+
+type RequeueRunParams struct {
+	ID      int64 `json:"id"`
+	FleetID int64 `json:"fleet_id"`
+}
+
+func (q *Queries) RequeueRun(ctx context.Context, arg RequeueRunParams) (Run, error) {
+	row := q.db.QueryRow(ctx, requeueRun, arg.ID, arg.FleetID)
+	var i Run
+	err := row.Scan(
+		&i.ID,
+		&i.PublicID,
+		&i.FleetID,
+		&i.OperationID,
+		&i.MissionID,
+		&i.RoverID,
+		&i.RequiredRoverID,
+		&i.Pilot,
+		&i.Command,
+		&i.Status,
+		&i.SessionID,
+		&i.NeedsInput,
+		&i.RequestedStatus,
+		&i.Metadata,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.HeartbeatAt,
+		&i.FinalizedAt,
+	)
+	return i, err
 }
 
 const resolveFleetForMember = `-- name: ResolveFleetForMember :one
@@ -6326,6 +7197,119 @@ func (q *Queries) SubOperationProgress(ctx context.Context, mainOperationIds []i
 	return items, nil
 }
 
+const sumFleetUsageInRange = `-- name: SumFleetUsageInRange :one
+SELECT
+    COALESCE(SUM(total_tokens), 0)::bigint AS total_tokens,
+    COALESCE(SUM(cost_micros), 0)::bigint AS cost_micros
+FROM run_usage
+WHERE fleet_id = $1
+  AND created_at >= $2
+  AND created_at < $3
+`
+
+type SumFleetUsageInRangeParams struct {
+	FleetID int64              `json:"fleet_id"`
+	StartAt pgtype.Timestamptz `json:"start_at"`
+	EndAt   pgtype.Timestamptz `json:"end_at"`
+}
+
+type SumFleetUsageInRangeRow struct {
+	TotalTokens int64 `json:"total_tokens"`
+	CostMicros  int64 `json:"cost_micros"`
+}
+
+func (q *Queries) SumFleetUsageInRange(ctx context.Context, arg SumFleetUsageInRangeParams) (SumFleetUsageInRangeRow, error) {
+	row := q.db.QueryRow(ctx, sumFleetUsageInRange, arg.FleetID, arg.StartAt, arg.EndAt)
+	var i SumFleetUsageInRangeRow
+	err := row.Scan(&i.TotalTokens, &i.CostMicros)
+	return i, err
+}
+
+const sumMissionUsageInRange = `-- name: SumMissionUsageInRange :one
+SELECT
+    COALESCE(SUM(u.total_tokens), 0)::bigint AS total_tokens,
+    COALESCE(SUM(u.cost_micros), 0)::bigint AS cost_micros
+FROM run_usage u
+JOIN runs r ON r.id = u.run_id
+WHERE r.mission_id = $1
+  AND u.created_at >= $2
+  AND u.created_at < $3
+`
+
+type SumMissionUsageInRangeParams struct {
+	MissionID pgtype.Int8        `json:"mission_id"`
+	StartAt   pgtype.Timestamptz `json:"start_at"`
+	EndAt     pgtype.Timestamptz `json:"end_at"`
+}
+
+type SumMissionUsageInRangeRow struct {
+	TotalTokens int64 `json:"total_tokens"`
+	CostMicros  int64 `json:"cost_micros"`
+}
+
+func (q *Queries) SumMissionUsageInRange(ctx context.Context, arg SumMissionUsageInRangeParams) (SumMissionUsageInRangeRow, error) {
+	row := q.db.QueryRow(ctx, sumMissionUsageInRange, arg.MissionID, arg.StartAt, arg.EndAt)
+	var i SumMissionUsageInRangeRow
+	err := row.Scan(&i.TotalTokens, &i.CostMicros)
+	return i, err
+}
+
+const sumOperationUsageInRange = `-- name: SumOperationUsageInRange :one
+SELECT
+    COALESCE(SUM(total_tokens), 0)::bigint AS total_tokens,
+    COALESCE(SUM(cost_micros), 0)::bigint AS cost_micros
+FROM run_usage
+WHERE operation_id = $1
+  AND created_at >= $2
+  AND created_at < $3
+`
+
+type SumOperationUsageInRangeParams struct {
+	OperationID int64              `json:"operation_id"`
+	StartAt     pgtype.Timestamptz `json:"start_at"`
+	EndAt       pgtype.Timestamptz `json:"end_at"`
+}
+
+type SumOperationUsageInRangeRow struct {
+	TotalTokens int64 `json:"total_tokens"`
+	CostMicros  int64 `json:"cost_micros"`
+}
+
+func (q *Queries) SumOperationUsageInRange(ctx context.Context, arg SumOperationUsageInRangeParams) (SumOperationUsageInRangeRow, error) {
+	row := q.db.QueryRow(ctx, sumOperationUsageInRange, arg.OperationID, arg.StartAt, arg.EndAt)
+	var i SumOperationUsageInRangeRow
+	err := row.Scan(&i.TotalTokens, &i.CostMicros)
+	return i, err
+}
+
+const sumRoverUsageInRange = `-- name: SumRoverUsageInRange :one
+SELECT
+    COALESCE(SUM(total_tokens), 0)::bigint AS total_tokens,
+    COALESCE(SUM(cost_micros), 0)::bigint AS cost_micros
+FROM run_usage
+WHERE rover_id = $1
+  AND created_at >= $2
+  AND created_at < $3
+`
+
+type SumRoverUsageInRangeParams struct {
+	RoverID pgtype.Int8        `json:"rover_id"`
+	StartAt pgtype.Timestamptz `json:"start_at"`
+	EndAt   pgtype.Timestamptz `json:"end_at"`
+}
+
+type SumRoverUsageInRangeRow struct {
+	TotalTokens int64 `json:"total_tokens"`
+	CostMicros  int64 `json:"cost_micros"`
+}
+
+func (q *Queries) SumRoverUsageInRange(ctx context.Context, arg SumRoverUsageInRangeParams) (SumRoverUsageInRangeRow, error) {
+	row := q.db.QueryRow(ctx, sumRoverUsageInRange, arg.RoverID, arg.StartAt, arg.EndAt)
+	var i SumRoverUsageInRangeRow
+	err := row.Scan(&i.TotalTokens, &i.CostMicros)
+	return i, err
+}
+
 const touchRover = `-- name: TouchRover :exec
 UPDATE rovers SET last_seen_at = now() WHERE id = $1
 `
@@ -6333,6 +7317,33 @@ UPDATE rovers SET last_seen_at = now() WHERE id = $1
 func (q *Queries) TouchRover(ctx context.Context, id int64) error {
 	_, err := q.db.Exec(ctx, touchRover, id)
 	return err
+}
+
+const triedPilotKindsForOperation = `-- name: TriedPilotKindsForOperation :many
+SELECT DISTINCT pilot FROM runs
+WHERE operation_id = $1
+  AND pilot <> ''
+  AND status IN ('succeeded', 'failed', 'blocked', 'canceled')
+`
+
+func (q *Queries) TriedPilotKindsForOperation(ctx context.Context, operationID int64) ([]string, error) {
+	rows, err := q.db.Query(ctx, triedPilotKindsForOperation, operationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var pilot string
+		if err := rows.Scan(&pilot); err != nil {
+			return nil, err
+		}
+		items = append(items, pilot)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const updateCommentBody = `-- name: UpdateCommentBody :one
@@ -6572,6 +7583,47 @@ func (q *Queries) UpdateRoutinePulse(ctx context.Context, arg UpdateRoutinePulse
 	return err
 }
 
+const updateSkill = `-- name: UpdateSkill :one
+UPDATE skills
+SET name = $1,
+    slug = $2,
+    description = $3
+WHERE id = $4 AND fleet_id = $5
+RETURNING id, public_id, fleet_id, name, slug, description, created_by, archived, created_at, updated_at
+`
+
+type UpdateSkillParams struct {
+	Name        string `json:"name"`
+	Slug        string `json:"slug"`
+	Description string `json:"description"`
+	ID          int64  `json:"id"`
+	FleetID     int64  `json:"fleet_id"`
+}
+
+func (q *Queries) UpdateSkill(ctx context.Context, arg UpdateSkillParams) (Skill, error) {
+	row := q.db.QueryRow(ctx, updateSkill,
+		arg.Name,
+		arg.Slug,
+		arg.Description,
+		arg.ID,
+		arg.FleetID,
+	)
+	var i Skill
+	err := row.Scan(
+		&i.ID,
+		&i.PublicID,
+		&i.FleetID,
+		&i.Name,
+		&i.Slug,
+		&i.Description,
+		&i.CreatedBy,
+		&i.Archived,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const updateUserName = `-- name: UpdateUserName :one
 UPDATE users SET name = $1 WHERE id = $2 RETURNING id, public_id, email, password_hash, name, created_at, updated_at
 `
@@ -6592,6 +7644,100 @@ func (q *Queries) UpdateUserName(ctx context.Context, arg UpdateUserNameParams) 
 		&i.Name,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const upsertRunUsage = `-- name: UpsertRunUsage :one
+INSERT INTO run_usage (
+    run_id, fleet_id, operation_id, rover_id, pilot, provider, model, source,
+    input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens,
+    total_tokens, duration_ms, cost_micros, metadata, created_at
+) VALUES (
+    $1, $2, $3, $4,
+    $5, $6, $7, $8,
+    $9, $10, $11,
+    $12, $13, $14,
+    $15, $16, $17, now()
+)
+ON CONFLICT (run_id) DO UPDATE SET
+    provider = EXCLUDED.provider,
+    model = EXCLUDED.model,
+    source = EXCLUDED.source,
+    input_tokens = EXCLUDED.input_tokens,
+    output_tokens = EXCLUDED.output_tokens,
+    cache_read_tokens = EXCLUDED.cache_read_tokens,
+    cache_write_tokens = EXCLUDED.cache_write_tokens,
+    reasoning_tokens = EXCLUDED.reasoning_tokens,
+    total_tokens = EXCLUDED.total_tokens,
+    duration_ms = EXCLUDED.duration_ms,
+    cost_micros = EXCLUDED.cost_micros,
+    metadata = run_usage.metadata || EXCLUDED.metadata
+RETURNING run_id, fleet_id, operation_id, rover_id, pilot, provider, model, source,
+    input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens,
+    total_tokens, duration_ms, cost_micros, metadata, created_at
+`
+
+type UpsertRunUsageParams struct {
+	RunID            int64       `json:"run_id"`
+	FleetID          int64       `json:"fleet_id"`
+	OperationID      int64       `json:"operation_id"`
+	RoverID          pgtype.Int8 `json:"rover_id"`
+	Pilot            string      `json:"pilot"`
+	Provider         string      `json:"provider"`
+	Model            string      `json:"model"`
+	Source           pgtype.Text `json:"source"`
+	InputTokens      int64       `json:"input_tokens"`
+	OutputTokens     int64       `json:"output_tokens"`
+	CacheReadTokens  int64       `json:"cache_read_tokens"`
+	CacheWriteTokens int64       `json:"cache_write_tokens"`
+	ReasoningTokens  int64       `json:"reasoning_tokens"`
+	TotalTokens      int64       `json:"total_tokens"`
+	DurationMs       pgtype.Int8 `json:"duration_ms"`
+	CostMicros       pgtype.Int8 `json:"cost_micros"`
+	Metadata         []byte      `json:"metadata"`
+}
+
+func (q *Queries) UpsertRunUsage(ctx context.Context, arg UpsertRunUsageParams) (RunUsage, error) {
+	row := q.db.QueryRow(ctx, upsertRunUsage,
+		arg.RunID,
+		arg.FleetID,
+		arg.OperationID,
+		arg.RoverID,
+		arg.Pilot,
+		arg.Provider,
+		arg.Model,
+		arg.Source,
+		arg.InputTokens,
+		arg.OutputTokens,
+		arg.CacheReadTokens,
+		arg.CacheWriteTokens,
+		arg.ReasoningTokens,
+		arg.TotalTokens,
+		arg.DurationMs,
+		arg.CostMicros,
+		arg.Metadata,
+	)
+	var i RunUsage
+	err := row.Scan(
+		&i.RunID,
+		&i.FleetID,
+		&i.OperationID,
+		&i.RoverID,
+		&i.Pilot,
+		&i.Provider,
+		&i.Model,
+		&i.Source,
+		&i.InputTokens,
+		&i.OutputTokens,
+		&i.CacheReadTokens,
+		&i.CacheWriteTokens,
+		&i.ReasoningTokens,
+		&i.TotalTokens,
+		&i.DurationMs,
+		&i.CostMicros,
+		&i.Metadata,
+		&i.CreatedAt,
 	)
 	return i, err
 }

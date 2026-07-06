@@ -1,6 +1,6 @@
 import type { Pilot, Comment, Crew, Member, Mission, Operation } from "@/lib/types";
+import { t } from "@/lib/i18n";
 
-// Display id: <mission key>-<per-mission sequence>, e.g. MSJ-123.
 export function operationCode(operation: Operation, missions: Mission[]): string {
   const key = missions.find((m) => m.id === operation.mission_id)?.key ?? "MISSION";
   return `${key}-${operation.sequence}`;
@@ -9,21 +9,22 @@ export function operationCode(operation: Operation, missions: Mission[]): string
 type Userish = { id: string; name?: string; email?: string };
 
 export function userLabel(user: { name?: string; email?: string }): string {
-  return user.name || user.email || "User";
+  return user.name || user.email || t("common.user");
 }
 
-export function memberLabel(id: string | null, user: Userish, members: Member[], fallback = "User"): string {
-  if (!id) return fallback;
+export function memberLabel(id: string | null, user: Userish, members: Member[], fallback?: string): string {
+  const fb = fallback ?? t("common.user");
+  if (!id) return fb;
   if (id === user.id) return userLabel(user);
   const m = members.find((x) => x.id === id);
-  return m ? m.name || m.email : fallback;
+  return m ? m.name || m.email : fb;
 }
 
 export function assigneeLabel(operation: Operation, user: Userish, _pilots: Pilot[], crews: Crew[], members: Member[] = []): string {
-  if (!operation.assignee_type) return "Unassigned";
+  if (!operation.assignee_type) return t("common.unassigned");
   if (operation.assignee_type === "user") return memberLabel(operation.assignee_id, user, members);
   if (operation.assignee_type === "pilot") return pilotLabel(operation.assignee_pilot_kind ?? "");
-  if (operation.assignee_type === "crew") return crews.find((c) => c.id === operation.assignee_id)?.name ?? "Crew";
+  if (operation.assignee_type === "crew") return crews.find((c) => c.id === operation.assignee_id)?.name ?? t("common.crew");
   return operation.assignee_type;
 }
 
@@ -50,7 +51,7 @@ export function operationWaitingOnSubOperations(operation: Operation): boolean {
 export function commentAuthor(c: Comment, user: Userish, members: Member[], _pilots: Pilot[]): string {
   if (c.author_type === "user") return memberLabel(c.author_id, user, members);
   if (c.author_type === "pilot") return pilotLabel(c.author_pilot_kind ?? "");
-  return "System";
+  return t("common.system");
 }
 
 const PILOT_LABELS: Record<string, string> = {
@@ -73,16 +74,8 @@ export function pilotLabel(pilot: string): string {
   return PILOT_LABELS[pilot] ?? pilot;
 }
 
-// Priority rank (0 none -> 4 urgent) -> label + color.
-export const PRIORITY: { label: string; color: string }[] = [
-  { label: "--", color: "text-muted-foreground" },
-  { label: "Low", color: "text-info" },
-  { label: "Medium", color: "text-warning" },
-  { label: "High", color: "text-destructive" },
-  { label: "Urgent", color: "text-destructive" },
-];
+export const PRIORITY_LEVELS = [0, 1, 2, 3, 4] as const;
 
-// Left-edge accent per priority.
 export const PRIORITY_ACCENT = [
   "border-l-border", "border-l-info", "border-l-warning", "border-l-destructive", "border-l-destructive",
 ];

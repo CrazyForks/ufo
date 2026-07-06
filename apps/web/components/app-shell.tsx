@@ -18,16 +18,18 @@ import { SettingsView } from "@/components/views/settings-view";
 import { UserProfileView } from "@/components/user-profile";
 import { InviteBanner } from "@/components/invite-banner";
 import { Button } from "@/components/ui/button";
+import { LocaleSwitcher } from "@/components/locale-switcher";
 import { appPath, parseAppPath, type Section } from "@/lib/routes";
+import { useT, type MessageKey } from "@/lib/i18n";
 
-const TITLE: Record<Section, string> = {
-  operations: "Operations",
-  missions: "Missions",
-  routines: "Routines",
-  crews: "Crews",
-  rovers: "Rovers",
-  members: "Members",
-  settings: "Settings",
+const TITLE_KEY: Record<Section, MessageKey> = {
+  operations: "nav.operations",
+  missions: "nav.missions",
+  routines: "nav.routines",
+  crews: "nav.crews",
+  rovers: "nav.rovers",
+  members: "nav.members",
+  settings: "nav.settings",
 };
 
 function FireDefs() {
@@ -47,6 +49,7 @@ function FireDefs() {
 
 export function AppShell() {
   const app = useApp();
+  const t = useT();
   const { theme, resolvedTheme, setTheme } = useTheme();
   const [section, setSection] = useState<Section>(() =>
     typeof window === "undefined" ? "operations" : parseAppPath(window.location.pathname).section,
@@ -105,11 +108,12 @@ export function AppShell() {
         ) : (
           <>
             <header className="ufo-topbar flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
-              <h1 className="text-sm font-semibold">{TITLE[section]}</h1>
+              <h1 className="text-sm font-semibold">{t(TITLE_KEY[section])}</h1>
               <div className="flex items-center gap-2">
                 {section === "operations" && <NewOperationDialog />}
                 <SignalsMenu />
-                <Button variant="ghost" size="icon-sm" onClick={toggleTheme} title={darkNow ? "Theme: dark" : "Theme: light"} aria-label="Toggle theme">
+                <LocaleSwitcher />
+                <Button variant="ghost" size="icon-sm" onClick={toggleTheme} title={darkNow ? t("theme.dark") : t("theme.light")} aria-label={t("theme.toggle")}>
                   {darkNow ? <Moon /> : <Sun />}
                 </Button>
               </div>

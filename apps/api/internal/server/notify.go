@@ -16,15 +16,11 @@ const (
 	changedChannel = "ufo_changed"
 )
 
-// Notification is a PostgreSQL LISTEN notification.
 type Notification struct {
 	Channel string
 	Payload string
 }
 
-// Notifier LISTENs on one or more PostgreSQL channels (one connection per API
-// instance) and fans notifications out to in-process subscribers, each filtered
-// to the channels it cares about. Powers accept long-polling and live UI updates.
 type Notifier struct {
 	databaseURL string
 	channels    []string
@@ -40,8 +36,6 @@ func NewNotifier(databaseURL string, channels ...string) *Notifier {
 	}
 }
 
-// Subscribe returns a channel of notifications for the given channel names, plus
-// an unsubscribe func.
 func (n *Notifier) Subscribe(channels ...string) (<-chan Notification, func()) {
 	want := make(map[string]bool, len(channels))
 	for _, c := range channels {
@@ -75,7 +69,6 @@ func (n *Notifier) broadcast(note Notification) {
 	}
 }
 
-// Start runs the LISTEN loop in the background, reconnecting on failure.
 func (n *Notifier) Start(ctx context.Context) {
 	go func() {
 		for ctx.Err() == nil {

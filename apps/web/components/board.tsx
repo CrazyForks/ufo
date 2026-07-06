@@ -18,21 +18,15 @@ import { Button } from "@/components/ui/button";
 import { getJSON, withFleet } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { type Operation } from "@/lib/types";
-import { ALL_STATUSES, CARD_PROPS, type CardProp, SORTS, SORT_LABEL, type SortKey, sortOperations, type ViewMode, useBoardDisplay, useVisibleStatuses } from "@/lib/view";
-import { assigneeHasPilot, assigneeLabel, initials, operationCode, operationWaitingOnSubOperations, pilotLabel, PRIORITY, PRIORITY_ACCENT, LABEL_COLOR } from "@/lib/labels";
+import { cardPropLabel, priorityLabel, sortLabel, statusLabel, useT } from "@/lib/i18n";
+import { ALL_STATUSES, CARD_PROPS, type CardProp, SORTS, type SortKey, sortOperations, type ViewMode, useBoardDisplay, useVisibleStatuses } from "@/lib/view";
+import { assigneeHasPilot, assigneeLabel, initials, operationCode, operationWaitingOnSubOperations, pilotLabel, PRIORITY_LEVELS, PRIORITY_ACCENT, LABEL_COLOR } from "@/lib/labels";
 import { timeAgo } from "@/lib/timeline";
 
 const TAB_KIND: Record<string, string> = { all: "", members: "user", pilots: "pilot" };
-const CARD_PROP_LABEL: Record<CardProp, string> = {
-  priority: "Priority", description: "Description", assignee: "Assignee",
-  dates: "Dates", mission: "Mission", labels: "Labels", subOperationProgress: "Sub-operation progress",
-};
+const TAB_LABEL_KEY = { all: "board.tabAll", members: "board.tabMembers", pilots: "board.tabPilots" } as const;
 
 const LIMIT = 50;
-const STATUS_LABEL: Record<string, string> = {
-  backlog: "Backlog", todo: "Todo", in_progress: "In Progress",
-  in_review: "In Review", done: "Done", blocked: "Blocked", canceled: "Canceled",
-};
 // Column tints match each status's icon hue (STATUS_TEXT).
 const TINT: Record<string, string> = {
   backlog: "bg-muted/30", todo: "bg-muted/30", in_progress: "bg-info/5",
@@ -47,6 +41,7 @@ const EMPTY_WORK_COUNTS: WorkCounts = { count: 0, queued: 0, working: 0 };
 
 export function Board() {
   const app = useApp();
+  const t = useT();
   const { visible, toggle } = useVisibleStatuses();
   const { cardProps, toggleProp, mode, setMode, sort, setSort } = useBoardDisplay();
   const [mission, setMission] = useState("all");
@@ -144,20 +139,20 @@ export function Board() {
     <div className="ufo-board-toolbar flex items-center gap-2 px-4 pt-3">
       {/* assignee quick-tabs */}
       <div className="ufo-segmented flex rounded-lg border border-border p-0.5">
-        {["all", "members", "pilots"].map((t) => (
+        {(["all", "members", "pilots"] as const).map((tab) => (
           <button
-            key={t}
-            onClick={() => setFilters((f) => ({ ...f, tab: t }))}
-            className={cn("rounded-md px-2.5 py-1 text-xs capitalize", filters.tab === t ? "bg-accent font-medium" : "text-muted-foreground")}
+            key={tab}
+            onClick={() => setFilters((f) => ({ ...f, tab }))}
+            className={cn("rounded-md px-2.5 py-1 text-xs", filters.tab === tab ? "bg-accent font-medium" : "text-muted-foreground")}
           >
-            {t}
+            {t(TAB_LABEL_KEY[tab])}
           </button>
         ))}
       </div>
       <Select value={mission} onValueChange={setMission}>
         <SelectTrigger className="h-8 w-48 text-xs"><SelectValue /></SelectTrigger>
         <SelectContent>
-          <SelectItem value="all">All missions</SelectItem>
+          <SelectItem value="all">{t("board.allMissions")}</SelectItem>
           {app.missions.map((m) => (
             <SelectItem key={m.id} value={String(m.id)}><span className="font-mono text-xs">{m.key}</span> · {m.name}</SelectItem>
           ))}
@@ -167,23 +162,23 @@ export function Board() {
       <div className="ml-auto flex items-center gap-2">
         {workCounts.queued > 0 && (
           <span className="rounded-full bg-warning/10 px-2 py-1 text-xs font-medium text-warning">
-            {workCounts.queued} Queued
+            {t("board.countQueued", { count: workCounts.queued })}
           </span>
         )}
         {workCounts.working > 0 && (
           <span className="rounded-full bg-info/10 px-2 py-1 text-xs font-medium text-info">
-            {workCounts.working} Working
+            {t("board.countWorking", { count: workCounts.working })}
           </span>
         )}
         <FilterMenu filters={filters} setFilters={setFilters} />
         <DisplayMenu cardProps={cardProps} toggleProp={toggleProp} mode={mode} setMode={setMode} sort={sort} setSort={setSort} />
         <Popover>
-          <PopoverTrigger asChild><Button variant="outline" size="sm"><Columns3 /> Columns</Button></PopoverTrigger>
+          <PopoverTrigger asChild><Button variant="outline" size="sm"><Columns3 /> {t("board.columns")}</Button></PopoverTrigger>
           <PopoverContent align="end" className="w-52 space-y-1 text-xs">
             {ALL_STATUSES.map((s) => (
               <label key={s} className="flex cursor-pointer items-center gap-2 py-1">
                 <input type="checkbox" checked={visible.includes(s)} onChange={() => toggle(s)} />
-                <StatusIcon status={s} /> <span className="flex-1">{STATUS_LABEL[s]}</span>
+                <StatusIcon status={s} /> <span className="flex-1">{statusLabel(s)}</span>
                 <span className="text-muted-foreground">{counts[s] ?? 0}</span>
               </label>
             ))}
@@ -230,31 +225,32 @@ export function Board() {
 
 function FilterMenu({ filters, setFilters }: { filters: Filters; setFilters: React.Dispatch<React.SetStateAction<Filters>> }) {
   const app = useApp();
+  const t = useT();
   const active = (filters.priority != null ? 1 : 0) + (filters.assignee ? 1 : 0) + (filters.creator ? 1 : 0) + (filters.label ? 1 : 0);
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button variant="outline" size="sm"><Filter /> Filter{active > 0 && <span className="ml-1 rounded-full bg-brand/15 px-1.5 text-[10px] text-brand">{active}</span>}</Button>
+        <Button variant="outline" size="sm"><Filter /> {t("board.filter")}{active > 0 && <span className="ml-1 rounded-full bg-brand/15 px-1.5 text-[10px] text-brand">{active}</span>}</Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-56 space-y-2 text-xs">
-        <FilterSelect label="Priority" value={filters.priority == null ? "any" : String(filters.priority)} onChange={(v) => setFilters((f) => ({ ...f, priority: v === "any" ? null : Number(v) }))}
-          options={[{ v: "any", l: "Any" }, ...PRIORITY.map((p, i) => ({ v: String(i), l: p.label }))]} />
-        <FilterSelect label="Assignee" value={filters.assignee || "any"} onChange={(v) => setFilters((f) => ({ ...f, assignee: v === "any" ? "" : v }))}
+        <FilterSelect label={t("common.priority")} value={filters.priority == null ? "any" : String(filters.priority)} onChange={(v) => setFilters((f) => ({ ...f, priority: v === "any" ? null : Number(v) }))}
+          options={[{ v: "any", l: t("common.any") }, ...PRIORITY_LEVELS.map((i) => ({ v: String(i), l: priorityLabel(i) }))]} />
+        <FilterSelect label={t("common.assignee")} value={filters.assignee || "any"} onChange={(v) => setFilters((f) => ({ ...f, assignee: v === "any" ? "" : v }))}
           options={[
-            { v: "any", l: "Any" },
+            { v: "any", l: t("common.any") },
             ...app.members.map((m) => ({ v: m.id, l: m.name || m.email })),
             ...app.pilots.map((p) => ({ v: `pilot:${p.kind}`, l: <span className="flex items-center gap-2"><PilotIcon kind={p.kind} /> {pilotLabel(p.kind)}</span> })),
             ...app.crews.map((c) => ({ v: c.id, l: `👥 ${c.name}` })),
           ]} />
-        <FilterSelect label="Creator" value={filters.creator || "any"} onChange={(v) => setFilters((f) => ({ ...f, creator: v === "any" ? "" : v }))}
-          options={[{ v: "any", l: "Any" }, ...app.members.map((m) => ({ v: m.id, l: m.name || m.email }))]} />
-        <FilterSelect label="Label" value={filters.label || "any"} onChange={(v) => setFilters((f) => ({ ...f, label: v === "any" ? "" : v }))}
-          options={[{ v: "any", l: "Any" }, ...app.labels.map((l) => ({ v: l.id, l: l.name }))]} />
+        <FilterSelect label={t("board.creator")} value={filters.creator || "any"} onChange={(v) => setFilters((f) => ({ ...f, creator: v === "any" ? "" : v }))}
+          options={[{ v: "any", l: t("common.any") }, ...app.members.map((m) => ({ v: m.id, l: m.name || m.email }))]} />
+        <FilterSelect label={t("board.label")} value={filters.label || "any"} onChange={(v) => setFilters((f) => ({ ...f, label: v === "any" ? "" : v }))}
+          options={[{ v: "any", l: t("common.any") }, ...app.labels.map((l) => ({ v: l.id, l: l.name }))]} />
         <label className="flex cursor-pointer items-center justify-between gap-2 pt-1">
-          <span className="text-muted-foreground">Show archived</span>
+          <span className="text-muted-foreground">{t("board.showArchived")}</span>
           <input type="checkbox" checked={filters.archived} onChange={(e) => setFilters((f) => ({ ...f, archived: e.target.checked }))} />
         </label>
-        {active > 0 && <Button variant="ghost" size="sm" className="w-full" onClick={() => setFilters((f) => ({ tab: f.tab, priority: null, assignee: "", creator: "", label: "", archived: false }))}>Clear filters</Button>}
+        {active > 0 && <Button variant="ghost" size="sm" className="w-full" onClick={() => setFilters((f) => ({ tab: f.tab, priority: null, assignee: "", creator: "", label: "", archived: false }))}>{t("board.clearFilters")}</Button>}
       </PopoverContent>
     </Popover>
   );
@@ -273,32 +269,33 @@ function FilterSelect({ label, value, onChange, options }: { label: string; valu
 }
 
 function DisplayMenu({ cardProps, toggleProp, mode, setMode, sort, setSort }: { cardProps: Set<CardProp>; toggleProp: (p: CardProp) => void; mode: ViewMode; setMode: (m: ViewMode) => void; sort: SortKey; setSort: (s: SortKey) => void }) {
+  const t = useT();
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button variant="outline" size="sm"><SlidersHorizontal /> Display</Button>
+        <Button variant="outline" size="sm"><SlidersHorizontal /> {t("board.display")}</Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-52 space-y-3 text-xs">
         <div>
-          <p className="mb-1.5 font-medium text-muted-foreground">View</p>
+          <p className="mb-1.5 font-medium text-muted-foreground">{t("board.view")}</p>
           <div className="grid grid-cols-3 gap-1">
-            <Button variant={mode === "board" ? "secondary" : "ghost"} size="sm" onClick={() => setMode("board")}><LayoutGrid /> Board</Button>
-            <Button variant={mode === "list" ? "secondary" : "ghost"} size="sm" onClick={() => setMode("list")}><ListIcon /> List</Button>
-            <Button variant={mode === "swimlane" ? "secondary" : "ghost"} size="sm" onClick={() => setMode("swimlane")}><Rows3 /> Lanes</Button>
+            <Button variant={mode === "board" ? "secondary" : "ghost"} size="sm" onClick={() => setMode("board")}><LayoutGrid /> {t("view.board")}</Button>
+            <Button variant={mode === "list" ? "secondary" : "ghost"} size="sm" onClick={() => setMode("list")}><ListIcon /> {t("view.list")}</Button>
+            <Button variant={mode === "swimlane" ? "secondary" : "ghost"} size="sm" onClick={() => setMode("swimlane")}><Rows3 /> {t("board.lanes")}</Button>
           </div>
         </div>
         <div className="flex items-center justify-between gap-2">
-          <span className="font-medium text-muted-foreground">Sort by</span>
+          <span className="font-medium text-muted-foreground">{t("board.sortBy")}</span>
           <Select value={sort} onValueChange={(v) => setSort(v as SortKey)}>
             <SelectTrigger className="h-7 w-32 text-xs"><SelectValue /></SelectTrigger>
-            <SelectContent>{SORTS.map((s) => <SelectItem key={s} value={s}>{SORT_LABEL[s]}</SelectItem>)}</SelectContent>
+            <SelectContent>{SORTS.map((s) => <SelectItem key={s} value={s}>{sortLabel(s)}</SelectItem>)}</SelectContent>
           </Select>
         </div>
         <div>
-          <p className="mb-1.5 font-medium text-muted-foreground">Card properties</p>
+          <p className="mb-1.5 font-medium text-muted-foreground">{t("board.cardProperties")}</p>
           {CARD_PROPS.map((p) => (
             <label key={p} className="flex cursor-pointer items-center justify-between py-1">
-              <span>{CARD_PROP_LABEL[p]}</span>
+              <span>{cardPropLabel(p)}</span>
               <input type="checkbox" checked={cardProps.has(p)} onChange={() => toggleProp(p)} />
             </label>
           ))}
@@ -308,10 +305,9 @@ function DisplayMenu({ cardProps, toggleProp, mode, setMode, sort, setSort }: { 
   );
 }
 
-// Swimlane: lanes = missions, columns = statuses. Groups the already-fetched per-status
-// pages by mission (first page per column — deep pagination lives in Board view).
 function Swimlane({ visible, cols, cardProps }: { visible: string[]; cols: Record<string, ColState>; cardProps: Set<CardProp> }) {
   const app = useApp();
+  const t = useT();
   // Missions present in the fetched data, in board order.
   const missionIds = useMemo(() => {
     const seen = new Set<string>();
@@ -321,7 +317,7 @@ function Swimlane({ visible, cols, cardProps }: { visible: string[]; cols: Recor
 
   return (
     <div className="ufo-lanes flex-1 space-y-5 overflow-auto p-4 pt-3">
-      {missionIds.length === 0 && <p className="text-sm text-muted-foreground">No operations.</p>}
+      {missionIds.length === 0 && <p className="text-sm text-muted-foreground">{t("board.empty")}</p>}
       {missionIds.map((mid) => {
         const mission = app.missions.find((m) => m.id === mid);
         return (
@@ -335,7 +331,7 @@ function Swimlane({ visible, cols, cardProps }: { visible: string[]; cols: Recor
                 return (
                   <div key={s} className="w-64 shrink-0">
                     <div className="mb-1 flex items-center gap-2 px-1 text-xs text-muted-foreground">
-                      <StatusIcon status={s} /> {STATUS_LABEL[s]} <span>{items.length}</span>
+                      <StatusIcon status={s} /> {statusLabel(s)} <span>{items.length}</span>
                     </div>
                     <div className={cn("ufo-column flex flex-col gap-2 rounded-xl border border-border p-2 shadow-sm", TINT[s] ?? "bg-muted/30")}>
                       {items.map((op) => (
@@ -372,7 +368,7 @@ function ListSection({ status, count, col, cardProps, onLoadMore }: { status: st
   return (
     <div className="mb-4">
       <div className="mb-1 flex items-center gap-2 px-1 text-sm font-medium">
-        <StatusIcon status={status} /> {STATUS_LABEL[status]} <span className="text-xs text-muted-foreground">{count}</span>
+        <StatusIcon status={status} /> {statusLabel(status)} <span className="text-xs text-muted-foreground">{count}</span>
       </div>
       <div className="ufo-list divide-y divide-border rounded-lg border border-border bg-card shadow-sm">
         {items.map((op) => {
@@ -397,6 +393,7 @@ function ListSection({ status, count, col, cardProps, onLoadMore }: { status: st
 }
 
 function Column({ status, count, col, cardProps, onLoadMore }: { status: string; count: number; col?: ColState; cardProps: Set<CardProp>; onLoadMore: () => void }) {
+  const t = useT();
   const { setNodeRef, isOver } = useDroppable({ id: status });
   const sentinel = useRef<HTMLDivElement>(null);
   const items = col?.items ?? [];
@@ -413,14 +410,14 @@ function Column({ status, count, col, cardProps, onLoadMore }: { status: string;
   return (
     <div className="ufo-column-wrap flex w-64 shrink-0 flex-col">
       <div className="ufo-column-title mb-1 flex items-center gap-2 px-1 text-xs text-muted-foreground">
-        <StatusIcon status={status} /> {STATUS_LABEL[status]} <span>{count}</span>
+        <StatusIcon status={status} /> {statusLabel(status)} <span>{count}</span>
       </div>
       <div
         ref={setNodeRef}
         className={cn("ufo-column flex flex-1 flex-col gap-2 overflow-y-auto rounded-xl border border-border p-2 shadow-sm transition-colors", TINT[status] ?? "bg-muted/30", isOver && "ring-2 ring-inset ring-brand/50")}
       >
         {items.map((op) => <Card key={op.id} op={op} cardProps={cardProps} />)}
-        {items.length === 0 && <p className="pt-6 text-center text-xs text-muted-foreground/70">No operations</p>}
+        {items.length === 0 && <p className="pt-6 text-center text-xs text-muted-foreground/70">{t("board.empty")}</p>}
         {!done && <div ref={sentinel} className="flex justify-center py-2 text-muted-foreground"><Loader2 className="size-4 animate-spin" /></div>}
       </div>
     </div>
@@ -447,6 +444,7 @@ const ALL_PROPS = new Set(CARD_PROPS);
 
 function CardBody({ op, cardProps = ALL_PROPS, dragging }: { op: Operation; cardProps?: Set<CardProp>; dragging?: boolean }) {
   const app = useApp();
+  const t = useT();
   const name = assigneeLabel(op, app.user, app.pilots, app.crews, app.members);
   const pilotKind = op.assignee_type === "pilot" ? op.assignee_pilot_kind : null;
   const pilotBacked = assigneeHasPilot(op, app.crews);
@@ -474,17 +472,17 @@ function CardBody({ op, cardProps = ALL_PROPS, dragging }: { op: Operation; card
         <span className="flex items-center gap-1.5">
           {waitingOnSubOperations && (
             <span className="flex items-center gap-1 text-[11px] font-medium text-info">
-              <StatusIcon status={op.status} subOperations className="size-3" /> Sub-ops
+              <StatusIcon status={op.status} subOperations className="size-3" /> {t("op.subOps")}
             </span>
           )}
           {queued && (
             <span className="flex items-center gap-1 text-[11px] font-medium text-warning">
-              <Clock className="size-3" /> Queued
+              <Clock className="size-3" /> {t("op.queued")}
             </span>
           )}
           {working && (
             <span className="flex items-center gap-1 text-[11px] font-medium text-info">
-              <Loader2 className="size-3 animate-spin" /> Working
+              <Loader2 className="size-3 animate-spin" /> {t("op.working")}
             </span>
           )}
         </span>
@@ -523,9 +521,9 @@ function CardBody({ op, cardProps = ALL_PROPS, dragging }: { op: Operation; card
             </div>
           )
         ) : (
-          <span className="text-xs text-muted-foreground/60">Unassigned</span>
+          <span className="text-xs text-muted-foreground/60">{t("common.unassigned")}</span>
         ))}
-        {show("dates") && op.due_date && <span className="text-[10px] text-muted-foreground">Due {op.due_date.slice(5)}</span>}
+        {show("dates") && op.due_date && <span className="text-[10px] text-muted-foreground">{t("board.dueDate", { date: op.due_date.slice(5) })}</span>}
         <span className="text-[11px] text-muted-foreground/80">{timeAgo(op.created_at)}</span>
       </div>
       {fire && <Flames seed={op.id} />}
@@ -534,23 +532,24 @@ function CardBody({ op, cardProps = ALL_PROPS, dragging }: { op: Operation; card
 }
 
 function SubOperationProgressStrip({ progress, compact = false }: { progress?: Operation["sub_operation_progress"]; compact?: boolean }) {
+  const t = useT();
   if (!progress?.total) return null;
   const pct = progress.done === 0 ? 0 : Math.max(5, Math.round((progress.done / progress.total) * 100));
   const pilots = progress.pilot_kinds ?? [];
   const pills = (
     <>
-      {progress.in_progress > 0 && <SubOperationPill className="bg-info/10 text-info" icon={<Loader2 className="size-3 animate-spin" />} label={`${progress.in_progress} Working`} compact={compact} />}
-      {progress.in_review > 0 && <SubOperationPill className="bg-warning/10 text-warning" icon={<Clock className="size-3" />} label={`${progress.in_review} Review`} compact={compact} />}
-      {progress.blocked > 0 && <SubOperationPill className="bg-destructive/10 text-destructive" icon={<CircleAlert className="size-3" />} label={`${progress.blocked} Blocked`} compact={compact} />}
-      {!compact && progress.done === progress.total && <SubOperationPill className="bg-success/10 text-success" icon={<CheckCircle2 className="size-3" />} label="All Done" />}
+      {progress.in_progress > 0 && <SubOperationPill className="bg-info/10 text-info" icon={<Loader2 className="size-3 animate-spin" />} label={t("board.countWorking", { count: progress.in_progress })} compactLabel={String(progress.in_progress)} compact={compact} />}
+      {progress.in_review > 0 && <SubOperationPill className="bg-warning/10 text-warning" icon={<Clock className="size-3" />} label={t("board.countReview", { count: progress.in_review })} compactLabel={String(progress.in_review)} compact={compact} />}
+      {progress.blocked > 0 && <SubOperationPill className="bg-destructive/10 text-destructive" icon={<CircleAlert className="size-3" />} label={t("board.countBlocked", { count: progress.blocked })} compactLabel={String(progress.blocked)} compact={compact} />}
+      {!compact && progress.done === progress.total && <SubOperationPill className="bg-success/10 text-success" icon={<CheckCircle2 className="size-3" />} label={t("board.allDone")} />}
     </>
   );
   if (compact) {
     return (
-      <span title="Open operation details to inspect sub-operations" className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-muted/30 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+      <span title={t("board.subOpsHint")} className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-muted/30 px-1.5 py-0.5 text-[10px] text-muted-foreground">
         <span className="inline-flex min-w-0 items-center gap-1.5">
           <Rows3 className="size-3 shrink-0" />
-          <span className="shrink-0 font-medium text-foreground">Sub-ops</span>
+          <span className="shrink-0 font-medium text-foreground">{t("op.subOps")}</span>
           <span className="shrink-0 font-mono">{progress.done}/{progress.total}</span>
           <span className="h-1.5 w-10 shrink-0 overflow-hidden rounded-full bg-background">
             <span className="block h-full rounded-full bg-success" style={{ width: `${pct}%` }} />
@@ -562,10 +561,10 @@ function SubOperationProgressStrip({ progress, compact = false }: { progress?: O
     );
   }
   return (
-    <div title="Open operation details to inspect sub-operations" className="mt-2 min-w-0 space-y-1.5 rounded-md border border-border bg-muted/30 p-2 text-[10px] text-muted-foreground">
+    <div title={t("board.subOpsHint")} className="mt-2 min-w-0 space-y-1.5 rounded-md border border-border bg-muted/30 p-2 text-[10px] text-muted-foreground">
       <div className="flex min-w-0 items-center gap-1.5">
         <Rows3 className="size-3 shrink-0" />
-        <span className="shrink-0 font-medium text-foreground">Sub-ops</span>
+        <span className="shrink-0 font-medium text-foreground">{t("op.subOps")}</span>
         <span className="shrink-0 font-mono">{progress.done}/{progress.total}</span>
         <div className="h-1.5 min-w-10 flex-1 overflow-hidden rounded-full bg-background">
           <div className="h-full rounded-full bg-success" style={{ width: `${pct}%` }} />
@@ -597,11 +596,11 @@ function SubOperationPilots({ pilots }: { pilots: string[] }) {
   );
 }
 
-function SubOperationPill({ className, icon, label, compact = false }: { className: string; icon: ReactNode; label: string; compact?: boolean }) {
+function SubOperationPill({ className, icon, label, compactLabel, compact = false }: { className: string; icon: ReactNode; label: string; compactLabel?: string; compact?: boolean }) {
   return (
     <span className={cn("inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 font-medium", className)}>
       {icon}
-      <span>{compact ? label.split(" ")[0] : label}</span>
+      <span>{compact && compactLabel != null ? compactLabel : label}</span>
     </span>
   );
 }

@@ -12,6 +12,7 @@ import { assetFilePath } from "@/lib/assets";
 import { appPath } from "@/lib/routes";
 import { linkUserMentions, userHrefID } from "@/lib/user-mentions";
 import type { Asset } from "@/lib/types";
+import { useT } from "@/lib/i18n";
 
 const OP_CODE_RE = /(^|[^\w`])#?([A-Za-z0-9]+-\d+)\b/g;
 const EMOJI_RE = /(\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic}(?:\uFE0F)?)*)/gu;
@@ -104,6 +105,7 @@ function AssetLinkPreview({ asset, onPreview }: { asset: Asset; onPreview: (asse
 }
 
 function AssetPreviewDialog({ asset, assets, onClose }: { asset: Asset | null; assets: Asset[]; onClose: () => void }) {
+  const t = useT();
   useEffect(() => {
     if (!asset) return;
     function onKeyDown(event: KeyboardEvent) {
@@ -127,11 +129,11 @@ function AssetPreviewDialog({ asset, assets, onClose }: { asset: Asset | null; a
               <span>{assetKindLabel(asset)} · {formatBytes(asset.byte_size)}</span>
             </div>
           </div>
-          <a href={fileURL} className="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground" title="Download file" aria-label={`Download ${asset.filename}`}>
+          <a href={fileURL} className="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground" title={t("op.downloadFile")} aria-label={t("op.downloadAsset", { name: asset.filename })}>
             <Download className="size-4" />
           </a>
           <AssetTextCopyButton asset={asset} className="size-8" />
-          <button type="button" className="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground" title="Close preview" aria-label="Close preview" onClick={onClose}>
+          <button type="button" className="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground" title={t("asset.closePreview")} aria-label={t("asset.closePreview")} onClick={onClose}>
             <X className="size-4" />
           </button>
         </div>

@@ -3,6 +3,7 @@
 import type React from "react";
 import { Copy, Quote } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useT } from "@/lib/i18n";
 
 export function selectedTextWithin(el: HTMLElement | null) {
   const selection = window.getSelection();
@@ -37,6 +38,7 @@ export function SelectionActionsMenu({
   onCopy: () => void;
   onQuote?: () => void;
 }) {
+  const t = useT();
   function run(event: React.MouseEvent, action?: () => void) {
     event.preventDefault();
     event.stopPropagation();
@@ -49,8 +51,8 @@ export function SelectionActionsMenu({
         size="icon-sm"
         tabIndex={-1}
         className="size-7 rounded-none hover:bg-accent hover:text-accent-foreground"
-        title="Copy selection"
-        aria-label="Copy selection"
+        title={t("op.copySelection")}
+        aria-label={t("op.copySelection")}
         onMouseDown={(event) => run(event, onCopy)}
         onMouseUp={(event) => event.stopPropagation()}
         onClick={(event) => run(event)}
@@ -63,8 +65,8 @@ export function SelectionActionsMenu({
           size="icon-sm"
           tabIndex={-1}
           className="size-7 rounded-none border-l border-border hover:bg-accent hover:text-accent-foreground"
-          title="Quote selection"
-          aria-label="Quote selection"
+          title={t("op.quoteSelection")}
+          aria-label={t("op.quoteSelection")}
           onMouseDown={(event) => run(event, onQuote)}
           onMouseUp={(event) => event.stopPropagation()}
           onClick={(event) => run(event)}

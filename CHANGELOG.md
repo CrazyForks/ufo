@@ -5,6 +5,75 @@ All notable changes to UFO are recorded here.
 > **Public beta:** before 1.0, contracts may still evolve. Prefer tagged
 > releases; release notes call out anything that needs a careful upgrade.
 
+## [0.6.1] — 2026-07-05
+
+Public beta feature release. Adds email-first onboarding, reusable skills,
+usage and budget controls, safer unattended routine loops, and English,
+Simplified Chinese, and Traditional Chinese UI. Prefer a fresh local Hub DB
+when coming from 0.5.x unless you migrate the pre-release schema manually.
+Rover CLI **0.6.1+**.
+
+### Accounts & onboarding
+- Email/password signup now validates input earlier, creates a personal fleet,
+  and opens the board on a seeded **Launch Bay** mission.
+- New group fleets also start with a **Launch Bay** mission.
+- Sign-in sessions recover more smoothly after an access token expires.
+- Failed signup and login attempts no longer leave partial auth state behind.
+- Invite links can prefill the signup email, and the web app gives clearer
+  feedback when auth or startup checks fail.
+
+### Skills & repo context
+- Fleet owners and admins can manage reusable skills and attach them to crews
+  or operations.
+- Pilots receive the selected skills when they accept work, making repeated
+  team practices easier to reuse.
+- Rovers can include tracked repo context from `.ufo/context/repo.md` so
+  pilots start with the project rules that live beside the code.
+
+### Usage & budgets
+- Run history can now show reported tokens, duration, cost, provider, and
+  model for completed work.
+- Fleet and mission pages include week and month usage summaries.
+- Fleets, missions, operations, and rovers can set spend or run caps that the
+  Hub enforces before assigning more work.
+- UFO notifies the fleet once per budget period when a cap stops new work.
+- Budget controls now live in Hub settings, so rovers no longer need separate
+  budget environment variables.
+
+### Routines & loops
+- Routines can continue into follow-up operations automatically when
+  configured for a loop.
+- Follow-up operations keep a visible link to the previous operation, so loop
+  progress is easier to audit.
+- Self-development loops can commit successful work to a branch before
+  starting the next iteration.
+- Loops pause when repeated auto-commits make no changes, preventing silent
+  churn.
+- Captain and self-development prompts now split, consolidate, and verify loop
+  work more consistently between iterations.
+
+### Pilot handoff & rover
+- If a pilot needs input, UFO can try another available pilot before asking a
+  human to review the operation.
+- Rovers now give clearer branch and worktree status after automated updates.
+- Successful self-development loop commits can clean up their operation
+  worktrees automatically.
+
+### Rover CLI
+- Fixed the outpost TUI home screen so many rovers, units, operations, and
+  events stay inside the terminal frame instead of scrolling the banner off
+  the top row.
+
+### Web UI
+- Added English, Simplified Chinese, and Traditional Chinese UI catalogs.
+- UFO follows the browser language by default, remembers the chosen language,
+  and includes a compact language switcher.
+- Localized the board, operation detail, settings, fleet, member, rover,
+  routine, toast, and auth surfaces.
+- Added usage summaries and budget editors for fleet, mission, and rover
+  scopes.
+- Added settings for skills and routine controls for self-development loops.
+
 ## [0.5.0] — 2026-07-01
 
 Public beta feature release. Advances the database schema and API surface

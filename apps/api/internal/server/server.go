@@ -1,6 +1,3 @@
-// Package server holds the UFO Hub HTTP handlers: accounts/auth, the
-// tenant (fleet) surface for the web board, and the rover surface (accept/
-// state/events/artifacts/missions) authenticated by per-rover connection tokens.
 package server
 
 import (
@@ -17,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"regexp"
 	"runtime/debug"
 	"sort"
@@ -65,7 +63,6 @@ const (
 	roverKey
 )
 
-// Server wires the pgx pool, generated queries, long-poll duration, and notifier.
 type Server struct {
 	pool                 *pgxpool.Pool
 	q                    *db.Queries
@@ -104,13 +101,12 @@ func New(pool *pgxpool.Pool, longPoll time.Duration, notifier *Notifier) *Server
 		jwtKey:           jwtKey,
 		minRoverVersion:  envString("UFO_HUB_MIN_ROVER_VERSION", currentRoverVersion),
 		maxRoverVersion:  strings.TrimSpace(os.Getenv("UFO_HUB_MAX_ROVER_VERSION")),
-		trustProxy:    envBool("UFO_HUB_TRUST_PROXY"),
-		loginLimiter:  newIPRateLimiter(envInt("UFO_HUB_AUTH_LOGIN_LIMIT", 20), time.Duration(envInt("UFO_HUB_AUTH_LOGIN_WINDOW_SECONDS", 300))*time.Second),
-		signupLimiter: newIPRateLimiter(envInt("UFO_HUB_AUTH_SIGNUP_LIMIT", 10), time.Duration(envInt("UFO_HUB_AUTH_SIGNUP_WINDOW_SECONDS", 900))*time.Second),
+		trustProxy:       envBool("UFO_HUB_TRUST_PROXY"),
+		loginLimiter:     newIPRateLimiter(envInt("UFO_HUB_AUTH_LOGIN_LIMIT", 20), time.Duration(envInt("UFO_HUB_AUTH_LOGIN_WINDOW_SECONDS", 300))*time.Second),
+		signupLimiter:    newIPRateLimiter(envInt("UFO_HUB_AUTH_SIGNUP_LIMIT", 10), time.Duration(envInt("UFO_HUB_AUTH_SIGNUP_WINDOW_SECONDS", 900))*time.Second),
 	}
 }
 
-// ipRateLimiter is a small fixed-window counter keyed by client IP.
 type ipRateLimiter struct {
 	mu     sync.Mutex
 	hits   map[string][]time.Time
@@ -175,7 +171,7 @@ func clientIP(r *http.Request, trustProxy bool) string {
 }
 
 const (
-	currentRoverVersion = "0.5.0"
+	currentRoverVersion = "0.6.1"
 	roverVersionHeader  = "X-UFO-Rover-Version"
 	maxRoverUnits       = 100
 )
@@ -214,9 +210,6 @@ func splitOrigins(s string) []string {
 	return out
 }
 
-// originAllowed gates browser cross-origin requests: a missing Origin (curl, the
-// rover) has no CSRF surface; otherwise it must be in the allowlist, or same-origin
-// when no allowlist is set.
 func (s *Server) originAllowed(r *http.Request, origin string) bool {
 	if origin == "" {
 		return true
@@ -234,12 +227,10 @@ func (s *Server) originAllowed(r *http.Request, origin string) bool {
 	return false
 }
 
-// StartWebsocketBroadcasts runs the WebSocket broadcasts loop for typed change events.
 func (s *Server) StartWebsocketBroadcasts(ctx context.Context) {
 	go s.websocketBroadcaster.run(ctx, s.notifier)
 }
 
-// Handler returns the routed, CORS-wrapped HTTP handler.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
@@ -269,6 +260,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /enrollment-codes", s.requireUser(s.createEnrollmentCode))
 	api.HandleFunc("GET /operations", s.requireUser(s.listOperations))
 	api.HandleFunc("GET /operations/stats", s.requireUser(s.operationsStats))
+	api.HandleFunc("GET /usage", s.requireUser(s.getUsage))
 	api.HandleFunc("POST /operations", s.requireUser(s.createOperation))
 	api.HandleFunc("GET /routines", s.requireUser(s.listRoutines))
 	api.HandleFunc("POST /routines", s.requireUser(s.createRoutine))
@@ -283,6 +275,9 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /crews", s.requireUser(s.listCrews))
 	api.HandleFunc("POST /crews", s.requireUser(s.createCrew))
 	api.HandleFunc("GET /crews/{id}", s.requireUser(s.getCrew))
+	api.HandleFunc("GET /skills", s.requireUser(s.listSkills))
+	api.HandleFunc("POST /skills", s.requireUser(s.createSkill))
+	api.HandleFunc("GET /skills/{id}", s.requireUser(s.getSkill))
 	api.HandleFunc("GET /runs", s.requireUser(s.listRuns))
 	api.HandleFunc("GET /fleets/{id}/members", s.requireUser(s.listMembers))
 	api.HandleFunc("PATCH /fleets/{id}/members/{member_id}", s.requireUser(s.updateMemberRole))
@@ -305,6 +300,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("PATCH /operations/{id}", s.requireUser(s.patchOperation))
 	api.HandleFunc("PUT /operations/{id}/labels/{label_id}", s.requireUser(s.attachLabel))
 	api.HandleFunc("DELETE /operations/{id}/labels/{label_id}", s.requireUser(s.detachLabel))
+	api.HandleFunc("PUT /operations/{id}/skills/{skill_id}", s.requireUser(s.attachOperationSkill))
+	api.HandleFunc("DELETE /operations/{id}/skills/{skill_id}", s.requireUser(s.detachOperationSkill))
 	api.HandleFunc("PATCH /routines/{id}", s.requireUser(s.updateRoutine))
 	api.HandleFunc("DELETE /routines/{id}", s.requireUser(s.deleteRoutine))
 	api.HandleFunc("POST /relations", s.requireUser(s.addRelation))
@@ -336,6 +333,10 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("DELETE /crews/{id}", s.requireUser(s.deleteCrew))
 	api.HandleFunc("PUT /crews/{id}/members/{member_type}/{member_id}", s.requireUser(s.addCrewMember))
 	api.HandleFunc("DELETE /crews/{id}/members/{member_type}/{member_id}", s.requireUser(s.removeCrewMember))
+	api.HandleFunc("PUT /crews/{id}/skills/{skill_id}", s.requireUser(s.attachCrewSkill))
+	api.HandleFunc("DELETE /crews/{id}/skills/{skill_id}", s.requireUser(s.detachCrewSkill))
+	api.HandleFunc("PATCH /skills/{id}", s.requireUser(s.updateSkill))
+	api.HandleFunc("DELETE /skills/{id}", s.requireUser(s.deleteSkill))
 	api.HandleFunc("GET /runs/{id}", s.requireUser(s.getRun))
 	api.HandleFunc("PATCH /runs/{id}", s.patchRun)
 	api.HandleFunc("GET /invitations/mine", s.requireUser(s.myInvitations))
@@ -465,8 +466,6 @@ func hubVersion() string {
 	return "dev"
 }
 
-// discovery points a client that holds only the uplink origin at the RFC 9727
-// API catalog.
 func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"service":     "ufo-hub",
@@ -475,8 +474,6 @@ func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// apiCatalog implements RFC 9727: an application/linkset+json document listing
-// the hub's API(s) and, per version, links to its OpenAPI spec and health.
 func (s *Server) apiCatalog(w http.ResponseWriter, r *http.Request) {
 	base := requestBase(r)
 	doc := map[string]any{"linkset": []map[string]any{
@@ -494,8 +491,6 @@ func (s *Server) apiCatalog(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(doc)
 }
 
-// serveOpenAPI serves the embedded spec so the catalog's service-desc resolves
-// on the same origin (RFC 9727 §4.1 keeps the description with the publisher).
 func (s *Server) serveOpenAPI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/yaml")
 	_, _ = w.Write(spec.Spec)
@@ -514,14 +509,67 @@ func requestBase(r *http.Request) string {
 
 // ---- auth ----------------------------------------------------------------
 
+const (
+	defaultMissionName = "Launch Bay"
+	defaultMissionKey  = "LB"
+	minPasswordLen     = 8
+	maxPasswordLen     = 128
+	maxNameLen         = 80
+	maxEmailLen        = 254
+)
+
 type signupReq struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
 	Name     string `json:"name"`
 }
 
-// signup creates a user, a default fleet + owner membership, and a session —
-// all in one transaction.
+func validAuthEmail(email string) bool {
+	if email == "" || len(email) > maxEmailLen {
+		return false
+	}
+	at := strings.IndexByte(email, '@')
+	if at <= 0 || at == len(email)-1 {
+		return false
+	}
+	return strings.Contains(email[at+1:], ".")
+}
+
+func validPasswordLength(password string) bool {
+	n := len(password)
+	return n >= minPasswordLen && n <= maxPasswordLen
+}
+
+func validDisplayName(name string) bool {
+	return name != "" && len(name) <= maxNameLen
+}
+
+func emailLocalPart(email string) string {
+	local, _, ok := strings.Cut(email, "@")
+	local = strings.TrimSpace(local)
+	if !ok || local == "" {
+		return "user"
+	}
+	if len(local) > maxNameLen {
+		return local[:maxNameLen]
+	}
+	return local
+}
+
+type missionCreator interface {
+	CreateMission(ctx context.Context, arg db.CreateMissionParams) (db.Mission, error)
+}
+
+func seedDefaultMission(ctx context.Context, q missionCreator, fleetID int64) error {
+	_, err := q.CreateMission(ctx, db.CreateMissionParams{
+		FleetID:  fleetID,
+		Name:     defaultMissionName,
+		Key:      defaultMissionKey,
+		Metadata: metadataBytes(nil),
+	})
+	return err
+}
+
 func (s *Server) signup(w http.ResponseWriter, r *http.Request) {
 	if !s.signupLimiter.allow(clientIP(r, s.trustProxy)) {
 		httpError(w, http.StatusTooManyRequests, "too many signup attempts; try again later")
@@ -532,8 +580,19 @@ func (s *Server) signup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
-	if req.Email == "" || len(req.Password) < 8 {
-		httpError(w, http.StatusBadRequest, "email and a password of 8+ chars are required")
+	req.Name = strings.TrimSpace(req.Name)
+	if !validAuthEmail(req.Email) {
+		httpError(w, http.StatusBadRequest, "a valid email is required")
+		return
+	}
+	if !validPasswordLength(req.Password) {
+		httpError(w, http.StatusBadRequest, "password must be 8–128 characters")
+		return
+	}
+	if req.Name == "" {
+		req.Name = emailLocalPart(req.Email)
+	} else if !validDisplayName(req.Name) {
+		httpError(w, http.StatusBadRequest, "name must be 1–80 characters")
 		return
 	}
 	hash, err := auth.HashPassword(req.Password)
@@ -562,14 +621,8 @@ func (s *Server) signup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fleetName := req.Name
-	if fleetName == "" {
-		fleetName = strings.SplitN(req.Email, "@", 2)[0]
-	}
-	// The fleet created at signup is the user's immutable personal fleet
-	// (no invites, no transfer/delete). Group fleets are created later.
 	fleet, err := qtx.CreateFleet(ctx, db.CreateFleetParams{
-		Name:     fleetName + "'s fleet",
+		Name:     req.Name + "'s fleet",
 		Kind:     "personal",
 		Metadata: metadataBytes(nil),
 	})
@@ -581,7 +634,18 @@ func (s *Server) signup(w http.ResponseWriter, r *http.Request) {
 		serverError(w, err)
 		return
 	}
-	if err := s.startSessionTx(ctx, qtx, w, user.ID); err != nil {
+	if err := seedDefaultMission(ctx, qtx, fleet.ID); err != nil {
+		serverError(w, err)
+		return
+	}
+	// Cookies only after commit so a failed signup never leaves a dead session cookie.
+	accessToken, accessExp, err := s.signUserAccessToken(user)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	sessionToken, sessionExp, err := s.createSession(ctx, qtx, user.ID)
+	if err != nil {
 		serverError(w, err)
 		return
 	}
@@ -589,7 +653,16 @@ func (s *Server) signup(w http.ResponseWriter, r *http.Request) {
 		serverError(w, err)
 		return
 	}
-	s.writeAuthResponse(w, http.StatusCreated, user)
+	fleetPublicID := uuidStr(fleet.PublicID)
+	if fleetPublicID == "" {
+		serverError(w, fmt.Errorf("signup personal fleet missing public id"))
+		return
+	}
+	s.setSessionCookie(w, sessionToken, sessionExp)
+	s.setAccessCookie(w, accessToken, accessExp)
+	writeJSON(w, http.StatusCreated, authResponseDTO{
+		User: toMeDTO(user), ExpiresAt: accessExp, FleetID: fleetPublicID,
+	})
 }
 
 type loginReq struct {
@@ -607,6 +680,10 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
+	if !validAuthEmail(req.Email) || len(req.Password) == 0 || len(req.Password) > maxPasswordLen {
+		httpError(w, http.StatusUnauthorized, "invalid email or password")
+		return
+	}
 	ctx := r.Context()
 	user, err := s.q.GetUserByEmail(ctx, req.Email)
 	if err != nil || !auth.CheckPassword(user.PasswordHash, req.Password) {
@@ -624,11 +701,19 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.startSessionTx(ctx, s.q, w, user.ID); err != nil {
+	accessToken, accessExp, err := s.signUserAccessToken(user)
+	if err != nil {
 		serverError(w, err)
 		return
 	}
-	s.writeAuthResponse(w, http.StatusOK, user)
+	sessionToken, sessionExp, err := s.createSession(ctx, s.q, user.ID)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	s.setSessionCookie(w, sessionToken, sessionExp)
+	s.setAccessCookie(w, accessToken, accessExp)
+	writeJSON(w, http.StatusOK, authResponseDTO{User: toMeDTO(user), ExpiresAt: accessExp})
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
@@ -684,7 +769,12 @@ func (s *Server) updateMe(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &req) {
 		return
 	}
-	user, err := s.q.UpdateUserName(r.Context(), db.UpdateUserNameParams{ID: currentUser(r).ID, Name: strings.TrimSpace(req.Name)})
+	name := strings.TrimSpace(req.Name)
+	if !validDisplayName(name) {
+		httpError(w, http.StatusBadRequest, "name must be 1–80 characters")
+		return
+	}
+	user, err := s.q.UpdateUserName(r.Context(), db.UpdateUserNameParams{ID: currentUser(r).ID, Name: name})
 	if err != nil {
 		serverError(w, err)
 		return
@@ -692,32 +782,35 @@ func (s *Server) updateMe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toMeDTO(user))
 }
 
-// sessionWriter is satisfied by *db.Queries (and its tx variant).
 type sessionWriter interface {
 	CreateSession(ctx context.Context, arg db.CreateSessionParams) error
 }
 
-func (s *Server) startSessionTx(ctx context.Context, q sessionWriter, w http.ResponseWriter, userID int64) error {
+func (s *Server) createSession(ctx context.Context, q sessionWriter, userID int64) (string, time.Time, error) {
 	token, err := auth.NewToken()
 	if err != nil {
-		return err
+		return "", time.Time{}, err
 	}
 	exp := time.Now().Add(sessionTTL)
 	if err := q.CreateSession(ctx, db.CreateSessionParams{
 		TokenHash: auth.HashToken(token), UserID: userID, ExpiresAt: pgtype.Timestamptz{Time: exp, Valid: true},
 	}); err != nil {
-		return err
+		return "", time.Time{}, err
 	}
+	return token, exp, nil
+}
+
+func (s *Server) setSessionCookie(w http.ResponseWriter, token string, exp time.Time) {
 	http.SetCookie(w, &http.Cookie{
 		Name: sessionCookie, Value: token, Path: "/",
 		HttpOnly: true, Secure: s.secureCookies, SameSite: http.SameSiteLaxMode, Expires: exp,
 	})
-	return nil
 }
 
 type authResponseDTO struct {
 	User      meDTO     `json:"user"`
 	ExpiresAt time.Time `json:"expires_at"`
+	FleetID   string    `json:"fleet_id,omitempty"` // signup only (personal fleet)
 }
 
 type accessTokenClaims struct {
@@ -727,16 +820,6 @@ type accessTokenClaims struct {
 	Type      string `json:"typ"`
 	ExpiresAt int64  `json:"exp"`
 	IssuedAt  int64  `json:"iat"`
-}
-
-func (s *Server) writeAuthResponse(w http.ResponseWriter, status int, user db.User) {
-	token, exp, err := s.signUserAccessToken(user)
-	if err != nil {
-		serverError(w, err)
-		return
-	}
-	s.setAccessCookie(w, token, exp)
-	writeJSON(w, status, authResponseDTO{User: toMeDTO(user), ExpiresAt: exp})
 }
 
 func jwtIssuer() string {
@@ -849,7 +932,10 @@ func (s *Server) userFromAccessToken(ctx context.Context, token string) (db.User
 }
 
 func (s *Server) clearSessionCookie(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", HttpOnly: true, Secure: s.secureCookies, MaxAge: -1})
+	http.SetCookie(w, &http.Cookie{
+		Name: sessionCookie, Value: "", Path: "/",
+		HttpOnly: true, Secure: s.secureCookies, SameSite: http.SameSiteLaxMode, MaxAge: -1,
+	})
 }
 
 func (s *Server) setAccessCookie(w http.ResponseWriter, token string, exp time.Time) {
@@ -860,7 +946,10 @@ func (s *Server) setAccessCookie(w http.ResponseWriter, token string, exp time.T
 }
 
 func (s *Server) clearAccessCookie(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{Name: accessCookie, Value: "", Path: "/", HttpOnly: true, Secure: s.secureCookies, MaxAge: -1})
+	http.SetCookie(w, &http.Cookie{
+		Name: accessCookie, Value: "", Path: "/",
+		HttpOnly: true, Secure: s.secureCookies, SameSite: http.SameSiteLaxMode, MaxAge: -1,
+	})
 }
 
 // ---- tenant (UI) handlers ------------------------------------------------
@@ -906,7 +995,6 @@ type updateFleetReq struct {
 	Metadata json.RawMessage `json:"metadata"`
 }
 
-// createFleet makes a group fleet (invitable/manageable) owned by the creator.
 func (s *Server) createFleet(w http.ResponseWriter, r *http.Request) {
 	var req createFleetReq
 	if !readJSON(w, r, &req) {
@@ -939,6 +1027,10 @@ func (s *Server) createFleet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := qtx.CreateMembership(ctx, db.CreateMembershipParams{UserID: currentUser(r).ID, FleetID: f.ID, Role: "owner"}); err != nil {
+		serverError(w, err)
+		return
+	}
+	if err := seedDefaultMission(ctx, qtx, f.ID); err != nil {
 		serverError(w, err)
 		return
 	}
@@ -997,7 +1089,6 @@ func (s *Server) updateFleet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toFleetDTO(f))
 }
 
-// deleteFleet removes a group fleet (owner only). Personal fleets can't be deleted.
 func (s *Server) deleteFleet(w http.ResponseWriter, r *http.Request) {
 	pid, ok := pathUUID(w, r)
 	if !ok {
@@ -1024,7 +1115,6 @@ func (s *Server) deleteFleet(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// UFO_HUB_ROVER_ONLINE_WINDOW_SECONDS: max gap since last_seen before a rover is offline.
 var roverOnlineWindow = time.Duration(envInt("UFO_HUB_ROVER_ONLINE_WINDOW_SECONDS", 60)) * time.Second
 var operationCodeQueryRE = regexp.MustCompile(`(?i)#?([A-Z0-9]+-\d*)`)
 var operationCodePrefixQueryRE = regexp.MustCompile(`(?i)^#?([A-Z0-9]+)$`)
@@ -1106,7 +1196,6 @@ func roverDTOFromRover(rv db.Rover, runningUnits int64) roverDTO {
 	return d
 }
 
-// patchRover edits user-managed fields for users; rovers may refresh auto_tags and metadata.
 func (s *Server) patchRover(w http.ResponseWriter, r *http.Request) {
 	pid, ok := pathUUID(w, r)
 	if !ok {
@@ -1194,6 +1283,16 @@ func (s *Server) patchRover(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.q.SetRoverUnits(r.Context(), db.SetRoverUnitsParams{ID: rover.ID, Units: dbUnits}); err != nil {
+			serverError(w, err)
+			return
+		}
+	}
+	if raw, ok := patch["metadata"]; ok {
+		metadata, ok := jsonObjectBytes(w, raw, "metadata")
+		if !ok {
+			return
+		}
+		if err := s.q.MergeRoverMetadata(r.Context(), db.MergeRoverMetadataParams{ID: rover.ID, Metadata: metadata}); err != nil {
 			serverError(w, err)
 			return
 		}
@@ -1787,7 +1886,6 @@ type updateRoutineReq struct {
 	OperationMetadata json.RawMessage `json:"operation_metadata"`
 }
 
-// parseDate maps an optional YYYY-MM-DD string to pgtype.Date.
 func parseDate(s *string) (pgtype.Date, bool) {
 	if s == nil || *s == "" {
 		return pgtype.Date{}, true
@@ -2066,20 +2164,23 @@ func routineTriggerCron(r db.Routine) string {
 	return strings.TrimSpace(cron)
 }
 
-func routineTriggerFingerprint(raw []byte) (string, string) {
+func routineTriggerFingerprint(raw []byte) (kind, cron string, enabled bool) {
 	m := nestedMetadataMap(raw, routineMetadataTrigger)
-	triggerKind := "manual"
+	kind = "manual"
+	enabled = true
 	if rawKind, ok := m["kind"]; ok {
 		var v string
 		if err := json.Unmarshal(rawKind, &v); err == nil && strings.TrimSpace(v) != "" {
-			triggerKind = strings.TrimSpace(v)
+			kind = strings.TrimSpace(v)
 		}
 	}
-	var cron string
 	if rawCron, ok := m["cron"]; ok {
 		_ = json.Unmarshal(rawCron, &cron)
 	}
-	return triggerKind, strings.TrimSpace(cron)
+	if rawEnabled, ok := m["enabled"]; ok {
+		_ = json.Unmarshal(rawEnabled, &enabled)
+	}
+	return kind, strings.TrimSpace(cron), enabled
 }
 
 type routineAssigneeRef struct {
@@ -2088,18 +2189,40 @@ type routineAssigneeRef struct {
 }
 
 type routineOperationConfig struct {
-	StartImmediately bool
-	Priority         int16
-	Assignee         *routineAssigneeRef
-	RequiredTags     []string
-	ExcludedTags     []string
+	StartImmediately     bool
+	SkipIfActive         bool
+	RePulseOnClose       bool
+	AutoCommitBranch     string
+	DropWorktreeOnCommit bool
+	Priority             int16
+	Assignee             *routineAssigneeRef
+	RequiredTags         []string
+	ExcludedTags         []string
 }
 
 func routineOperationConfigFromMetadata(r db.Routine) routineOperationConfig {
 	m := nestedMetadataMap(r.Metadata, routineMetadataOperation)
-	cfg := routineOperationConfig{StartImmediately: true}
+	cfg := routineOperationConfig{
+		StartImmediately: true, SkipIfActive: true, RePulseOnClose: true,
+		DropWorktreeOnCommit: true,
+	}
 	if raw, ok := m["start_immediately"]; ok {
 		_ = json.Unmarshal(raw, &cfg.StartImmediately)
+	}
+	if raw, ok := m["skip_if_active"]; ok {
+		_ = json.Unmarshal(raw, &cfg.SkipIfActive)
+	}
+	if raw, ok := m["re_pulse_on_close"]; ok {
+		_ = json.Unmarshal(raw, &cfg.RePulseOnClose)
+	}
+	if raw, ok := m["auto_commit_branch"]; ok {
+		var branch string
+		if err := json.Unmarshal(raw, &branch); err == nil {
+			cfg.AutoCommitBranch = normalizeSourceBranchName(branch)
+		}
+	}
+	if raw, ok := m["drop_worktree_on_commit"]; ok {
+		_ = json.Unmarshal(raw, &cfg.DropWorktreeOnCommit)
 	}
 	if raw, ok := m["priority"]; ok {
 		var priority int16
@@ -2139,8 +2262,6 @@ func routineOperationConfigFromMetadata(r db.Routine) routineOperationConfig {
 	return cfg
 }
 
-// resolveAssignee maps an assignee ref to stored columns: a bigint id for
-// user/crew, a kind string for pilot. Empty ref = unassigned.
 func (s *Server) resolveAssignee(ctx context.Context, fleet int64, atype string, aid *string) (int64, string, bool) {
 	return resolveAssigneeWithQueries(ctx, s.q, fleet, atype, aid)
 }
@@ -2175,8 +2296,6 @@ func resolveAssigneeWithQueries(ctx context.Context, q *db.Queries, fleet int64,
 	return id, "", true
 }
 
-// resolvePilotKind returns the kind that drives an assignment, or "" if
-// human-only. Crews pick the captain-if-pilot, else the first pilot member.
 func (s *Server) resolvePilotKind(ctx context.Context, q *db.Queries, atype, pilotKind string, crewID int64) string {
 	switch atype {
 	case "pilot":
@@ -2201,7 +2320,6 @@ func (s *Server) resolvePilotKind(ctx context.Context, q *db.Queries, atype, pil
 	}
 }
 
-// crewPilotKinds lists a crew's pilot kinds, captain first, deduped.
 func crewPilotKinds(members []db.CrewMember) []string {
 	var captain string
 	var rest []string
@@ -2223,7 +2341,6 @@ func crewPilotKinds(members []db.CrewMember) []string {
 	return rest
 }
 
-// crewPickKind returns the first usable crew pilot, preferring kinds with open rover units when requested.
 func (s *Server) crewPickKind(ctx context.Context, q *db.Queries, fleetID, crewID int64, exclude map[string]bool, preferFree bool) string {
 	members, err := q.ListCrewMembers(ctx, crewID)
 	if err != nil {
@@ -2264,7 +2381,6 @@ func (s *Server) resolveDispatchKind(ctx context.Context, q *db.Queries, fleetID
 	return s.resolvePilotKind(ctx, q, atype, pilotKind, crewID)
 }
 
-// crewFailover tries the next eligible crew pilot after a run failure.
 func (s *Server) crewFailover(ctx context.Context, op db.Operation, run db.Run, runState string) bool {
 	if op.AssigneeType.String != "crew" || !op.AssigneeID.Valid {
 		return false
@@ -2292,8 +2408,66 @@ func (s *Server) crewFailover(ctx context.Context, op db.Operation, run db.Run, 
 	return true
 }
 
-// fleetHasRoverFor reports whether the fleet has a rover the kind can drive
-// (online or not; an offline one accepts when it returns).
+const runSourcePilotHandoff = "pilot_handoff"
+
+func (s *Server) pilotHandoffForInput(ctx context.Context, op db.Operation, run db.Run) bool {
+	tried, err := s.q.TriedPilotKindsForOperation(ctx, op.ID)
+	if err != nil {
+		return false
+	}
+	exclude := map[string]bool{run.Pilot: true}
+	for _, k := range tried {
+		exclude[k] = true
+	}
+	var pick string
+	if op.AssigneeType.Valid && op.AssigneeType.String == "crew" && op.AssigneeID.Valid {
+		pick = s.crewPickKind(ctx, s.q, op.FleetID, op.AssigneeID.Int64, exclude, true)
+	} else {
+		pick = s.fleetPickOtherPilot(ctx, s.q, op.FleetID, exclude)
+	}
+	if pick == "" || pick == run.Pilot {
+		return false
+	}
+	if op.AssigneeType.Valid && op.AssigneeType.String == "pilot" {
+		if _, err := s.q.AssignOperation(ctx, db.AssignOperationParams{
+			ID: op.ID, FleetID: op.FleetID,
+			AssigneeType: optText("pilot"), AssigneeID: pgtype.Int8{}, AssigneePilotKind: optText(pick),
+		}); err != nil {
+			return false
+		}
+	}
+	prompt := "Another pilot needed input or context to continue. Use the operation history and comments to answer or complete the work."
+	if err := s.dispatchRun(ctx, s.q, op, pick, prompt, runSourcePilotHandoff); err != nil {
+		return false
+	}
+	_ = s.setOperationStatus(ctx, s.q, op, "in_progress")
+	_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
+		OperationID: op.ID, AuthorType: "system",
+		Body: fmt.Sprintf("Pilot handoff: reassigned to %s after %s needed input (run #%d). Trying another pilot before human review.", pick, run.Pilot, run.ID),
+	})
+	return true
+}
+
+func (s *Server) fleetPickOtherPilot(ctx context.Context, q *db.Queries, fleetID int64, exclude map[string]bool) string {
+	rows, err := q.FleetPilotKindFree(ctx, db.FleetPilotKindFreeParams{FleetID: fleetID, OnlineWindowSeconds: roverOnlineWindow.Seconds()})
+	if err != nil {
+		return ""
+	}
+	var fallback string
+	for _, r := range rows {
+		if exclude[r.Kind] {
+			continue
+		}
+		if r.HasFree {
+			return r.Kind
+		}
+		if fallback == "" {
+			fallback = r.Kind
+		}
+	}
+	return fallback
+}
+
 func (s *Server) fleetHasRoverFor(ctx context.Context, q *db.Queries, fleetID int64, kind string) bool {
 	caps, err := q.FleetPilotCapabilities(ctx, db.FleetPilotCapabilitiesParams{FleetID: fleetID, OnlineWindowSeconds: roverOnlineWindow.Seconds()})
 	if err != nil {
@@ -2307,7 +2481,6 @@ func (s *Server) fleetHasRoverFor(ctx context.Context, q *db.Queries, fleetID in
 	return false
 }
 
-// dispatchOrBlock queues work or blocks when the fleet has no capable rover.
 func (s *Server) dispatchOrBlock(ctx context.Context, q *db.Queries, op db.Operation, kind, prompt string) (string, error) {
 	return s.dispatchOrBlockWithSource(ctx, q, op, kind, prompt, "")
 }
@@ -2322,7 +2495,6 @@ func (s *Server) dispatchOrBlockWithSource(ctx context.Context, q *db.Queries, o
 	return "in_progress", nil
 }
 
-// blockNoRover records that this pilot has no fleet rover to drive.
 func (s *Server) blockNoRover(ctx context.Context, q *db.Queries, op db.Operation, kind string) error {
 	if err := s.setOperationStatus(ctx, q, op, "blocked"); err != nil {
 		return err
@@ -2341,7 +2513,6 @@ func (s *Server) blockNoRover(ctx context.Context, q *db.Queries, op db.Operatio
 	return nil
 }
 
-// dispatchRun queues a run for an operation.
 func (s *Server) dispatchRun(ctx context.Context, q *db.Queries, op db.Operation, kind, prompt, source string) error {
 	if !validPilotKind(kind) {
 		return fmt.Errorf("invalid pilot kind %q", kind)
@@ -2383,8 +2554,6 @@ func (s *Server) dispatchRun(ctx context.Context, q *db.Queries, op db.Operation
 	return err
 }
 
-// contextPrompt builds the pilot prompt for a fresh session (title, body, stacked
-// context, conversation).
 func (s *Server) contextPrompt(ctx context.Context, q *db.Queries, op db.Operation) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s\n\n%s\n", op.Title, op.Body)
@@ -2557,7 +2726,6 @@ func (s *Server) createOperation(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(ctx)
 	qtx := s.q.WithTx(tx)
 
-	// Allocate the per-mission operation number. The displayed id is <key>-<sequence>.
 	sequence, err := qtx.BumpMissionSequence(ctx, db.BumpMissionSequenceParams{ID: missionID, FleetID: wid})
 	if err != nil {
 		serverError(w, err)
@@ -2622,11 +2790,6 @@ func (s *Server) createOperation(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, s.operationDTO(ctx, op))
 }
 
-// listOperations serves one board column, keyset-paginated:
-// ?status=&mission=&before=&limit= (mission/before 0 = all/newest). Without a
-// status it returns the newest page across statuses (small, bounded).
-// boardFilters holds the optional board filters, resolved to internal ids
-// (0/”/-1 = unset). mission/before are resolved separately.
 type boardFilters struct {
 	priority        int16
 	assigneeKind    string
@@ -2638,7 +2801,6 @@ type boardFilters struct {
 	invalid         bool
 }
 
-// parseBoardFilters reads + resolves the board filter query params for a fleet.
 func (s *Server) parseBoardFilters(ctx context.Context, q url.Values, fleet int64) boardFilters {
 	f := boardFilters{priority: -1}
 	if v := q.Get("priority"); v != "" {
@@ -2649,7 +2811,6 @@ func (s *Server) parseBoardFilters(ctx context.Context, q url.Values, fleet int6
 	if k := q.Get("assignee_kind"); k == "user" || k == "pilot" || k == "crew" {
 		f.assigneeKind = k
 	}
-	// A specific pilot is filtered by kind; a specific user/crew by public id.
 	if v := q.Get("pilot"); v != "" {
 		if !validPilotKind(v) {
 			f.invalid = true
@@ -2705,7 +2866,6 @@ func (s *Server) listOperations(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	_, qPresent := q["q"]
 	query := strings.TrimSpace(q.Get("q"))
-	// Explicit empty search is not a full board list — return no matches.
 	if qPresent && query == "" {
 		writeJSON(w, http.StatusOK, []operationDTO{})
 		return
@@ -2798,7 +2958,6 @@ func (s *Server) listOperations(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.operationDTOs(ctx, ops))
 }
 
-// resolveMissionParam maps a mission public id query value to its internal id (0 = all).
 func (s *Server) resolveMissionParam(ctx context.Context, v string, fleet int64) (int64, bool) {
 	if v == "" {
 		return 0, true
@@ -2814,7 +2973,6 @@ func (s *Server) resolveMissionParam(ctx context.Context, v string, fleet int64)
 	return id, true
 }
 
-// operationsStats: metrics=by_status|working (comma-separated).
 func (s *Server) operationsStats(w http.ResponseWriter, r *http.Request) {
 	fleetIDs, ok := s.fleetIDsFromQuery(w, r)
 	if !ok {
@@ -2876,7 +3034,6 @@ func (s *Server) operationsStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// missionsStats: metrics=by_mission (operation counts keyed by mission id).
 func (s *Server) missionsStats(w http.ResponseWriter, r *http.Request) {
 	fleetIDs, ok := s.fleetIDsFromQuery(w, r)
 	if !ok {
@@ -2966,7 +3123,6 @@ func (s *Server) pagedComments(ctx context.Context, operationID, beforeID int64,
 	return comments, more, nil
 }
 
-// operationInFleet loads an operation by public id and checks membership.
 func (s *Server) operationInFleet(w http.ResponseWriter, r *http.Request) (db.Operation, int64, bool) {
 	pid, ok := pathUUID(w, r)
 	if !ok {
@@ -3097,6 +3253,7 @@ func (s *Server) patchOperation(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	prevStatus := op.Status
 	var patch map[string]json.RawMessage
 	if !readJSON(w, r, &patch) {
 		return
@@ -3387,11 +3544,12 @@ func (s *Server) patchOperation(w http.ResponseWriter, r *http.Request) {
 		serverError(w, err)
 		return
 	}
+	if isTerminalOperationStatus(updated.Status) && !isTerminalOperationStatus(prevStatus) {
+		s.maybeRePulseOnClose(ctx, updated, updated.Status)
+	}
 	writeJSON(w, http.StatusOK, s.operationDTO(ctx, updated))
 }
 
-// patchOperationMission moves a main operation and its subs to another mission
-// in the same fleet (new sequences, cleared pilot sessions, system note).
 func (s *Server) patchOperationMission(w http.ResponseWriter, ctx context.Context, qtx *db.Queries, op *db.Operation, fleetID int64, missionPublicID string) bool {
 	mpid, ok := parseUUID(missionPublicID)
 	if !ok {
@@ -3763,6 +3921,14 @@ func routineTriggerMetadataFromRequest(w http.ResponseWriter, raw json.RawMessag
 		}
 	}
 	m["kind"] = jsonRaw(triggerKind)
+	enabled := true
+	if rawEnabled, ok := m["enabled"]; ok {
+		if err := json.Unmarshal(rawEnabled, &enabled); err != nil {
+			httpError(w, http.StatusBadRequest, "metadata.trigger.enabled must be a boolean")
+			return nil, pgtype.Timestamptz{}, false
+		}
+	}
+	m["enabled"] = jsonRaw(enabled)
 	switch triggerKind {
 	case "manual":
 		delete(m, "cron")
@@ -3776,12 +3942,15 @@ func routineTriggerMetadataFromRequest(w http.ResponseWriter, raw json.RawMessag
 			}
 		}
 		cron = strings.TrimSpace(cron)
-		next, ok := nextCronTime(cron, time.Now().UTC())
-		if !ok {
+		if _, ok := nextCronTime(cron, time.Now().UTC()); !ok {
 			httpError(w, http.StatusBadRequest, "invalid cron")
 			return nil, pgtype.Timestamptz{}, false
 		}
 		m["cron"] = jsonRaw(cron)
+		if !enabled {
+			return json.RawMessage(metadataBytes(m)), pgtype.Timestamptz{}, true
+		}
+		next, _ := nextCronTime(cron, time.Now().UTC())
 		return json.RawMessage(metadataBytes(m)), pgtype.Timestamptz{Time: next, Valid: true}, true
 	default:
 		httpError(w, http.StatusBadRequest, "invalid metadata.trigger.kind")
@@ -3795,6 +3964,48 @@ func (s *Server) routineOperationMetadataFromRequest(w http.ResponseWriter, ctx 
 		return nil, false
 	}
 	startNow := true
+	skipIfActive := true
+	rePulseOnClose := true
+	if rawSkip, ok := m["skip_if_active"]; ok {
+		if err := json.Unmarshal(rawSkip, &skipIfActive); err != nil {
+			httpError(w, http.StatusBadRequest, "metadata.operation.skip_if_active must be a boolean")
+			return nil, false
+		}
+	}
+	m["skip_if_active"] = jsonRaw(skipIfActive)
+	if rawRe, ok := m["re_pulse_on_close"]; ok {
+		if err := json.Unmarshal(rawRe, &rePulseOnClose); err != nil {
+			httpError(w, http.StatusBadRequest, "metadata.operation.re_pulse_on_close must be a boolean")
+			return nil, false
+		}
+	}
+	m["re_pulse_on_close"] = jsonRaw(rePulseOnClose)
+	dropWorktreeOnCommit := true
+	if rawDrop, ok := m["drop_worktree_on_commit"]; ok {
+		if err := json.Unmarshal(rawDrop, &dropWorktreeOnCommit); err != nil {
+			httpError(w, http.StatusBadRequest, "metadata.operation.drop_worktree_on_commit must be a boolean")
+			return nil, false
+		}
+	}
+	m["drop_worktree_on_commit"] = jsonRaw(dropWorktreeOnCommit)
+	if rawBranch, ok := m["auto_commit_branch"]; ok && strings.TrimSpace(string(rawBranch)) != "null" {
+		var branch string
+		if err := json.Unmarshal(rawBranch, &branch); err != nil {
+			httpError(w, http.StatusBadRequest, "metadata.operation.auto_commit_branch must be a string")
+			return nil, false
+		}
+		branch = strings.TrimSpace(branch)
+		if branch == "" {
+			delete(m, "auto_commit_branch")
+		} else {
+			branch = normalizeSourceBranchName(branch)
+			if branch == "" {
+				httpError(w, http.StatusBadRequest, "invalid metadata.operation.auto_commit_branch")
+				return nil, false
+			}
+			m["auto_commit_branch"] = jsonRaw(branch)
+		}
+	}
 	if rawStart, ok := m["start_immediately"]; ok {
 		if err := json.Unmarshal(rawStart, &startNow); err != nil {
 			httpError(w, http.StatusBadRequest, "metadata.operation.start_immediately must be a boolean")
@@ -3956,9 +4167,9 @@ func (s *Server) updateRoutine(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	oldTriggerType, oldCron := routineTriggerFingerprint(routine.Metadata)
-	newTriggerType, newCron := routineTriggerFingerprint(metadata)
-	if oldTriggerType == newTriggerType && oldCron == newCron {
+	oldKind, oldCron, oldEnabled := routineTriggerFingerprint(routine.Metadata)
+	newKind, newCron, newEnabled := routineTriggerFingerprint(metadata)
+	if oldKind == newKind && oldCron == newCron && oldEnabled == newEnabled {
 		nextPulseAt = routine.NextPulseAt
 	}
 	operationMetadata, ok := operationMetadataFromRequest(w, req.OperationMetadata)
@@ -4129,6 +4340,7 @@ func (s *Server) getPulse(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) executeRoutinePulse(ctx context.Context, routine db.Routine, createdByUserID int64, triggerKind string, extraMeta map[string]json.RawMessage) (db.Operation, db.Pulse, error) {
 	now := time.Now().UTC()
+	triggerKind = strings.TrimSpace(triggerKind)
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return db.Operation{}, db.Pulse{}, err
@@ -4136,22 +4348,43 @@ func (s *Server) executeRoutinePulse(ctx context.Context, routine db.Routine, cr
 	defer tx.Rollback(ctx)
 	qtx := s.q.WithTx(tx)
 
-	if strings.TrimSpace(triggerKind) == "schedule" {
-		locked, err := qtx.LockDueRoutine(ctx, db.LockDueRoutineParams{
-			ID: routine.ID, FleetID: routine.FleetID,
-			Now: pgtype.Timestamptz{Time: now, Valid: true},
-		})
-		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return db.Operation{}, db.Pulse{}, nil
-			}
-			return db.Operation{}, db.Pulse{}, err
+	locked, err := qtx.LockRoutine(ctx, db.LockRoutineParams{ID: routine.ID, FleetID: routine.FleetID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return db.Operation{}, db.Pulse{}, nil
 		}
-		routine = locked
+		return db.Operation{}, db.Pulse{}, err
+	}
+	routine = locked
+	if triggerKind == "schedule" {
+		_, _, enabled := routineTriggerFingerprint(routine.Metadata)
+		if !enabled {
+			return db.Operation{}, db.Pulse{}, nil
+		}
+		if !routine.NextPulseAt.Valid || routine.NextPulseAt.Time.After(now) {
+			return db.Operation{}, db.Pulse{}, nil
+		}
+	}
+	if triggerKind == "loop_close" {
+		prevPub := ""
+		if extraMeta != nil {
+			if raw, ok := extraMeta["source_operation_id"]; ok {
+				_ = json.Unmarshal(raw, &prevPub)
+			}
+		}
+		if prevPub != "" {
+			if pid, ok := parseUUID(prevPub); ok {
+				if prev, err := qtx.GetOperationByPublicID(ctx, pid); err == nil && prev.FleetID == routine.FleetID {
+					if _, err := qtx.ClaimLoopRePulse(ctx, db.ClaimLoopRePulseParams{ID: prev.ID, FleetID: prev.FleetID}); err != nil {
+						return db.Operation{}, db.Pulse{}, nil
+					}
+				}
+			}
+		}
 	}
 
 	pulseMeta := map[string]json.RawMessage{
-		"trigger": jsonRaw(map[string]any{"kind": strings.TrimSpace(triggerKind)}),
+		"trigger": jsonRaw(map[string]any{"kind": triggerKind}),
 	}
 	for k, v := range extraMeta {
 		pulseMeta[k] = v
@@ -4167,7 +4400,59 @@ func (s *Server) executeRoutinePulse(ctx context.Context, routine db.Routine, cr
 		return db.Operation{}, db.Pulse{}, err
 	}
 
-	op, err := s.createOperationFromRoutine(ctx, qtx, routine.FleetID, routine, createdByUserID, pulse)
+	advanceSchedule := func() error {
+		nextPulseAt := routine.NextPulseAt
+		if triggerKind == "schedule" {
+			cron := routineTriggerCron(routine)
+			next, ok := nextCronTime(cron, now)
+			if !ok {
+				return fmt.Errorf("routine %d has invalid cron %q", routine.ID, cron)
+			}
+			nextPulseAt = pgtype.Timestamptz{Time: next, Valid: true}
+		}
+		return qtx.UpdateRoutinePulse(ctx, db.UpdateRoutinePulseParams{
+			NextPulseAt:  nextPulseAt,
+			LastPulsedAt: pgtype.Timestamptz{Time: now, Valid: true},
+			ID:           routine.ID,
+			FleetID:      routine.FleetID,
+		})
+	}
+
+	cfg := routineOperationConfigFromMetadata(routine)
+	if cfg.SkipIfActive {
+		open, err := qtx.CountOpenLoopOperationsForRoutine(ctx, db.CountOpenLoopOperationsForRoutineParams{
+			FleetID:         routine.FleetID,
+			RoutinePublicID: []byte(uuidStr(routine.PublicID)),
+		})
+		if err != nil {
+			return db.Operation{}, db.Pulse{}, err
+		}
+		if open > 0 {
+			skipped, err := qtx.FinishPulse(ctx, db.FinishPulseParams{
+				OperationID: pgtype.Int8{},
+				Status:      "skipped",
+				Metadata: metadataBytes(mergeMetadataMaps(pulseMeta, map[string]json.RawMessage{
+					"skip_reason": jsonRaw("open_operation"),
+					"open_count":  jsonRaw(open),
+				})),
+				FinishedAt: pgtype.Timestamptz{Time: now, Valid: true},
+				ID:         pulse.ID,
+				FleetID:    routine.FleetID,
+			})
+			if err != nil {
+				return db.Operation{}, db.Pulse{}, err
+			}
+			if err := advanceSchedule(); err != nil {
+				return db.Operation{}, db.Pulse{}, err
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return db.Operation{}, db.Pulse{}, err
+			}
+			return db.Operation{}, skipped, nil
+		}
+	}
+
+	op, err := s.createOperationFromRoutine(ctx, qtx, routine.FleetID, routine, createdByUserID, pulse, triggerKind)
 	if err != nil {
 		failed, ferr := qtx.FinishPulse(ctx, db.FinishPulseParams{
 			OperationID: pgtype.Int8{},
@@ -4180,7 +4465,16 @@ func (s *Server) executeRoutinePulse(ctx context.Context, routine db.Routine, cr
 		if ferr != nil {
 			return db.Operation{}, db.Pulse{}, errors.Join(err, ferr)
 		}
-		_ = tx.Commit(ctx)
+		if aerr := advanceSchedule(); aerr != nil {
+			return db.Operation{}, db.Pulse{}, errors.Join(err, aerr)
+		}
+		if cerr := tx.Commit(ctx); cerr != nil {
+			return db.Operation{}, db.Pulse{}, errors.Join(err, cerr)
+		}
+		if triggerKind == "schedule" {
+			s.notifyMembers(ctx, routine.FleetID, 0, "routine_pulse_failed", "action_required",
+				"Routine pulse failed: "+routine.Title, err.Error())
+		}
 		return db.Operation{}, failed, err
 	}
 
@@ -4195,22 +4489,7 @@ func (s *Server) executeRoutinePulse(ctx context.Context, routine db.Routine, cr
 	if err != nil {
 		return db.Operation{}, db.Pulse{}, err
 	}
-
-	nextPulseAt := routine.NextPulseAt
-	if strings.TrimSpace(triggerKind) == "schedule" {
-		cron := routineTriggerCron(routine)
-		next, ok := nextCronTime(cron, now)
-		if !ok {
-			return db.Operation{}, db.Pulse{}, fmt.Errorf("routine %d has invalid cron %q", routine.ID, cron)
-		}
-		nextPulseAt = pgtype.Timestamptz{Time: next, Valid: true}
-	}
-	if err := qtx.UpdateRoutinePulse(ctx, db.UpdateRoutinePulseParams{
-		NextPulseAt:  nextPulseAt,
-		LastPulsedAt: pgtype.Timestamptz{Time: now, Valid: true},
-		ID:           routine.ID,
-		FleetID:      routine.FleetID,
-	}); err != nil {
+	if err := advanceSchedule(); err != nil {
 		return db.Operation{}, db.Pulse{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -4219,7 +4498,7 @@ func (s *Server) executeRoutinePulse(ctx context.Context, routine db.Routine, cr
 	return op, pulse, nil
 }
 
-func (s *Server) createOperationFromRoutine(ctx context.Context, q *db.Queries, wid int64, routine db.Routine, createdByUserID int64, pulse db.Pulse) (db.Operation, error) {
+func (s *Server) createOperationFromRoutine(ctx context.Context, q *db.Queries, wid int64, routine db.Routine, createdByUserID int64, pulse db.Pulse, triggerKind string) (db.Operation, error) {
 	sequence, err := q.BumpMissionSequence(ctx, db.BumpMissionSequenceParams{ID: routine.MissionID, FleetID: wid})
 	if err != nil {
 		return db.Operation{}, err
@@ -4246,6 +4525,12 @@ func (s *Server) createOperationFromRoutine(ctx context.Context, q *db.Queries, 
 	}
 	opMeta := operationMetadataWithSubOperationsEnabled(routine.OperationMetadata, true)
 	opMeta = operationMetadataWithLoop(opMeta, uuidStr(routine.PublicID), uuidStr(pulse.PublicID))
+	if branch := cfg.AutoCommitBranch; branch != "" {
+		m := metadataMap(opMeta)
+		m["auto_commit_branch"] = jsonRaw(branch)
+		m["drop_worktree_on_commit"] = jsonRaw(cfg.DropWorktreeOnCommit)
+		opMeta = metadataBytes(m)
+	}
 	op, err := q.CreateOperation(ctx, db.CreateOperationParams{
 		FleetID: wid, MissionID: routine.MissionID, Sequence: sequence,
 		Title: routine.Title, Body: routineOperationBody(routine), Status: status, Priority: cfg.Priority,
@@ -4256,6 +4541,36 @@ func (s *Server) createOperationFromRoutine(ctx context.Context, q *db.Queries, 
 	if err != nil {
 		return db.Operation{}, err
 	}
+	source := strings.TrimSpace(triggerKind)
+	if source == "" {
+		source = "manual"
+	}
+	prevOpNote := ""
+	if prevPub, ok := metadataString(pulse.Metadata, "source_operation_id"); ok && prevPub != "" {
+		if ppid, ok := parseUUID(prevPub); ok {
+			if prev, err := q.GetOperationByPublicID(ctx, ppid); err == nil && prev.FleetID == wid {
+				src, tgt := op.ID, prev.ID
+				if src > tgt {
+					src, tgt = tgt, src
+				}
+				_, _ = q.CreateRelation(ctx, db.CreateRelationParams{
+					FleetID: wid, SourceID: src, TargetID: tgt, Kind: "relates",
+					CreatedBy: nullableID(createdByUserID),
+				})
+				prevOpNote = fmt.Sprintf(" Continues from operation %s.", operationCodeFromParts(prev))
+				m := metadataMap(op.Metadata)
+				loop := nestedMetadataMap(op.Metadata, "loop")
+				loop["previous_operation_id"] = jsonRaw(prevPub)
+				m["loop"] = json.RawMessage(metadataBytes(loop))
+				op.Metadata = metadataBytes(m)
+				_ = q.SetOperationMetadata(ctx, db.SetOperationMetadataParams{ID: op.ID, FleetID: wid, Metadata: op.Metadata})
+			}
+		}
+	}
+	_, _ = q.CreateComment(ctx, db.CreateCommentParams{
+		OperationID: op.ID, AuthorType: "system",
+		Body: fmt.Sprintf("Opened by routine pulse (%s).%s", source, prevOpNote),
+	})
 	if kind != "" && cfg.StartImmediately {
 		st, err := s.dispatchOrBlockWithSource(ctx, q, op, kind, "", runSourceRoutine)
 		if err != nil {
@@ -4266,11 +4581,196 @@ func (s *Server) createOperationFromRoutine(ctx context.Context, q *db.Queries, 
 	return op, nil
 }
 
+func operationCodeFromParts(op db.Operation) string {
+	id := uuidStr(op.PublicID)
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
+}
+
 func operationMetadataWithLoop(raw []byte, routineID, pulseID string) []byte {
 	m := metadataMap(raw)
 	loop := map[string]any{"routine_id": routineID, "pulse_id": pulseID}
 	m["loop"] = jsonRaw(loop)
 	return metadataBytes(m)
+}
+
+func operationLoopRoutinePublicID(meta []byte) (string, bool) {
+	raw, ok := nestedMetadataMap(meta, "loop")["routine_id"]
+	if !ok {
+		return "", false
+	}
+	var id string
+	if err := json.Unmarshal(raw, &id); err != nil || strings.TrimSpace(id) == "" {
+		return "", false
+	}
+	return strings.TrimSpace(id), true
+}
+
+func isTerminalOperationStatus(status string) bool {
+	return status == "done" || status == "canceled"
+}
+
+func (s *Server) maybeRePulseOnClose(ctx context.Context, op db.Operation, newStatus string) {
+	if !isTerminalOperationStatus(newStatus) {
+		return
+	}
+	if newStatus == "done" && !op.MainOperationID.Valid {
+		if s.maybeQueueAutoCommitOnClose(ctx, op) {
+			return
+		}
+	}
+	s.rePulseOperation(ctx, op)
+}
+
+func (s *Server) loopRoutine(ctx context.Context, op db.Operation) (db.Routine, bool) {
+	routinePublicID, ok := operationLoopRoutinePublicID(op.Metadata)
+	if !ok {
+		return db.Routine{}, false
+	}
+	pid, ok := parseUUID(routinePublicID)
+	if !ok {
+		return db.Routine{}, false
+	}
+	routine, err := s.q.GetRoutineByPublicIDAnyFleet(ctx, pid)
+	if err != nil {
+		return db.Routine{}, false
+	}
+	return routine, true
+}
+
+func (s *Server) operationAutoCommitBranch(ctx context.Context, op db.Operation) string {
+	if branch, ok := metadataString(op.Metadata, "auto_commit_branch"); ok {
+		if b := normalizeSourceBranchName(branch); b != "" {
+			return b
+		}
+	}
+	routine, ok := s.loopRoutine(ctx, op)
+	if !ok {
+		return ""
+	}
+	return routineOperationConfigFromMetadata(routine).AutoCommitBranch
+}
+
+func (s *Server) operationDropWorktreeOnCommit(ctx context.Context, op db.Operation) bool {
+	if raw, ok := metadataMap(op.Metadata)["drop_worktree_on_commit"]; ok {
+		var v bool
+		if json.Unmarshal(raw, &v) == nil {
+			return v
+		}
+	}
+	routine, ok := s.loopRoutine(ctx, op)
+	if !ok {
+		return true
+	}
+	return routineOperationConfigFromMetadata(routine).DropWorktreeOnCommit
+}
+
+func (s *Server) maybeQueueAutoCommitOnClose(ctx context.Context, op db.Operation) bool {
+	branch := s.operationAutoCommitBranch(ctx, op)
+	if branch == "" {
+		return false
+	}
+	worktreeEnabled, err := s.effectiveWorktreeEnabled(ctx, op)
+	if err != nil || !worktreeEnabled {
+		s.failAutoCommitQueue(ctx, op, branch, "worktree is disabled for this operation; cannot auto-commit")
+		return true
+	}
+	run, err := s.q.LatestSourceRunForOperation(ctx, db.LatestSourceRunForOperationParams{
+		OperationID: op.ID, FleetID: op.FleetID,
+	})
+	if err != nil || !run.RoverID.Valid {
+		s.failAutoCommitQueue(ctx, op, branch, "no worktree run available to auto-commit from")
+		return true
+	}
+	meta := metadataBytes(map[string]json.RawMessage{
+		"auto_commit":              jsonRaw(true),
+		"re_pulse_on_success":      jsonRaw(true),
+		"drop_worktree_on_success": jsonRaw(s.operationDropWorktreeOnCommit(ctx, op)),
+	})
+	action, err := s.q.CreateSourceAction(ctx, db.CreateSourceActionParams{
+		FleetID: op.FleetID, OperationID: op.ID,
+		RunID:      pgtype.Int8{Int64: run.ID, Valid: true},
+		RoverID:    run.RoverID,
+		Kind:       "commit_to_branch",
+		BranchName: branch,
+		Metadata:   meta,
+		CreatedBy:  pgtype.Int8{},
+	})
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return true
+		}
+		log.Printf("auto-commit queue failed for operation %d: %v", op.ID, err)
+		s.failAutoCommitQueue(ctx, op, branch, "could not queue auto-commit: "+err.Error())
+		return true
+	}
+	_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
+		OperationID: op.ID, AuthorType: "system",
+		Body: fmt.Sprintf("Queuing auto-commit to branch %s before next loop iteration.", action.BranchName),
+	})
+	return true
+}
+
+func (s *Server) failAutoCommitQueue(ctx context.Context, op db.Operation, branch, reason string) {
+	_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
+		OperationID: op.ID, AuthorType: "system",
+		Body: fmt.Sprintf("Auto-commit to branch %s not queued: %s", branch, reason),
+	})
+	if op.Status == "done" {
+		_ = s.setOperationStatus(ctx, s.q, op, "blocked")
+		_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
+			OperationID: op.ID, AuthorType: "system",
+			Body: "Reopened as blocked because auto-commit could not be queued.",
+		})
+	}
+	s.notifyMembers(ctx, op.FleetID, op.ID, "source_action_failed", "action_required",
+		"Auto-commit blocked: "+op.Title, reason)
+}
+
+func (s *Server) rePulseOperation(ctx context.Context, op db.Operation) {
+	routine, ok := s.loopRoutine(ctx, op)
+	if !ok {
+		return
+	}
+	cfg := routineOperationConfigFromMetadata(routine)
+	if !cfg.RePulseOnClose {
+		return
+	}
+	triggerKind, _, _ := routineTriggerFingerprint(routine.Metadata)
+	if triggerKind == "schedule" {
+		return
+	}
+	if blocked, key, err := s.rePulseBudgetBlocks(ctx, routine); err != nil {
+		return
+	} else if blocked {
+		s.notifyMembers(ctx, routine.FleetID, op.ID, "routine_pulse_failed", "action_required",
+			"Routine re-pulse blocked by budget: "+routine.Title,
+			fmt.Sprintf("Automatic re-pulse after operation closed was blocked by spend budget (%s).", key))
+		return
+	}
+	createdBy := int64(0)
+	if routine.CreatedBy.Valid {
+		createdBy = routine.CreatedBy.Int64
+	}
+	extra := map[string]json.RawMessage{
+		"source":              jsonRaw("loop_close"),
+		"source_operation_id": jsonRaw(uuidStr(op.PublicID)),
+	}
+	_, pulse, err := s.executeRoutinePulse(ctx, routine, createdBy, "loop_close", extra)
+	if err != nil {
+		s.notifyMembers(ctx, routine.FleetID, op.ID, "routine_pulse_failed", "action_required",
+			"Routine re-pulse failed: "+routine.Title,
+			fmt.Sprintf("Automatic re-pulse after operation closed failed: %v", err))
+		return
+	}
+	if pulse.ID != 0 && pulse.Status == "failed" {
+		s.notifyMembers(ctx, routine.FleetID, op.ID, "routine_pulse_failed", "action_required",
+			"Routine re-pulse failed: "+routine.Title,
+			"Automatic re-pulse after operation closed finished with status failed.")
+	}
 }
 
 func mergeMetadataMaps(base map[string]json.RawMessage, extra map[string]json.RawMessage) map[string]json.RawMessage {
@@ -4386,7 +4886,6 @@ func nextCronTime(spec string, after time.Time) (time.Time, bool) {
 	if !ok {
 		return time.Time{}, false
 	}
-	// ponytail: minute scan is enough for MVP; swap to a cron lib if schedules get complex.
 	t := after.UTC().Truncate(time.Minute).Add(time.Minute)
 	for i := 0; i < 366*24*60; i++ {
 		if cron.minute.match(t.Minute()) &&
@@ -4486,6 +4985,7 @@ func (s *Server) deleteRelation(w http.ResponseWriter, r *http.Request) {
 var validSourceActionKind = map[string]bool{
 	"apply_to_source":      true,
 	"create_source_branch": true,
+	"commit_to_branch":     true,
 	"refresh_from_source":  true,
 }
 
@@ -4571,8 +5071,12 @@ func (s *Server) createSourceAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	branchName := strings.TrimSpace(req.BranchName)
-	if req.Kind == "create_source_branch" {
+	if req.Kind == "create_source_branch" || req.Kind == "commit_to_branch" {
 		if branchName == "" {
+			if req.Kind == "commit_to_branch" {
+				httpError(w, http.StatusBadRequest, "branch_name is required for commit_to_branch")
+				return
+			}
 			worktreeName, err := s.operationWorktreeName(ctx, op)
 			if err != nil {
 				serverError(w, err)
@@ -4593,6 +5097,7 @@ func (s *Server) createSourceAction(w http.ResponseWriter, r *http.Request) {
 		RoverID:    run.RoverID,
 		Kind:       req.Kind,
 		BranchName: branchName,
+		Metadata:   []byte("{}"),
 		CreatedBy:  pgtype.Int8{Int64: currentUser(r).ID, Valid: true},
 	})
 	if err != nil {
@@ -4615,6 +5120,16 @@ type acceptedSourceAction struct {
 	OperationWorktreeName string    `json:"operation_worktree_name"`
 	Kind                  string    `json:"kind"`
 	BranchName            string    `json:"branch_name"`
+	DropWorktreeOnSuccess bool      `json:"drop_worktree_on_success"`
+}
+
+func sourceActionDropWorktreeOnSuccess(meta []byte) bool {
+	raw, ok := metadataMap(meta)["drop_worktree_on_success"]
+	if !ok {
+		return false
+	}
+	var v bool
+	return json.Unmarshal(raw, &v) == nil && v
 }
 
 func (s *Server) acceptSourceAction(w http.ResponseWriter, r *http.Request) {
@@ -4644,6 +5159,7 @@ func (s *Server) acceptSourceAction(w http.ResponseWriter, r *http.Request) {
 		ID: uuidStr(action.PublicID), OperationID: uuidStr(op.PublicID), OperationTitle: op.Title,
 		OperationCreatedAt: op.CreatedAt.Time.UTC(), OperationWorktreeName: worktreeName,
 		Kind: action.Kind, BranchName: action.BranchName,
+		DropWorktreeOnSuccess: sourceActionDropWorktreeOnSuccess(action.Metadata),
 	})
 }
 
@@ -4683,7 +5199,8 @@ func (s *Server) completeSourceAction(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "invalid source action state")
 		return
 	}
-	action, err := s.q.CompleteSourceAction(r.Context(), db.CompleteSourceActionParams{
+	ctx := r.Context()
+	action, err := s.q.CompleteSourceAction(ctx, db.CompleteSourceActionParams{
 		PublicID: pid, FleetID: rv.FleetID, RoverID: pgtype.Int8{Int64: rv.ID, Valid: true},
 		Status: req.Status, BranchName: strings.TrimSpace(req.BranchName),
 		CommitSha: strings.TrimSpace(req.CommitSHA), BaseSha: strings.TrimSpace(req.BaseSHA),
@@ -4698,7 +5215,703 @@ func (s *Server) completeSourceAction(w http.ResponseWriter, r *http.Request) {
 		serverError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.sourceActionDTOs(r.Context(), []db.SourceAction{action})[0])
+	s.afterAutoCommitSourceAction(ctx, action)
+	writeJSON(w, http.StatusOK, s.sourceActionDTOs(ctx, []db.SourceAction{action})[0])
+}
+
+func sourceActionWantsRePulse(meta []byte) bool {
+	raw, ok := metadataMap(meta)["re_pulse_on_success"]
+	if !ok {
+		return false
+	}
+	var v bool
+	return json.Unmarshal(raw, &v) == nil && v
+}
+
+func sourceActionHadChanges(meta []byte) bool {
+	raw, ok := metadataMap(meta)["had_changes"]
+	if !ok {
+		return false
+	}
+	var v bool
+	return json.Unmarshal(raw, &v) == nil && v
+}
+
+const maxSelfDevEmptyStreak = 2
+const maxSelfDevLastChangedFiles = 40
+
+func boundChangedFiles(files []string) []string {
+	out := make([]string, 0, len(files))
+	for _, f := range files {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			continue
+		}
+		out = append(out, f)
+		if len(out) >= maxSelfDevLastChangedFiles {
+			break
+		}
+	}
+	return out
+}
+
+func autoCommitMadeProgress(action db.SourceAction) bool {
+	meta := metadataMap(action.Metadata)
+	if raw, ok := meta["tip_advanced"]; ok {
+		var v bool
+		if json.Unmarshal(raw, &v) == nil {
+			return v
+		}
+	}
+	if raw, ok := meta["new_commit"]; ok {
+		var v bool
+		if json.Unmarshal(raw, &v) == nil {
+			return v
+		}
+	}
+	return sourceActionHadChanges(action.Metadata)
+}
+
+func loopMetadataInt(meta []byte, key string) int {
+	raw, ok := nestedMetadataMap(meta, "loop")[key]
+	if !ok {
+		return 0
+	}
+	var n int
+	if json.Unmarshal(raw, &n) == nil {
+		return n
+	}
+	var f float64
+	if json.Unmarshal(raw, &f) == nil {
+		return int(f)
+	}
+	return 0
+}
+
+func loopMetadataString(meta []byte, key string) string {
+	raw, ok := nestedMetadataMap(meta, "loop")[key]
+	if !ok {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return strings.TrimSpace(s)
+	}
+	return ""
+}
+
+func loopMetadataStringSlice(meta []byte, key string) []string {
+	raw, ok := nestedMetadataMap(meta, "loop")[key]
+	if !ok {
+		return nil
+	}
+	var files []string
+	if json.Unmarshal(raw, &files) != nil {
+		return nil
+	}
+	return boundChangedFiles(files)
+}
+
+func mergeOperationLoopMetadata(meta []byte, patch map[string]any) []byte {
+	m := metadataMap(meta)
+	loop := nestedMetadataMap(meta, "loop")
+	for k, v := range patch {
+		loop[k] = jsonRaw(v)
+	}
+	m["loop"] = jsonRaw(loop)
+	return metadataBytes(m)
+}
+
+func (s *Server) afterAutoCommitSourceAction(ctx context.Context, action db.SourceAction) {
+	if action.Kind != "commit_to_branch" || !sourceActionWantsRePulse(action.Metadata) {
+		return
+	}
+	op, err := s.q.GetOperation(ctx, db.GetOperationParams{ID: action.OperationID, FleetID: action.FleetID})
+	if err != nil {
+		return
+	}
+	switch action.Status {
+	case "succeeded":
+		progress := autoCommitMadeProgress(action)
+		streak := loopMetadataInt(op.Metadata, "empty_streak")
+		if progress {
+			streak = 0
+		} else {
+			streak++
+		}
+		loopPatch := map[string]any{"empty_streak": streak}
+		if sha := strings.TrimSpace(action.CommitSha); sha != "" {
+			loopPatch["last_commit_sha"] = sha
+		}
+		if br := strings.TrimSpace(action.BranchName); br != "" {
+			loopPatch["last_commit_branch"] = br
+		}
+		if raw, ok := metadataMap(action.Metadata)["changed_files"]; ok {
+			var files []string
+			if json.Unmarshal(raw, &files) == nil {
+				if bound := boundChangedFiles(files); len(bound) > 0 {
+					loopPatch["last_changed_files"] = bound
+				}
+			}
+		}
+		iter := loopMetadataInt(op.Metadata, "iteration")
+		if iter <= 0 {
+			iter = 1
+		}
+		if progress {
+			iter++
+		}
+		loopPatch["iteration"] = iter
+		_ = s.q.SetOperationMetadata(ctx, db.SetOperationMetadataParams{
+			ID: op.ID, FleetID: op.FleetID, Metadata: mergeOperationLoopMetadata(op.Metadata, loopPatch),
+		})
+		if !progress {
+			_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
+				OperationID: op.ID, AuthorType: "system",
+				Body: fmt.Sprintf("Auto-commit to branch %s made no branch progress (empty streak %d/%d).", action.BranchName, streak, maxSelfDevEmptyStreak),
+			})
+			if streak >= maxSelfDevEmptyStreak {
+				_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
+					OperationID: op.ID, AuthorType: "system",
+					Body: "Self-dev loop paused after consecutive empty auto-commits; no further re-pulse.",
+				})
+				s.notifyMembers(ctx, action.FleetID, op.ID, "source_action_failed", "action_required",
+					"Self-dev loop stalled: "+op.Title,
+					fmt.Sprintf("Auto-commit to %s produced no progress %d times in a row. Inspect the worktree or adjust the routine.", action.BranchName, streak))
+				return
+			}
+		} else {
+			_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
+				OperationID: op.ID, AuthorType: "system",
+				Body: fmt.Sprintf("Auto-committed to branch %s; starting next loop iteration.", action.BranchName),
+			})
+		}
+		if op2, err := s.q.GetOperation(ctx, db.GetOperationParams{ID: op.ID, FleetID: op.FleetID}); err == nil {
+			op = op2
+		}
+		s.rePulseOperation(ctx, op)
+	case "failed", "conflicted":
+		msg := strings.TrimSpace(action.Message)
+		if msg == "" {
+			msg = "auto-commit did not succeed"
+		}
+		_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
+			OperationID: op.ID, AuthorType: "system",
+			Body: fmt.Sprintf("Auto-commit to branch %s %s: %s", action.BranchName, action.Status, msg),
+		})
+		if op.Status == "done" {
+			_ = s.setOperationStatus(ctx, s.q, op, "blocked")
+			_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
+				OperationID: op.ID, AuthorType: "system",
+				Body: "Reopened as blocked because auto-commit did not land; retry or fix the worktree, then mark done to re-queue commit.",
+			})
+		}
+		s.notifyMembers(ctx, action.FleetID, op.ID, "source_action_failed", "action_required",
+			"Auto-commit failed: "+op.Title,
+			fmt.Sprintf("Self-development commit to %s %s — next loop iteration was not started. %s", action.BranchName, action.Status, msg))
+	}
+}
+
+const (
+	maxSkillFiles      = 128
+	maxSkillFileBytes  = 256 * 1024
+	maxSkillTotalBytes = 1024 * 1024
+)
+
+type skillReq struct {
+	FleetID     string         `json:"fleet_id"`
+	Name        string         `json:"name"`
+	Slug        string         `json:"slug"`
+	Description string         `json:"description"`
+	Files       []skillFileReq `json:"files"`
+}
+
+type skillFileReq struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
+type normalizedSkillFile struct {
+	path      string
+	content   string
+	sizeBytes int64
+}
+
+func normalizeSkillSlug(name, slug string) string {
+	source := strings.TrimSpace(slug)
+	if source == "" {
+		source = name
+	}
+	source = strings.ToLower(strings.TrimSpace(source))
+	var b strings.Builder
+	lastDash := false
+	for _, r := range source {
+		if unicode.IsLetter(r) || unicode.IsNumber(r) {
+			b.WriteRune(unicode.ToLower(r))
+			lastDash = false
+			continue
+		}
+		if b.Len() > 0 && !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+func normalizeSkillPath(raw string) (string, bool) {
+	if strings.Contains(raw, "\x00") || strings.Contains(raw, "\\") {
+		return "", false
+	}
+	clean := path.Clean(strings.TrimSpace(raw))
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, "/") || strings.HasPrefix(clean, "../") {
+		return "", false
+	}
+	return clean, true
+}
+
+func normalizeSkillInput(w http.ResponseWriter, req skillReq) (name, slug, description string, files []normalizedSkillFile, ok bool) {
+	name = strings.TrimSpace(req.Name)
+	if name == "" {
+		httpError(w, http.StatusBadRequest, "name is required")
+		return "", "", "", nil, false
+	}
+	slug = normalizeSkillSlug(name, req.Slug)
+	if slug == "" || len(slug) > 80 {
+		httpError(w, http.StatusBadRequest, "slug must be 1-80 letters or numbers")
+		return "", "", "", nil, false
+	}
+	if len(req.Files) == 0 {
+		httpError(w, http.StatusBadRequest, "files are required")
+		return "", "", "", nil, false
+	}
+	if len(req.Files) > maxSkillFiles {
+		httpError(w, http.StatusBadRequest, "too many skill files")
+		return "", "", "", nil, false
+	}
+	seen := map[string]bool{}
+	hasRoot := false
+	totalBytes := 0
+	for _, f := range req.Files {
+		p, ok := normalizeSkillPath(f.Path)
+		if !ok {
+			httpError(w, http.StatusBadRequest, "file paths must stay inside the skill root")
+			return "", "", "", nil, false
+		}
+		if seen[p] {
+			httpError(w, http.StatusBadRequest, "duplicate skill file path")
+			return "", "", "", nil, false
+		}
+		seen[p] = true
+		if p == "SKILL.md" {
+			hasRoot = true
+		}
+		size := len([]byte(f.Content))
+		if size > maxSkillFileBytes {
+			httpError(w, http.StatusBadRequest, "skill file is too large")
+			return "", "", "", nil, false
+		}
+		totalBytes += size
+		if totalBytes > maxSkillTotalBytes {
+			httpError(w, http.StatusBadRequest, "skill files are too large")
+			return "", "", "", nil, false
+		}
+		files = append(files, normalizedSkillFile{path: p, content: f.Content, sizeBytes: int64(size)})
+	}
+	if !hasRoot {
+		httpError(w, http.StatusBadRequest, "SKILL.md is required")
+		return "", "", "", nil, false
+	}
+	return name, slug, strings.TrimSpace(req.Description), files, true
+}
+
+func (s *Server) skillDTO(ctx context.Context, q *db.Queries, skill db.Skill) (skillDTO, error) {
+	files, err := q.ListSkillFiles(ctx, skill.ID)
+	if err != nil {
+		return skillDTO{}, err
+	}
+	return toSkillDTO(skill, files), nil
+}
+
+func replaceSkillFiles(ctx context.Context, q *db.Queries, skillID int64, files []normalizedSkillFile) error {
+	if err := q.DeleteSkillFiles(ctx, skillID); err != nil {
+		return err
+	}
+	for _, f := range files {
+		if err := q.CreateSkillFile(ctx, db.CreateSkillFileParams{SkillID: skillID, Path: f.path, Content: f.content, SizeBytes: f.sizeBytes}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func skillConflict(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+func (s *Server) listSkills(w http.ResponseWriter, r *http.Request) {
+	fleetIDs, ok := s.fleetIDsFromQuery(w, r)
+	if !ok {
+		return
+	}
+	opRaw := strings.TrimSpace(r.URL.Query().Get("operation_id"))
+	crewRaw := strings.TrimSpace(r.URL.Query().Get("crew_id"))
+	if opRaw != "" && crewRaw != "" {
+		httpError(w, http.StatusBadRequest, "set at most one of operation_id or crew_id")
+		return
+	}
+	includeArchived := r.URL.Query().Get("include_archived") == "true" || r.URL.Query().Get("include_archived") == "1"
+	ctx := r.Context()
+
+	if opRaw != "" {
+		pid, ok := parseUUID(opRaw)
+		if !ok {
+			httpError(w, http.StatusBadRequest, "invalid operation_id")
+			return
+		}
+		op, wid, ok := s.operationPublicIDInFleet(w, r, pid)
+		if !ok {
+			return
+		}
+		if !s.requireOwnerOrAdmin(w, r, wid) {
+			return
+		}
+		if len(fleetIDs) != 1 || fleetIDs[0] != wid {
+			httpError(w, http.StatusBadRequest, "fleet_id must match the operation's fleet")
+			return
+		}
+		skills, err := s.q.ListOperationSkills(ctx, db.ListOperationSkillsParams{OperationID: op.ID, FleetID: wid})
+		if err != nil {
+			serverError(w, err)
+			return
+		}
+		s.writeSkillDTOs(w, ctx, skills)
+		return
+	}
+
+	if crewRaw != "" {
+		pid, ok := parseUUID(crewRaw)
+		if !ok {
+			httpError(w, http.StatusBadRequest, "invalid crew_id")
+			return
+		}
+		crew, err := s.q.GetCrewByPublicID(ctx, pid)
+		if err != nil {
+			httpError(w, http.StatusNotFound, "crew not found")
+			return
+		}
+		if !s.requireFleetMember(w, r, crew.FleetID) {
+			return
+		}
+		if !s.requireOwnerOrAdmin(w, r, crew.FleetID) {
+			return
+		}
+		if len(fleetIDs) != 1 || fleetIDs[0] != crew.FleetID {
+			httpError(w, http.StatusBadRequest, "fleet_id must match the crew's fleet")
+			return
+		}
+		skills, err := s.q.ListCrewSkills(ctx, db.ListCrewSkillsParams{CrewID: crew.ID, FleetID: crew.FleetID})
+		if err != nil {
+			serverError(w, err)
+			return
+		}
+		s.writeSkillDTOs(w, ctx, skills)
+		return
+	}
+
+	out := []skillDTO{}
+	for _, wid := range fleetIDs {
+		if !s.requireOwnerOrAdmin(w, r, wid) {
+			return
+		}
+		skills, err := s.q.ListSkills(ctx, db.ListSkillsParams{FleetID: wid, IncludeArchived: includeArchived})
+		if err != nil {
+			serverError(w, err)
+			return
+		}
+		for _, skill := range skills {
+			dto, err := s.skillDTO(ctx, s.q, skill)
+			if err != nil {
+				serverError(w, err)
+				return
+			}
+			out = append(out, dto)
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) writeSkillDTOs(w http.ResponseWriter, ctx context.Context, skills []db.Skill) {
+	out := make([]skillDTO, 0, len(skills))
+	for _, skill := range skills {
+		dto, err := s.skillDTO(ctx, s.q, skill)
+		if err != nil {
+			serverError(w, err)
+			return
+		}
+		out = append(out, dto)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) createSkill(w http.ResponseWriter, r *http.Request) {
+	var req skillReq
+	if !readJSON(w, r, &req) {
+		return
+	}
+	wid, ok := s.fleetIDFromBody(w, r, req.FleetID)
+	if !ok {
+		return
+	}
+	if !s.requireOwnerOrAdmin(w, r, wid) {
+		return
+	}
+	name, slug, description, files, ok := normalizeSkillInput(w, req)
+	if !ok {
+		return
+	}
+	ctx := r.Context()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	defer tx.Rollback(ctx)
+	qtx := s.q.WithTx(tx)
+	skill, err := qtx.CreateSkill(ctx, db.CreateSkillParams{
+		FleetID: wid, Name: name, Slug: slug, Description: description,
+		CreatedBy: pgtype.Int8{Int64: currentUser(r).ID, Valid: true},
+	})
+	if err != nil {
+		if skillConflict(err) {
+			httpError(w, http.StatusConflict, "that skill slug already exists")
+			return
+		}
+		serverError(w, err)
+		return
+	}
+	if err := replaceSkillFiles(ctx, qtx, skill.ID, files); err != nil {
+		serverError(w, err)
+		return
+	}
+	dto, err := s.skillDTO(ctx, qtx, skill)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, dto)
+}
+
+func (s *Server) skillByPath(w http.ResponseWriter, r *http.Request) (db.Skill, bool) {
+	pid, ok := pathUUID(w, r)
+	if !ok {
+		return db.Skill{}, false
+	}
+	skill, err := s.q.GetSkillByPublicID(r.Context(), pid)
+	if err != nil {
+		httpError(w, http.StatusNotFound, "skill not found")
+		return db.Skill{}, false
+	}
+	if !s.requireOwnerOrAdmin(w, r, skill.FleetID) {
+		return db.Skill{}, false
+	}
+	return skill, true
+}
+
+func (s *Server) getSkill(w http.ResponseWriter, r *http.Request) {
+	skill, ok := s.skillByPath(w, r)
+	if !ok {
+		return
+	}
+	dto, err := s.skillDTO(r.Context(), s.q, skill)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, dto)
+}
+
+func (s *Server) updateSkill(w http.ResponseWriter, r *http.Request) {
+	skill, ok := s.skillByPath(w, r)
+	if !ok {
+		return
+	}
+	if skill.Archived {
+		httpError(w, http.StatusNotFound, "skill not found")
+		return
+	}
+	var req skillReq
+	if !readJSON(w, r, &req) {
+		return
+	}
+	name, slug, description, files, ok := normalizeSkillInput(w, req)
+	if !ok {
+		return
+	}
+	ctx := r.Context()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	defer tx.Rollback(ctx)
+	qtx := s.q.WithTx(tx)
+	updated, err := qtx.UpdateSkill(ctx, db.UpdateSkillParams{ID: skill.ID, FleetID: skill.FleetID, Name: name, Slug: slug, Description: description})
+	if err != nil {
+		if skillConflict(err) {
+			httpError(w, http.StatusConflict, "that skill slug already exists")
+			return
+		}
+		if errors.Is(err, pgx.ErrNoRows) {
+			httpError(w, http.StatusNotFound, "skill not found")
+			return
+		}
+		serverError(w, err)
+		return
+	}
+	if err := replaceSkillFiles(ctx, qtx, skill.ID, files); err != nil {
+		serverError(w, err)
+		return
+	}
+	dto, err := s.skillDTO(ctx, qtx, updated)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, dto)
+}
+
+func (s *Server) deleteSkill(w http.ResponseWriter, r *http.Request) {
+	skill, ok := s.skillByPath(w, r)
+	if !ok {
+		return
+	}
+	if err := s.q.ArchiveSkill(r.Context(), db.ArchiveSkillParams{ID: skill.ID, FleetID: skill.FleetID}); err != nil {
+		serverError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) skillInFleetByPath(w http.ResponseWriter, r *http.Request, fleetID int64, requireActive bool) (db.Skill, bool) {
+	pid, ok := parseUUID(r.PathValue("skill_id"))
+	if !ok {
+		httpError(w, http.StatusBadRequest, "invalid skill")
+		return db.Skill{}, false
+	}
+	skill, err := s.q.GetSkillByPublicID(r.Context(), pid)
+	if err != nil || skill.FleetID != fleetID || (requireActive && skill.Archived) {
+		httpError(w, http.StatusNotFound, "skill not found")
+		return db.Skill{}, false
+	}
+	return skill, true
+}
+
+func (s *Server) attachOperationSkill(w http.ResponseWriter, r *http.Request) {
+	op, wid, ok := s.operationInFleet(w, r)
+	if !ok {
+		return
+	}
+	if !s.requireOwnerOrAdmin(w, r, wid) {
+		return
+	}
+	skill, ok := s.skillInFleetByPath(w, r, wid, true)
+	if !ok {
+		return
+	}
+	if err := s.q.AddOperationSkill(r.Context(), db.AddOperationSkillParams{
+		FleetID: wid, OperationID: op.ID, SkillID: skill.ID,
+		CreatedBy: pgtype.Int8{Int64: currentUser(r).ID, Valid: true},
+	}); err != nil {
+		serverError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) detachOperationSkill(w http.ResponseWriter, r *http.Request) {
+	op, wid, ok := s.operationInFleet(w, r)
+	if !ok {
+		return
+	}
+	if !s.requireOwnerOrAdmin(w, r, wid) {
+		return
+	}
+	skill, ok := s.skillInFleetByPath(w, r, wid, false)
+	if !ok {
+		return
+	}
+	if err := s.q.RemoveOperationSkill(r.Context(), db.RemoveOperationSkillParams{OperationID: op.ID, SkillID: skill.ID}); err != nil {
+		serverError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) attachCrewSkill(w http.ResponseWriter, r *http.Request) {
+	crewID, wid, ok := s.crewInFleet(w, r)
+	if !ok {
+		return
+	}
+	if !s.requireOwnerOrAdmin(w, r, wid) {
+		return
+	}
+	skill, ok := s.skillInFleetByPath(w, r, wid, true)
+	if !ok {
+		return
+	}
+	if err := s.q.AddCrewSkill(r.Context(), db.AddCrewSkillParams{
+		FleetID: wid, CrewID: crewID, SkillID: skill.ID,
+		CreatedBy: pgtype.Int8{Int64: currentUser(r).ID, Valid: true},
+	}); err != nil {
+		serverError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) detachCrewSkill(w http.ResponseWriter, r *http.Request) {
+	crewID, wid, ok := s.crewInFleet(w, r)
+	if !ok {
+		return
+	}
+	if !s.requireOwnerOrAdmin(w, r, wid) {
+		return
+	}
+	skill, ok := s.skillInFleetByPath(w, r, wid, false)
+	if !ok {
+		return
+	}
+	if err := s.q.RemoveCrewSkill(r.Context(), db.RemoveCrewSkillParams{CrewID: crewID, SkillID: skill.ID}); err != nil {
+		serverError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) resolvedOperationSkillDTOs(ctx context.Context, op db.Operation) ([]skillDTO, error) {
+	skills, err := s.q.ListResolvedOperationSkills(ctx, db.ListResolvedOperationSkillsParams{OperationID: op.ID, FleetID: op.FleetID})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]skillDTO, 0, len(skills))
+	for _, skill := range skills {
+		dto, err := s.skillDTO(ctx, s.q, skill)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, dto)
+	}
+	return out, nil
 }
 
 // ---- pull requests (manual linking; GitHub auto-link not yet supported) ----
@@ -5054,8 +6267,6 @@ func (s *Server) postComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Auto-resume: a human reply to an AI-assigned operation resumes its session with the
-	// reply as the prompt — unless a run is already in flight.
 	atype := ""
 	if op.AssigneeType.Valid {
 		atype = op.AssigneeType.String
@@ -5066,7 +6277,6 @@ func (s *Server) postComment(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, s.commentDTOs(ctx, []db.Comment{c}, currentUser(r).ID)[0])
 }
 
-// resumeAfterComment queues a continuation after a human reply.
 func (s *Server) resumeAfterComment(ctx context.Context, op db.Operation, kind, prompt string) bool {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -5170,8 +6380,6 @@ func validPilotKind(kind string) bool {
 	return true
 }
 
-// listPilotCapabilities reports, for each pilot kind, how many of the fleet's
-// rovers it can drive and how many are online. Drives the assign picker.
 func (s *Server) listPilotCapabilities(w http.ResponseWriter, r *http.Request) {
 	fleetIDs, ok := s.fleetIDsFromQuery(w, r)
 	if !ok {
@@ -5354,7 +6562,6 @@ func (s *Server) crewInFleet(w http.ResponseWriter, r *http.Request) (crewID, fl
 	return crew.ID, crew.FleetID, true
 }
 
-// resolveCrewUser maps a member public id to a fleet user's internal id.
 func (s *Server) resolveCrewUser(ctx context.Context, fleet int64, mid string) (int64, bool) {
 	pid, ok := parseUUID(mid)
 	if !ok {
@@ -5546,8 +6753,6 @@ func (s *Server) memberRole(r *http.Request, fleetID int64) string {
 }
 func isOwnerOrAdmin(role string) bool { return role == "owner" || role == "admin" }
 
-// requireOwnerOrAdmin writes 403 and returns false unless the caller is an owner/admin
-// of the fleet. Used to gate infrastructure/credential operations.
 func (s *Server) requireOwnerOrAdmin(w http.ResponseWriter, r *http.Request, fleetID int64) bool {
 	if !isOwnerOrAdmin(s.memberRole(r, fleetID)) {
 		httpError(w, http.StatusForbidden, "owners/admins only")
@@ -5556,7 +6761,6 @@ func (s *Server) requireOwnerOrAdmin(w http.ResponseWriter, r *http.Request, fle
 	return true
 }
 
-// roverOnline reports whether a rover has heartbeated within the presence window.
 func (s *Server) roverOnline(ctx context.Context, roverID int64) bool {
 	ls, err := s.q.RoverLastSeen(ctx, roverID)
 	if err != nil || !ls.Valid {
@@ -5565,7 +6769,6 @@ func (s *Server) roverOnline(ctx context.Context, roverID int64) bool {
 	return time.Since(ls.Time) < roverOnlineWindow
 }
 
-// isPersonalFleet reports whether a fleet is a user's immutable personal fleet.
 func (s *Server) isPersonalFleet(ctx context.Context, fleetID int64) bool {
 	kind, _ := s.q.GetFleetKind(ctx, fleetID)
 	return kind == "personal"
@@ -5754,7 +6957,6 @@ func (s *Server) listInvitations(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// invitationByPath resolves the {id} invitation public id, or writes 404.
 func (s *Server) invitationByPath(w http.ResponseWriter, r *http.Request) (db.Invitation, bool) {
 	pid, ok := pathUUID(w, r)
 	if !ok {
@@ -5987,7 +7189,9 @@ func (s *Server) getRun(w http.ResponseWriter, r *http.Request) {
 	for i, m := range msgs {
 		telemetry[i] = toRunMessageDTO(m)
 	}
-	writeJSON(w, http.StatusOK, runDetail{Run: s.runDTOs(ctx, []db.Run{run})[0], Events: eventDTOs, Artifacts: artifactDTOs, Messages: telemetry})
+	dto := s.runDTOs(ctx, []db.Run{run})[0]
+	dto.Usage = s.loadRunUsageDTO(ctx, run.ID)
+	writeJSON(w, http.StatusOK, runDetail{Run: dto, Events: eventDTOs, Artifacts: artifactDTOs, Messages: telemetry})
 }
 
 func (s *Server) cancelRun(w http.ResponseWriter, r *http.Request) {
@@ -6055,6 +7259,7 @@ type acceptedRun struct {
 	OperationCreatedAt      time.Time       `json:"operation_created_at"`
 	OperationWorktreeName   string          `json:"operation_worktree_name"`
 	WorktreeEnabled         bool            `json:"worktree_enabled"`
+	WorktreeBaseRef         string          `json:"worktree_base_ref,omitempty"`
 	Status                  string          `json:"status"`
 	Pilot                   string          `json:"pilot"`
 	Command                 string          `json:"command"`
@@ -6062,6 +7267,7 @@ type acceptedRun struct {
 	SessionID               string          `json:"session_id"`
 	CanProposeSubOperations bool            `json:"can_propose_sub_operations"`
 	Assets                  []acceptedAsset `json:"assets,omitempty"`
+	Skills                  []skillDTO      `json:"skills,omitempty"`
 }
 
 type acceptedAsset struct {
@@ -6074,8 +7280,6 @@ type acceptedAsset struct {
 
 // removeRoverEnrollment lets a rover delete itself (connection-token auth) — used by `rover remove`.
 
-// roverRunID resolves the {id} run public id to its internal id, scoped to the
-// run the calling rover actually accepted — a rover cannot touch another rover's run.
 func (s *Server) roverRunID(w http.ResponseWriter, r *http.Request) (int64, int64, bool) {
 	rv := currentRover(r)
 	pid, ok := pathUUID(w, r)
@@ -6095,22 +7299,64 @@ func (s *Server) roverRunID(w http.ResponseWriter, r *http.Request) (int64, int6
 func (s *Server) acceptRun(w http.ResponseWriter, r *http.Request) {
 	rv := currentRover(r)
 	ctx := r.Context()
+	roverRow, err := s.q.GetRoverByID(ctx, rv.ID)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	if blocked, periodKey, err := s.preAcceptBudgetBlocks(ctx, roverRow); err != nil {
+		serverError(w, err)
+		return
+	} else if blocked {
+		s.maybeSignalBudgetExhausted(ctx, roverRow.FleetID, periodKey, roverRow.Name)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	sub, unsubscribe := s.notifier.Subscribe(runQueuedChannel)
 	defer unsubscribe()
 	deadline := time.Now().Add(s.longPoll)
+	skippedRunIDs := []int64{}
 
 	for {
+		if fresh, err := s.q.GetRoverByID(ctx, rv.ID); err == nil {
+			roverRow = fresh
+		}
+		if blocked, periodKey, err := s.preAcceptBudgetBlocks(ctx, roverRow); err != nil {
+			serverError(w, err)
+			return
+		} else if blocked {
+			s.maybeSignalBudgetExhausted(ctx, roverRow.FleetID, periodKey, roverRow.Name)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		run, err := s.q.AcceptNextRun(ctx, db.AcceptNextRunParams{
-			FleetID:   rv.FleetID,
-			RoverID:   pgtype.Int8{Int64: rv.ID, Valid: true},
-			RoverTags: rv.Tags,
+			FleetID:       rv.FleetID,
+			RoverID:       pgtype.Int8{Int64: rv.ID, Valid: true},
+			RoverTags:     rv.Tags,
+			SkippedRunIds: skippedRunIDs,
 		})
 		if err == nil {
+			if blocked, periodKey, berr := s.postAcceptBudgetBlocks(ctx, run); berr != nil {
+				serverError(w, berr)
+				return
+			} else if blocked {
+				if _, rerr := s.q.RequeueRun(ctx, db.RequeueRunParams{ID: run.ID, FleetID: run.FleetID}); rerr != nil {
+					serverError(w, rerr)
+					return
+				}
+				s.maybeSignalBudgetExhausted(ctx, run.FleetID, periodKey, roverRow.Name)
+				skippedRunIDs = append(skippedRunIDs, run.ID)
+				continue
+			}
 			s.respondAccepted(ctx, w, run)
 			return
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
 			serverError(w, err)
+			return
+		}
+		if len(skippedRunIDs) > 0 {
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		wait := time.Until(deadline)
@@ -6146,6 +7392,7 @@ func (s *Server) respondAccepted(ctx context.Context, w http.ResponseWriter, run
 	resp := acceptedRun{
 		ID: uuidStr(run.PublicID), OperationID: opUUID, OperationCreatedAt: op.CreatedAt.Time.UTC(),
 		WorktreeEnabled: worktreeEnabled,
+		WorktreeBaseRef: s.operationAutoCommitBranch(ctx, op),
 		Status:          run.Status, Pilot: run.Pilot, Command: run.Command,
 	}
 	resp.OperationWorktreeName, err = s.operationWorktreeName(ctx, op)
@@ -6159,12 +7406,13 @@ func (s *Server) respondAccepted(ctx context.Context, w http.ResponseWriter, run
 	if operationSubOperationsEnabled(op) && op.AssigneeType.String == "crew" && !op.MainOperationID.Valid {
 		resp.CanProposeSubOperations = true
 	}
-	// A resume run carries its prompt (the human reply) in command; a first run
-	// derives it from the operation.
 	if run.Command != "" {
 		resp.Prompt = run.Command
 	} else {
 		resp.Prompt = s.contextPrompt(ctx, s.q, op)
+	}
+	if branch := resp.WorktreeBaseRef; branch != "" && run.Command == "" {
+		resp.Prompt = s.appendSelfDevelopmentPrompt(resp.Prompt, branch, !op.MainOperationID.Valid)
 	}
 	assetText := resp.Prompt
 	assetText = s.operationAssetReferenceText(ctx, s.q, op, run.Command)
@@ -6173,6 +7421,12 @@ func (s *Server) respondAccepted(ctx context.Context, w http.ResponseWriter, run
 		serverError(w, err)
 		return
 	}
+	skills, err := s.resolvedOperationSkillDTOs(ctx, op)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	resp.Skills = skills
 	resp.Assets = acceptedAssetsFromRows(assets)
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -6213,7 +7467,6 @@ func (s *Server) effectiveOperationContext(ctx context.Context, q *db.Queries, o
 	return effectiveContextFromMetadata(op.Metadata, missionMetadata, fleetMetadata)
 }
 
-// effectiveContextFromMetadata stacks non-empty fleet → mission → operation context.
 func effectiveContextFromMetadata(operationMetadata, missionMetadata, fleetMetadata []byte) string {
 	type layer struct {
 		label string
@@ -6395,6 +7648,12 @@ func (s *Server) applyRunCompletion(ctx context.Context, wid int64, run db.Run, 
 	if err != nil {
 		return
 	}
+	selfDevDefaultDone := false
+	if !pilotSet && !run.NeedsInput && operationStatus == "in_review" && !op.MainOperationID.Valid &&
+		s.operationAutoCommitBranch(ctx, op) != "" {
+		operationStatus = "done"
+		selfDevDefaultDone = true
+	}
 	var mainOperation db.Operation
 	orchestratedSubOperation := false
 	if op.MainOperationID.Valid {
@@ -6402,8 +7661,15 @@ func (s *Server) applyRunCompletion(ctx context.Context, wid int64, run db.Run, 
 			mainOperation, orchestratedSubOperation = p, p.Orchestrating
 		}
 	}
+	if run.NeedsInput && (operationStatus == "in_review" || operationStatus == "blocked") {
+		if s.pilotHandoffForInput(ctx, op, run) {
+			return
+		}
+	}
+
+	prevStatus := op.Status
 	_ = s.setOperationStatus(ctx, s.q, op, operationStatus)
-	if pilotSet && operationStatus == "done" && !op.MainOperationID.Valid {
+	if (pilotSet || selfDevDefaultDone) && operationStatus == "done" && !op.MainOperationID.Valid {
 		s.markReviewedSubOperationsDone(ctx, wid, op.ID, nil)
 	}
 	if pilotSet {
@@ -6411,6 +7677,16 @@ func (s *Server) applyRunCompletion(ctx context.Context, wid int64, run db.Run, 
 			OperationID: run.OperationID, AuthorType: "system",
 			Body: "Pilot set status: " + operationStatus,
 		})
+	} else if selfDevDefaultDone {
+		_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
+			OperationID: run.OperationID, AuthorType: "system",
+			Body: "Self-development loop: treating successful run as done (no human review between iterations).",
+		})
+	}
+	if isTerminalOperationStatus(operationStatus) && !isTerminalOperationStatus(prevStatus) {
+		if fresh, err := s.q.GetOperation(ctx, db.GetOperationParams{ID: op.ID, FleetID: wid}); err == nil {
+			s.maybeRePulseOnClose(ctx, fresh, operationStatus)
+		}
 	}
 	settled := true
 	switch operationStatus {
@@ -6424,7 +7700,7 @@ func (s *Server) applyRunCompletion(ctx context.Context, wid int64, run db.Run, 
 		}
 		if run.NeedsInput {
 			s.notifyMembers(ctx, wid, run.OperationID, "input_requested", "action_required",
-				"Needs input: "+op.Title, "A pilot is waiting for your answer to continue.")
+				"Needs input: "+op.Title, "No other pilot could continue from context — a human answer is needed.")
 		} else {
 			s.notifyMembers(ctx, wid, run.OperationID, "review_requested", "action_required",
 				"Review: "+op.Title, "A pilot finished work and needs your review.")
@@ -6464,7 +7740,13 @@ func (s *Server) markReviewedSubOperationsDone(ctx context.Context, wid, mainOpe
 	}
 	for _, subOperation := range subOperations {
 		if subOperation.Status == "in_review" && !skip[subOperation.ID] {
+			prev := subOperation.Status
 			_ = s.setOperationStatus(ctx, s.q, subOperation, "done")
+			if isTerminalOperationStatus("done") && !isTerminalOperationStatus(prev) {
+				if fresh, err := s.q.GetOperation(ctx, db.GetOperationParams{ID: subOperation.ID, FleetID: wid}); err == nil {
+					s.maybeRePulseOnClose(ctx, fresh, "done")
+				}
+			}
 		}
 	}
 }
@@ -6494,6 +7776,7 @@ type runResultReq struct {
 	Operations            []operationReq             `json:"operations"`
 	SubOperations         []subOperationReq          `json:"sub_operations"`
 	SubOperationsFeedback []subOperationsFeedbackReq `json:"sub_operations_feedback"`
+	Usage                 *runUsagePayload           `json:"usage"`
 }
 
 func (s *Server) runResult(w http.ResponseWriter, r *http.Request) {
@@ -6559,12 +7842,12 @@ func (s *Server) runResult(w http.ResponseWriter, r *http.Request) {
 	if len(req.SubOperationsFeedback) > 0 {
 		s.applySubOperationsFeedback(ctx, wid, run, req.SubOperationsFeedback)
 	}
+	s.storeRunUsage(ctx, run, req.Usage)
 	_, _ = s.q.AppendRunEvent(ctx, db.AppendRunEventParams{RunID: id, Kind: "status", Message: status})
 	s.applyRunCompletion(ctx, wid, run, status)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// spawnOperations creates explicit top-level operations from a pilot result.
 func (s *Server) spawnOperations(ctx context.Context, wid int64, sourceRun db.Run, operations []operationReq) {
 	sourceOperation, err := s.q.GetOperation(ctx, db.GetOperationParams{ID: sourceRun.OperationID, FleetID: wid})
 	if err != nil {
@@ -6686,7 +7969,6 @@ func (s *Server) applySubOperationsFeedback(ctx context.Context, wid int64, run 
 	_ = s.setOperationStatus(ctx, s.q, mainOperation, "in_progress")
 }
 
-// spawnSubOperations creates the captain's sub-operations.
 func (s *Server) spawnSubOperations(ctx context.Context, wid int64, splitRun db.Run, subOperations []subOperationReq) {
 	mainOperation, err := s.q.GetOperation(ctx, db.GetOperationParams{ID: splitRun.OperationID, FleetID: wid})
 	if err != nil || !operationSubOperationsEnabled(mainOperation) || mainOperation.AssigneeType.String != "crew" || !mainOperation.AssigneeID.Valid || mainOperation.MainOperationID.Valid {
@@ -6758,7 +8040,6 @@ func (s *Server) spawnSubOperations(ctx context.Context, wid int64, splitRun db.
 	_ = tx.Commit(ctx)
 }
 
-// maybeReconvene queues the captain once every sub-operation has settled.
 func (s *Server) maybeReconvene(ctx context.Context, wid int64, mainOperation db.Operation) {
 	if !mainOperation.Orchestrating || mainOperation.AssigneeType.String != "crew" || !mainOperation.AssigneeID.Valid {
 		return
@@ -6795,7 +8076,6 @@ func (s *Server) maybeReconvene(ctx context.Context, wid int64, mainOperation db
 	})
 }
 
-// reconcilePrompt gives the captain each sub-operation result and diff.
 func (s *Server) reconcilePrompt(ctx context.Context, mainOperation db.Operation) string {
 	var b strings.Builder
 	b.WriteString(s.contextPrompt(ctx, s.q, mainOperation))
@@ -6820,9 +8100,16 @@ func (s *Server) reconcilePrompt(ctx context.Context, mainOperation db.Operation
 	}
 	b.WriteString("\nReview each sub-operation above as the gatekeeper, the same way you would " +
 		"review private helper-agent work. Apply accepted non-overlapping changes into this " +
-		"operation's working directory, resolve conflicts, and verify. If every reviewed " +
+		"operation's working directory (from the diffs and reports above — each sub-operation " +
+		"worked in its own isolated worktree), resolve conflicts, run verification and e2e " +
+		"tests as appropriate, and leave a single consolidated working tree. If every reviewed " +
 		"sub-operation is acceptable, finish with @@UFO_STATUS:done@@ so UFO closes the " +
-		"reviewed sub-operations. If a sub-operation report is incomplete but you can verify the " +
+		"reviewed sub-operations")
+	if branch := s.operationAutoCommitBranch(ctx, mainOperation); branch != "" {
+		fmt.Fprintf(&b, ", auto-commits this worktree to branch %q (creating it if missing), "+
+			"and starts the next self-development iteration", branch)
+	}
+	b.WriteString(". If a sub-operation report is incomplete but you can verify the " +
 		"answer yourself from available tools, repo files, API, or database state, do that " +
 		"and close it instead of bouncing it back. If a sub-operation needs rework or clarification, keep it " +
 		"open and end with @@UFO_SUB_OPERATIONS_FEEDBACK@@ followed by a JSON array of " +
@@ -6833,7 +8120,26 @@ func (s *Server) reconcilePrompt(ctx context.Context, mainOperation db.Operation
 	return b.String()
 }
 
-// createSubOperation creates a sub-operation under the same mission.
+func (s *Server) appendSelfDevelopmentPrompt(prompt, branch string, isMain bool) string {
+	var b strings.Builder
+	b.WriteString(prompt)
+	b.WriteString("\n\n--- Self-development loop ---\n")
+	fmt.Fprintf(&b, "This operation is part of an unattended self-development loop on branch %q.\n", branch)
+	b.WriteString("Work only in this operation's isolated worktree (already based on that branch when it exists).\n")
+	if isMain {
+		b.WriteString("Prefer splitting independent non-overlapping work into sub-operations " +
+			"(@@UFO_SUB_OPERATIONS@@) so each piece runs in its own worktree in parallel. " +
+			"After sub-operations settle, you will reconvene to consolidate their changes, " +
+			"fix conflicts, verify, and run e2e tests here. When the iteration is complete, " +
+			"finish with @@UFO_STATUS:done@@ — UFO will commit this worktree to the branch " +
+			"and open the next iteration. Do not wait for a human review between iterations.\n")
+	} else {
+		b.WriteString("Stay scoped to your assigned area so the main operation can merge cleanly. " +
+			"When finished, leave a clear report of what changed; the main operation consolidates.\n")
+	}
+	return b.String()
+}
+
 func (s *Server) createSubOperation(ctx context.Context, q *db.Queries, wid int64, mainOperation db.Operation, title, body, atype string, aid int64, akind string) (db.Operation, error) {
 	sequence, err := q.BumpMissionSequence(ctx, db.BumpMissionSequenceParams{ID: mainOperation.MissionID, FleetID: wid})
 	if err != nil {
@@ -6852,12 +8158,20 @@ func (s *Server) createSubOperation(ctx context.Context, q *db.Queries, wid int6
 			body = "Main operation: " + mainOperationID
 		}
 	}
+	subMeta := operationMetadataWithSubOperationsEnabled(nil, false)
+	if branch, ok := metadataString(mainOperation.Metadata, "auto_commit_branch"); ok {
+		if b := normalizeSourceBranchName(branch); b != "" {
+			m := metadataMap(subMeta)
+			m["auto_commit_branch"] = jsonRaw(b)
+			subMeta = metadataBytes(m)
+		}
+	}
 	subOperation, err := q.CreateOperation(ctx, db.CreateOperationParams{
 		FleetID: wid, MissionID: mainOperation.MissionID, Sequence: sequence, MainOperationID: pgtype.Int8{Int64: mainOperation.ID, Valid: true},
 		Title: title, Body: body, Status: status,
 		AssigneeType: optText(atype), AssigneeID: nullableID(aid), AssigneePilotKind: optText(akind),
 		RequiredTags: []string{}, ExcludedTags: []string{},
-		Metadata: operationMetadataWithSubOperationsEnabled(nil, false), CreatedBy: mainOperation.CreatedBy,
+		Metadata: subMeta, CreatedBy: mainOperation.CreatedBy,
 	})
 	if err != nil {
 		return db.Operation{}, err
@@ -6870,8 +8184,6 @@ func (s *Server) createSubOperation(ctx context.Context, q *db.Queries, wid int6
 	return subOperation, nil
 }
 
-// operationStatusForRun maps a terminal run state to an operation status. A
-// successful run hands off to the human for review rather than auto-closing.
 func operationStatusForRun(runState string) (string, bool) {
 	switch runState {
 	case "succeeded":
@@ -6883,7 +8195,6 @@ func operationStatusForRun(runState string) (string, bool) {
 	}
 }
 
-// notifyMembers drops a signal for every human member of the fleet.
 func (s *Server) notifyMembers(ctx context.Context, fleetID, opID int64, typ, severity, title, body string) {
 	ids, err := s.q.ListFleetMemberIDs(ctx, fleetID)
 	if err != nil {
@@ -6892,7 +8203,7 @@ func (s *Server) notifyMembers(ctx context.Context, fleetID, opID int64, typ, se
 	for _, uid := range ids {
 		_, _ = s.q.CreateSignal(ctx, db.CreateSignalParams{
 			FleetID: fleetID, RecipientUserID: uid,
-			OperationID: pgtype.Int8{Int64: opID, Valid: true},
+			OperationID: nullableID(opID),
 			Type:        typ, Severity: severity, Title: title, Body: body,
 		})
 	}
@@ -7014,8 +8325,6 @@ type appendRunMessageReq struct {
 	Output   string          `json:"output"`
 }
 
-// appendRunMessage records one typed transcript entry (the rover's telemetry of
-// what the pilot did) for a run.
 func (s *Server) appendRunMessage(w http.ResponseWriter, r *http.Request) {
 	id, _, ok := s.roverRunID(w, r)
 	if !ok {
@@ -7062,8 +8371,6 @@ func normalizeKey(s string) string {
 	return b.String()
 }
 
-// createMission makes a mission: a fleet-scoped operation grouping whose key
-// prefixes operation codes.
 func (s *Server) createMission(w http.ResponseWriter, r *http.Request) {
 	var req missionReq
 	if !readJSON(w, r, &req) {
@@ -7099,8 +8406,6 @@ func (s *Server) createMission(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, toMissionDTO(m))
 }
 
-// updateMission renames a mission and/or its key. Renaming the key relabels every
-// operation's displayed id with no re-indexing (display is key + per-operation sequence).
 func (s *Server) updateMission(w http.ResponseWriter, r *http.Request) {
 	pid, ok := pathUUID(w, r)
 	if !ok {
@@ -7148,7 +8453,6 @@ func (s *Server) updateMission(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toMissionDTO(m))
 }
 
-// StartLeaseSweeper periodically requeues runs whose rover went silent.
 func (s *Server) StartLeaseSweeper(ctx context.Context, leaseSeconds float64, interval time.Duration) {
 	go func() {
 		t := time.NewTicker(interval)
@@ -7169,9 +8473,6 @@ func (s *Server) StartLeaseSweeper(ctx context.Context, leaseSeconds float64, in
 						RunID: id, Kind: "status", Message: "requeued: lease expired (rover lost)",
 					})
 				}
-				// A rover going silent (offline) isn't an event — detect the
-				// crossing here and push a presence update so boards reflect it
-				// without client polling.
 				win := roverOnlineWindow.Seconds()
 				if fleets, err := s.q.FleetsWithNewlyOfflineRovers(ctx, db.FleetsWithNewlyOfflineRoversParams{
 					OfflineAfterSeconds: win, OfflineBeforeSeconds: win + interval.Seconds() + 2,
@@ -7185,7 +8486,6 @@ func (s *Server) StartLeaseSweeper(ctx context.Context, leaseSeconds float64, in
 	}()
 }
 
-// StartRoutineScheduler launches due routine pulses.
 func (s *Server) StartRoutineScheduler(ctx context.Context, interval time.Duration) {
 	go func() {
 		t := time.NewTicker(interval)
@@ -7226,10 +8526,6 @@ func (s *Server) pulseDueRoutines(ctx context.Context, limit int32) error {
 
 // ---- middleware ----------------------------------------------------------
 
-// requireUser resolves bearer tokens, access cookies, and session cookies.
-// An invalid access cookie falls through to the session cookie (and is
-// cleared) so key rotation / multi-instance skew does not strand a valid
-// session. Explicit Authorization: Bearer failures stay hard 401s.
 func (s *Server) requireUser(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if token := bearerToken(r); token != "" {
@@ -7250,16 +8546,13 @@ func (s *Server) requireUser(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// userFromCookies tries the access cookie, then the session cookie.
-// When clearBadAccess is true and the access cookie is present but invalid,
-// it is cleared so the browser stops sending it.
-func (s *Server) userFromCookies(w http.ResponseWriter, r *http.Request, clearBadAccess bool) (db.User, bool) {
+func (s *Server) userFromCookies(w http.ResponseWriter, r *http.Request, refreshAccess bool) (db.User, bool) {
 	if c, err := r.Cookie(accessCookie); err == nil && c.Value != "" {
 		user, err := s.userFromAccessToken(r.Context(), c.Value)
 		if err == nil {
 			return user, true
 		}
-		if clearBadAccess && w != nil {
+		if refreshAccess && w != nil {
 			s.clearAccessCookie(w)
 		}
 	}
@@ -7270,6 +8563,11 @@ func (s *Server) userFromCookies(w http.ResponseWriter, r *http.Request, clearBa
 	user, err := s.q.GetSessionUser(r.Context(), auth.HashToken(c.Value))
 	if err != nil {
 		return db.User{}, false
+	}
+	if refreshAccess && w != nil {
+		if token, exp, err := s.signUserAccessToken(user); err == nil {
+			s.setAccessCookie(w, token, exp)
+		}
 	}
 	return user, true
 }
@@ -7367,8 +8665,6 @@ type roverCtx struct {
 	Tags        []string
 }
 
-// normTags canonicalizes a tag set: lowercase + trim, drop empties, dedupe (order
-// preserved). Applied on every write so matching (exact set membership) is reliable.
 func normTags(in []string) []string {
 	seen := map[string]struct{}{}
 	out := []string{}
@@ -7405,8 +8701,6 @@ func normTextList(in []string) []string {
 
 func unionTags(a, b []string) []string { return normTags(append(append([]string{}, a...), b...)) }
 
-// roverAuth resolves the bearer connection token to a rover, records presence,
-// and injects the rover identity, or 401.
 func (s *Server) roverAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := bearerToken(r)
@@ -7462,8 +8756,6 @@ func (s *Server) cors(next http.Handler) http.Handler {
 				w.Header().Add("Vary", "Origin")
 			}
 		} else {
-			// No allowlist (dev): same-origin via the Next proxy, so this only serves
-			// direct tooling; "*" cannot carry credentials, so no cookie is exposed.
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS")
@@ -7515,7 +8807,6 @@ func queryInt(q url.Values, key string, def int64) int64 {
 	return def
 }
 
-// pathUUID parses the {id} path segment as a public id.
 func pathUUID(w http.ResponseWriter, r *http.Request) (pgtype.UUID, bool) {
 	id, ok := parseUUID(r.PathValue("id"))
 	if !ok {
@@ -7525,7 +8816,6 @@ func pathUUID(w http.ResponseWriter, r *http.Request) (pgtype.UUID, bool) {
 	return id, true
 }
 
-// pathUserID resolves a user public id path segment (id or member_id).
 func (s *Server) pathUserID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	raw := r.PathValue("member_id")
 	if raw == "" {

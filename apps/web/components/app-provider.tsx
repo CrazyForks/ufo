@@ -2,7 +2,9 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { clearAuthSession, clearStoredFleet } from "@/app/auth-ui";
 import { del, fleetPath, getJSON, patchJSON, postJSON, putJSON, putRaw, withFleet } from "@/lib/api";
+import { t } from "@/lib/i18n";
 import { WebSocketClient } from "@/lib/websocket";
 import { parseAppPath } from "@/lib/routes";
 import type {
@@ -40,6 +42,33 @@ function contextMetadata(metadata: Record<string, unknown> | undefined, context:
   return next;
 }
 
+export type SpendBudgetInput = {
+  period?: "calendar_week" | "calendar_month";
+  max_runs?: number | null;
+  max_tokens?: number | null;
+  max_usd_micros?: number | null;
+} | null;
+
+function budgetMetadata(metadata: Record<string, unknown> | undefined, budget: SpendBudgetInput): Record<string, unknown> {
+  const next = { ...(metadata ?? {}) };
+  if (budget == null) {
+    next.budget = null;
+    return next;
+  }
+  const body: Record<string, unknown> = {
+    period: budget.period === "calendar_month" ? "calendar_month" : "calendar_week",
+  };
+  if (budget.max_runs != null && budget.max_runs > 0) body.max_runs = Math.floor(budget.max_runs);
+  if (budget.max_tokens != null && budget.max_tokens > 0) body.max_tokens = Math.floor(budget.max_tokens);
+  if (budget.max_usd_micros != null && budget.max_usd_micros > 0) body.max_usd_micros = Math.floor(budget.max_usd_micros);
+  if (!("max_runs" in body) && !("max_tokens" in body) && !("max_usd_micros" in body)) {
+    next.budget = null;
+    return next;
+  }
+  next.budget = body;
+  return next;
+}
+
 type Ctx = {
   user: User;
   updateUserName: (name: string) => Promise<boolean>;
@@ -50,8 +79,10 @@ type Ctx = {
   updateFleet: (id: string, name: string) => Promise<boolean>;
   setFleetContext: (context: string) => Promise<boolean>;
   setFleetWorktree: (enabled: boolean) => Promise<void>;
+  setFleetBudget: (budget: SpendBudgetInput) => Promise<boolean>;
+  setMissionBudget: (missionId: string, budget: SpendBudgetInput) => Promise<boolean>;
+  setRoverBudget: (roverId: string, budget: SpendBudgetInput) => Promise<boolean>;
   signOut: () => void;
-  // data (board fetches its own pages; provider holds the small lists)
   missions: Mission[];
   missionCounts: Record<string, number>;
   pilots: Pilot[];
@@ -96,11 +127,12 @@ type Ctx = {
   updateRoutine: (id: string, i: RoutineCreateInput) => Promise<Routine | null>;
   deleteRoutine: (id: string) => Promise<void>;
   pulseRoutine: (id: string) => Promise<Pulse | null>;
+  listRoutinePulses: (routineId: string, limit?: number) => Promise<Pulse[]>;
   attachLabel: (operationId: string, labelId: string) => Promise<void>;
   detachLabel: (operationId: string, labelId: string) => Promise<void>;
   addRelation: (operationId: string, kind: string, target: string) => Promise<void>;
   removeRelation: (relationId: string, operationId: string) => Promise<void>;
-  createSourceAction: (operationId: string, kind: "apply_to_source" | "create_source_branch" | "refresh_from_source") => Promise<void>;
+  createSourceAction: (operationId: string, kind: "apply_to_source" | "create_source_branch" | "commit_to_branch" | "refresh_from_source") => Promise<void>;
   addPullRequest: (operationId: string, url: string, title: string) => Promise<void>;
   deletePullRequest: (pullRequestId: string, operationId: string) => Promise<void>;
   uploadAsset: (file: File, options?: { operationId?: string }) => Promise<Asset | null>;
@@ -109,7 +141,7 @@ type Ctx = {
   reassign: (operationId: string, assignee_type: string | null, assignee_id: string | null) => Promise<void>;
   cancelRun: (runId: string, operationId: string) => Promise<void>;
   moveOperation: (operationId: string, status: string) => Promise<void>;
-  addComment: (operationId: string, body: string) => Promise<void>;
+  addComment: (operationId: string, body: string) => Promise<boolean>;
   updateComment: (operationId: string, commentId: string, body: string) => Promise<boolean>;
   deleteComment: (operationId: string, commentId: string) => Promise<boolean>;
   addCrew: (name: string) => Promise<void>;
@@ -288,7 +320,7 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
       const profile = await getJSON<UserProfile>(`/api/v1/users/${selectedUserId}`);
       if (canceled) return;
       if (!profile) {
-        toast.error("Profile not found");
+        toast.error(t("toast.profileNotFound"));
         setSelectedUserId(null);
         return;
       }
@@ -304,7 +336,11 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
     setSelectedUserId(null); setUserProfile(null); setNewEnrollmentCode(null); setNewEnrollmentCodeId(null);
     setFleet(id);
   }, []);
-  const signOut = useCallback(async () => { await postJSON(`/api/v1/auth/logout`); window.location.href = "/login"; }, []);
+  const signOut = useCallback(async () => {
+    await clearAuthSession();
+    clearStoredFleet();
+    window.location.href = "/login";
+  }, []);
   const openOperation = useCallback((id: string | null) => {
     if (id == null) operationBackStackRef.current = [];
     else if (operationRef.current && operationRef.current !== id) operationBackStackRef.current.push(operationRef.current);
@@ -322,47 +358,80 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
     if (id == null) setUserProfile(null);
   }, []);
 
-  const fail = (res: Response, fallback: string) => res.json().then((d) => toast.error(d.error || fallback)).catch(() => toast.error(fallback));
+  const fail = (res: Response, fallback: string) => res.json().then((d: { error?: string }) => toast.error(d.error || fallback)).catch(() => toast.error(fallback));
+  const failNetwork = (fallback: string) => toast.error(fallback);
 
   const createFleet: Ctx["createFleet"] = useCallback(async (name, context = "") => {
     const res = await postJSON(`/api/v1/fleets`, { name, metadata: contextMetadata(undefined, context) });
-    if (!res.ok) { await fail(res, "Create fleet failed"); return; }
+    if (!res.ok) { await fail(res, t("error.createFleet")); return; }
     const f = (await res.json()) as Fleet;
     setFleets((prev) => [...prev, f]);
     switchFleet(f.id);
-    toast.success("Fleet created");
+    toast.success(t("toast.fleetCreated"));
   }, [switchFleet]);
 
   const updateFleet: Ctx["updateFleet"] = useCallback(async (id, name) => {
     const res = await patchJSON(`/api/v1/fleets/${id}`, { name });
-    if (!res.ok) { await fail(res, "Rename fleet failed"); return false; }
+    if (!res.ok) { await fail(res, t("error.renameFleet")); return false; }
     const f = (await res.json()) as Fleet;
     setFleets((prev) => prev.map((it) => it.id === f.id ? f : it));
-    toast.success("Fleet renamed");
+    toast.success(t("toast.fleetRenamed"));
     return true;
   }, []);
   const setFleetContext: Ctx["setFleetContext"] = useCallback(async (context) => {
     const current = fleets.find((it) => it.id === fleet);
     if (!current) return false;
     const res = await patchJSON(`/api/v1/fleets/${current.id}`, { metadata: contextMetadata(current.metadata, context) });
-    if (!res.ok) { await fail(res, "Update fleet context failed"); return false; }
+    if (!res.ok) { await fail(res, t("error.updateFleetContext")); return false; }
     const next = (await res.json()) as Fleet;
     setFleets((prev) => prev.map((it) => it.id === next.id ? next : it));
-    toast.success("Fleet context saved");
+    toast.success(t("toast.fleetContextSaved"));
     return true;
   }, [fleet, fleets]);
   const setFleetWorktree: Ctx["setFleetWorktree"] = useCallback(async (enabled) => {
     const current = fleets.find((it) => it.id === fleet);
     if (!current) return;
     const res = await patchJSON(`/api/v1/fleets/${current.id}`, { metadata: worktreeMetadata(current.metadata, enabled) });
-    if (!res.ok) { await fail(res, "Worktree setting failed"); return; }
+    if (!res.ok) { await fail(res, t("error.worktree")); return; }
     const next = (await res.json()) as Fleet;
     setFleets((prev) => prev.map((it) => it.id === next.id ? next : it));
     loadMeta(fleet);
   }, [fleet, fleets, loadMeta]);
+  const setFleetBudget: Ctx["setFleetBudget"] = useCallback(async (budget) => {
+    const current = fleets.find((it) => it.id === fleet);
+    if (!current) return false;
+    const res = await patchJSON(`/api/v1/fleets/${current.id}`, { metadata: budgetMetadata(current.metadata, budget) });
+    if (!res.ok) { await fail(res, t("error.updateFleetBudget")); return false; }
+    const next = (await res.json()) as Fleet;
+    setFleets((prev) => prev.map((it) => it.id === next.id ? next : it));
+    toast.success(t("toast.fleetBudgetSaved"));
+    return true;
+  }, [fleet, fleets]);
+  const setMissionBudget: Ctx["setMissionBudget"] = useCallback(async (missionId, budget) => {
+    const mission = missions.find((it) => it.id === missionId);
+    if (!mission) return false;
+    const res = await patchJSON(`/api/v1/missions/${missionId}`, {
+      name: mission.name,
+      key: mission.key,
+      metadata: budgetMetadata(mission.metadata, budget),
+    });
+    if (!res.ok) { await fail(res, t("error.updateMissionBudget")); return false; }
+    loadMeta(fleet);
+    toast.success(t("toast.missionBudgetSaved"));
+    return true;
+  }, [fleet, missions, loadMeta]);
+  const setRoverBudget: Ctx["setRoverBudget"] = useCallback(async (roverId, budget) => {
+    const rover = rovers.find((it) => it.id === roverId);
+    if (!rover) return false;
+    const res = await patchJSON(`/api/v1/rovers/${roverId}`, { metadata: budgetMetadata(rover.metadata, budget) });
+    if (!res.ok) { await fail(res, t("error.updateRoverBudget")); return false; }
+    loadMeta(fleet);
+    toast.success(t("toast.roverBudgetSaved"));
+    return true;
+  }, [fleet, rovers, loadMeta]);
   const updateUserName: Ctx["updateUserName"] = useCallback(async (name) => {
     const res = await patchJSON("/api/v1/users/me", { name });
-    if (!res.ok) { await fail(res, "Update name failed"); return false; }
+    if (!res.ok) { await fail(res, t("error.updateName")); return false; }
     const next = (await res.json()) as User;
     setUser(next);
     setMembers((prev) => prev.map((m) => m.id === next.id ? { ...m, name: next.name } : m));
@@ -370,13 +439,18 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
   }, []);
 
   const createOperation: Ctx["createOperation"] = useCallback(async (input) => {
-    const res = await postJSON(`/api/v1/operations`, { ...input, fleet_id: fleet });
-    if (!res.ok) { await fail(res, "Create failed"); return null; }
-    const op = (await res.json()) as Operation;
-    bumpBoard(); loadMissionCounts(fleet);
-    if (input.main_operation_id && operationRef.current === input.main_operation_id) loadOperationDetail(input.main_operation_id);
-    toast.success("Operation created");
-    return op;
+    try {
+      const res = await postJSON(`/api/v1/operations`, { ...input, fleet_id: fleet });
+      if (!res.ok) { await fail(res, t("error.createOperation")); return null; }
+      const op = (await res.json()) as Operation;
+      bumpBoard(); loadMissionCounts(fleet);
+      if (input.main_operation_id && operationRef.current === input.main_operation_id) loadOperationDetail(input.main_operation_id);
+      toast.success(t("toast.operationCreated"));
+      return op;
+    } catch {
+      failNetwork(t("error.createOperationNetwork"));
+      return null;
+    }
   }, [fleet, bumpBoard, loadMissionCounts, loadOperationDetail]);
 
   const reassign: Ctx["reassign"] = useCallback(async (operationId, assignee_type, assignee_id) => {
@@ -390,14 +464,14 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
   }, [fleet, loadOperationDetail]);
   const setOperationWorktree: Ctx["setOperationWorktree"] = useCallback(async (operationId, enabled) => {
     const res = await patchJSON(`/api/v1/operations/${operationId}`, { worktree_enabled: enabled });
-    if (!res.ok) { await fail(res, "Worktree setting failed"); return; }
+    if (!res.ok) { await fail(res, t("error.worktree")); return; }
     bumpBoard();
     loadOperationDetail(operationId);
   }, [fleet, bumpBoard, loadOperationDetail]);
 
   const updateOperation: Ctx["updateOperation"] = useCallback(async (operationId, input) => {
     const res = await patchJSON(`/api/v1/operations/${operationId}`, input);
-    if (!res.ok) { await fail(res, "Update operation failed"); return false; }
+    if (!res.ok) { await fail(res, t("error.updateOperation")); return false; }
     bumpBoard();
     loadOperationDetail(operationId);
     return true;
@@ -405,7 +479,7 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
 
   const setOperationMission: Ctx["setOperationMission"] = useCallback(async (operationId, missionId) => {
     const res = await patchJSON(`/api/v1/operations/${operationId}`, { mission_id: missionId });
-    if (!res.ok) { await fail(res, "Change mission failed"); return false; }
+    if (!res.ok) { await fail(res, t("error.changeMission")); return false; }
     bumpBoard();
     loadOperationDetail(operationId);
     return true;
@@ -432,7 +506,7 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
   }, [fleet, bumpBoard, loadOperationDetail, openOperation]);
   const createLabel: Ctx["createLabel"] = useCallback(async (name, color) => {
     const res = await postJSON(`/api/v1/labels`, { name, color, fleet_id: fleet });
-    if (!res.ok) { await fail(res, "Create label failed"); return null; }
+    if (!res.ok) { await fail(res, t("error.createLabel")); return null; }
     const l = (await res.json()) as Label;
     setLabels((prev) => [...prev, l].sort((a, b) => a.name.localeCompare(b.name)));
     return l;
@@ -442,7 +516,7 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
   }, [fleet, loadMeta, bumpBoard]);
   const updateLabel: Ctx["updateLabel"] = useCallback(async (id, name, color = "") => {
     const res = await patchJSON(`/api/v1/labels/${id}`, { name, color });
-    if (!res.ok) { await fail(res, "Rename label failed"); return null; }
+    if (!res.ok) { await fail(res, t("error.renameLabel")); return null; }
     const label = (await res.json()) as Label;
     loadMeta(fleet); bumpBoard();
     if (operationRef.current) loadOperationDetail(operationRef.current);
@@ -450,32 +524,39 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
   }, [fleet, loadMeta, bumpBoard, loadOperationDetail]);
   const createRoutine: Ctx["createRoutine"] = useCallback(async (input) => {
     const res = await postJSON(`/api/v1/routines`, { fleet_id: fleet, ...input });
-    if (!res.ok) { await fail(res, "Create routine failed"); return null; }
+    if (!res.ok) { await fail(res, t("error.createRoutine")); return null; }
     const routine = (await res.json()) as Routine;
     setRoutines((prev) => [routine, ...prev]);
-    toast.success("Routine saved");
+    toast.success(t("toast.routineSaved"));
     return routine;
   }, [fleet]);
   const updateRoutine: Ctx["updateRoutine"] = useCallback(async (id, input) => {
     const res = await patchJSON(`/api/v1/routines/${id}`, input);
-    if (!res.ok) { await fail(res, "Update routine failed"); return null; }
+    if (!res.ok) { await fail(res, t("error.updateRoutine")); return null; }
     const routine = (await res.json()) as Routine;
     setRoutines((prev) => prev.map((it) => it.id === routine.id ? routine : it));
-    toast.success("Routine saved");
+    toast.success(t("toast.routineSaved"));
     return routine;
   }, []);
   const deleteRoutine: Ctx["deleteRoutine"] = useCallback(async (id) => {
     const res = await del(`/api/v1/routines/${id}`);
-    if (!res.ok) { await fail(res, "Delete routine failed"); return; }
+    if (!res.ok) { await fail(res, t("error.deleteRoutine")); return; }
     setRoutines((prev) => prev.filter((it) => it.id !== id));
   }, [fleet]);
   const pulseRoutine: Ctx["pulseRoutine"] = useCallback(async (id) => {
     const res = await postJSON(`/api/v1/pulses`, { routine_id: id });
-    if (!res.ok) { await fail(res, "Pulse routine failed"); return null; }
+    if (!res.ok) { await fail(res, t("error.pulseRoutine")); return null; }
     const pulse = (await res.json()) as Pulse;
-    bumpBoard(); loadMissionCounts(fleet); loadRoutines(fleet); toast.success("Pulse sent");
+    bumpBoard(); loadMissionCounts(fleet); loadRoutines(fleet);
+    if (pulse.status === "skipped") toast.message(t("toast.pulseSkipped"));
+    else if (pulse.status === "failed") toast.error(t("toast.pulseFailed"));
+    else toast.success(t("toast.pulseSent"));
     return pulse;
   }, [fleet, bumpBoard, loadMissionCounts, loadRoutines]);
+  const listRoutinePulses: Ctx["listRoutinePulses"] = useCallback(async (routineId, limit = 8) => {
+    const d = await getJSON<Pulse[]>(withFleet(`/api/v1/pulses?routine_id=${encodeURIComponent(routineId)}&limit=${limit}`, fleet));
+    return d ?? [];
+  }, [fleet]);
   const attachLabel: Ctx["attachLabel"] = useCallback(async (operationId, labelId) => {
     await putJSON(`/api/v1/operations/${operationId}/labels/${labelId}`);
     bumpBoard(); loadOperationDetail(operationId);
@@ -492,9 +573,9 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
   }, [fleet, loadOperationDetail]);
   const createSourceAction: Ctx["createSourceAction"] = useCallback(async (operationId, kind) => {
     const res = await postJSON(`/api/v1/source-actions`, { operation_id: operationId, kind });
-    if (!res.ok) { await fail(res, kind === "create_source_branch" ? "Source branch request failed" : kind === "refresh_from_source" ? "Refresh from source request failed" : "Apply to source request failed"); return; }
+    if (!res.ok) { await fail(res, kind === "create_source_branch" ? t("error.sourceBranch") : kind === "refresh_from_source" ? t("error.refreshSource") : t("error.applySource")); return; }
     loadOperationDetail(operationId);
-    toast.success(kind === "create_source_branch" ? "Source branch queued" : kind === "refresh_from_source" ? "Refresh from source queued" : "Apply to source queued");
+    toast.success(kind === "create_source_branch" ? t("toast.sourceBranchQueued") : kind === "refresh_from_source" ? t("toast.refreshQueued") : t("toast.applyQueued"));
   }, [fleet, loadOperationDetail]);
   const addPullRequest: Ctx["addPullRequest"] = useCallback(async (operationId, url, title) => {
     await postJSON(`/api/v1/pull-requests`, { operation_id: operationId, url, title });
@@ -511,13 +592,13 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
       content_type: file.type || "application/octet-stream",
       byte_size: file.size,
     });
-    if (!intentRes.ok) { await fail(intentRes, "Upload failed"); return null; }
+    if (!intentRes.ok) { await fail(intentRes, t("error.upload")); return null; }
     const intent = (await intentRes.json()) as AssetUploadIntent;
     const uploadRes = await putRaw(intent.url, file, intent.headers);
-    if (!uploadRes.ok) { toast.error("Upload failed"); return null; }
+    if (!uploadRes.ok) { toast.error(t("error.upload")); return null; }
     const completeRes = await patchJSON(`/api/v1/assets/${intent.asset_id}`, { status: "ready" });
-    if (!completeRes.ok) { await fail(completeRes, "Upload verification failed"); return null; }
-    toast.success("File uploaded");
+    if (!completeRes.ok) { await fail(completeRes, t("error.uploadVerification")); return null; }
+    toast.success(t("toast.fileUploaded"));
     return (await completeRes.json()) as Asset;
   }, [fleet]);
   const searchOperations: Ctx["searchOperations"] = useCallback(async (q) => {
@@ -540,44 +621,60 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
 
   const cancelRun: Ctx["cancelRun"] = useCallback(async (runId, operationId) => {
     const res = await patchJSON(`/api/v1/runs/${runId}`, { status: "canceled" });
-    if (!res.ok) { await fail(res, "Stop failed"); return; }
-    bumpBoard(); loadOperationDetail(operationId); toast.success("Run stopped");
+    if (!res.ok) { await fail(res, t("error.stop")); return; }
+    bumpBoard(); loadOperationDetail(operationId); toast.success(t("toast.runStopped"));
   }, [fleet, bumpBoard, loadOperationDetail]);
 
-  // The board applies the move optimistically; here we persist then bump to reconcile.
   const moveOperation: Ctx["moveOperation"] = useCallback(async (operationId, status) => {
     const res = await patchJSON(`/api/v1/operations/${operationId}`, { status });
-    if (!res.ok) await fail(res, "Move failed");
+    if (!res.ok) await fail(res, t("error.move"));
     bumpBoard(); loadSignals(fleet);
   }, [fleet, bumpBoard, loadSignals]);
 
   const addComment: Ctx["addComment"] = useCallback(async (operationId, body) => {
-    await postJSON(`/api/v1/comments`, { operation_id: operationId, body });
-    loadOperationDetail(operationId);
+    try {
+      const res = await postJSON(`/api/v1/comments`, { operation_id: operationId, body });
+      if (!res.ok) { await fail(res, t("error.sendReply")); return false; }
+      loadOperationDetail(operationId);
+      return true;
+    } catch {
+      failNetwork(t("error.sendReplyNetwork"));
+      return false;
+    }
   }, [fleet, loadOperationDetail]);
   const updateComment: Ctx["updateComment"] = useCallback(async (operationId, commentId, body) => {
-    const res = await patchJSON(`/api/v1/comments/${commentId}`, { body });
-    loadOperationDetail(operationId);
-    if (!res.ok) { await fail(res, "Update comment failed"); return false; }
-    return true;
+    try {
+      const res = await patchJSON(`/api/v1/comments/${commentId}`, { body });
+      if (!res.ok) { await fail(res, t("error.updateComment")); return false; }
+      loadOperationDetail(operationId);
+      return true;
+    } catch {
+      failNetwork(t("error.updateCommentNetwork"));
+      return false;
+    }
   }, [fleet, loadOperationDetail]);
   const deleteComment: Ctx["deleteComment"] = useCallback(async (operationId, commentId) => {
-    const res = await del(`/api/v1/comments/${commentId}`);
-    loadOperationDetail(operationId);
-    if (!res.ok) { await fail(res, "Delete comment failed"); return false; }
-    return true;
+    try {
+      const res = await del(`/api/v1/comments/${commentId}`);
+      if (!res.ok) { await fail(res, t("error.deleteComment")); return false; }
+      loadOperationDetail(operationId);
+      return true;
+    } catch {
+      failNetwork(t("error.deleteCommentNetwork"));
+      return false;
+    }
   }, [fleet, loadOperationDetail]);
 
   const addCrew: Ctx["addCrew"] = useCallback(async (name) => { await postJSON(`/api/v1/crews`, { name, fleet_id: fleet }); loadMeta(fleet); }, [fleet, loadMeta]);
   const renameCrew: Ctx["renameCrew"] = useCallback(async (id, name) => {
     const res = await patchJSON(`/api/v1/crews/${id}`, { name });
-    if (!res.ok) { await fail(res, "Rename crew failed"); return; }
+    if (!res.ok) { await fail(res, t("error.renameCrew")); return; }
     loadMeta(fleet);
   }, [fleet, loadMeta]);
   const delCrew: Ctx["delCrew"] = useCallback(async (id) => { await del(`/api/v1/crews/${id}`); loadMeta(fleet); }, [fleet, loadMeta]);
   const addMission: Ctx["addMission"] = useCallback(async (name, key, context = "") => {
     const res = await postJSON(`/api/v1/missions`, { name, key, fleet_id: fleet, metadata: contextMetadata(undefined, context) });
-    if (!res.ok) { await fail(res, "Add mission failed"); return false; }
+    if (!res.ok) { await fail(res, t("error.addMission")); return false; }
     loadMeta(fleet);
     return true;
   }, [fleet, loadMeta]);
@@ -589,7 +686,7 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
       body.metadata = contextMetadata(mission.metadata, context);
     }
     const res = await patchJSON(`/api/v1/missions/${id}`, body);
-    if (!res.ok) { await fail(res, "Update mission failed"); return false; }
+    if (!res.ok) { await fail(res, t("error.updateMission")); return false; }
     loadMeta(fleet); bumpBoard();
     return true;
   }, [fleet, missions, loadMeta, bumpBoard]);
@@ -601,7 +698,7 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
       key: mission.key,
       metadata: worktreeMetadata(mission.metadata, enabled),
     });
-    if (!res.ok) { await fail(res, "Worktree setting failed"); return; }
+    if (!res.ok) { await fail(res, t("error.worktree")); return; }
     loadMeta(fleet);
     bumpBoard();
   }, [fleet, missions, loadMeta, bumpBoard]);
@@ -629,22 +726,22 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
       setNewEnrollmentCodeId(code.id);
       loadMeta(fleet);
     }
-    else await fail(res, "Enrollment code failed");
+    else await fail(res, t("error.enrollmentCode"));
   }, [fleet, loadMeta]);
   const revokeRover: Ctx["revokeRover"] = useCallback(async (id) => { await del(`/api/v1/rovers/${id}`); loadMeta(fleet); }, [fleet, loadMeta]);
   const renameRover: Ctx["renameRover"] = useCallback(async (id, name) => {
     const res = await patchJSON(`/api/v1/rovers/${id}`, { name });
-    if (!res.ok) { await fail(res, "Rename rover failed"); return; }
+    if (!res.ok) { await fail(res, t("error.renameRover")); return; }
     loadMeta(fleet);
   }, [fleet, loadMeta]);
   const setRoverTags: Ctx["setRoverTags"] = useCallback(async (id, tags) => {
     const res = await patchJSON(`/api/v1/rovers/${id}`, { tags });
-    if (!res.ok) { await fail(res, "Tag update failed"); return; }
+    if (!res.ok) { await fail(res, t("error.tagUpdate")); return; }
     loadMeta(fleet);
   }, [fleet, loadMeta]);
   const setRoverUnits: Ctx["setRoverUnits"] = useCallback(async (id, units) => {
     const res = await patchJSON(`/api/v1/rovers/${id}`, { units });
-    if (!res.ok) { await fail(res, "Units update failed"); return; }
+    if (!res.ok) { await fail(res, t("error.unitsUpdate")); return; }
     loadMeta(fleet);
   }, [fleet, loadMeta]);
   const revokeEnrollmentCode: Ctx["revokeEnrollmentCode"] = useCallback(async (id) => { await del(`/api/v1/enrollment-codes/${id}`); loadMeta(fleet); }, [fleet, loadMeta]);
@@ -654,7 +751,7 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
     if (units != null) body.units = units;
     if (tags != null) body.tags = tags;
     const res = await postJSON(`/api/v1/enrollment-codes`, body);
-    if (!res.ok) { await fail(res, "Save pending rover failed"); return null; }
+    if (!res.ok) { await fail(res, t("error.savePendingRover")); return null; }
     const enrollment = (await res.json()) as EnrollmentCode;
     setEnrollmentCodes((prev) => [enrollment, ...prev.filter((it) => it.id !== enrollment.id)]);
     loadMeta(fleet);
@@ -662,20 +759,20 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
   }, [fleet, loadMeta]);
   const approvePendingRover: Ctx["approvePendingRover"] = useCallback(async (id, { fleetId, name = "", units, tags }) => {
     const targetFleet = fleetId || fleet;
-    if (!targetFleet) { toast.error("Choose a fleet before approving"); return false; }
+    if (!targetFleet) { toast.error(t("error.chooseFleet")); return false; }
     const body: Record<string, unknown> = { fleet_id: targetFleet, kind: "web:approved", name: name.trim() };
     if (units != null) body.units = units;
     if (tags != null) body.tags = tags;
     const res = await patchJSON(`/api/v1/enrollment-codes/${id}`, body);
-    if (!res.ok) { await fail(res, "Approve failed"); if (res.status === 410) loadMeta(fleet); return false; }
-    toast.success("Rover approved");
+    if (!res.ok) { await fail(res, t("error.approve")); if (res.status === 410) loadMeta(fleet); return false; }
+    toast.success(t("toast.roverApproved"));
     loadMeta(fleet);
     return true;
   }, [fleet, loadMeta]);
   const denyPendingRover: Ctx["denyPendingRover"] = useCallback(async (id) => {
     const res = await patchJSON(`/api/v1/enrollment-codes/${id}`, { kind: "web:denied" });
-    if (!res.ok) { await fail(res, "Deny failed"); if (res.status === 410) loadMeta(fleet); return false; }
-    toast.success("Enrollment denied");
+    if (!res.ok) { await fail(res, t("error.deny")); if (res.status === 410) loadMeta(fleet); return false; }
+    toast.success(t("toast.enrollmentDenied"));
     loadMeta(fleet);
     return true;
   }, [fleet, loadMeta]);
@@ -687,14 +784,14 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
 
   const invite: Ctx["invite"] = useCallback(async (email, role) => {
     const res = await postJSON(`/api/v1/invitations`, { email, role, fleet_id: fleet });
-    if (!res.ok) { await fail(res, "Invite failed"); return false; }
-    loadMembers(fleet); toast.success("Invitation sent");
+    if (!res.ok) { await fail(res, t("error.invite")); return false; }
+    loadMembers(fleet); toast.success(t("toast.invitationSent"));
     return true;
   }, [fleet, loadMembers]);
   const revokeInvite: Ctx["revokeInvite"] = useCallback(async (id) => { await del(`/api/v1/invitations/${id}`); loadMembers(fleet); }, [fleet, loadMembers]);
   const acceptInvite: Ctx["acceptInvite"] = useCallback(async (id, fleetId) => {
     const res = await patchJSON(`/api/v1/invitations/${id}`, { status: "accepted" });
-    if (!res.ok) { await fail(res, "Accept failed"); return; }
+    if (!res.ok) { await fail(res, t("error.accept")); return; }
     localStorage.setItem("ufo.fleet", fleetId);
     window.location.reload();
   }, []);
@@ -704,23 +801,23 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
   }, [loadMyInvites]);
   const setMemberRole: Ctx["setMemberRole"] = useCallback(async (userId, role) => {
     const res = await patchJSON(`/api/v1/fleets/${fleet}/members/${userId}`, { role });
-    if (!res.ok) { await fail(res, "Role change failed"); return; }
+    if (!res.ok) { await fail(res, t("error.roleChange")); return; }
     loadMembers(fleet);
   }, [fleet, loadMembers]);
   const removeFleetMember: Ctx["removeFleetMember"] = useCallback(async (userId) => {
     const res = await del(`/api/v1/fleets/${fleet}/members/${userId}`);
-    if (!res.ok) { await fail(res, "Remove failed"); return; }
+    if (!res.ok) { await fail(res, t("error.remove")); return; }
     loadMembers(fleet);
   }, [fleet, loadMembers]);
 
   const value: Ctx = useMemo(() => ({
-    user, updateUserName, fleets, fleet, switchFleet, createFleet, updateFleet, setFleetContext, setFleetWorktree, signOut,
+    user, updateUserName, fleets, fleet, switchFleet, createFleet, updateFleet, setFleetContext, setFleetWorktree, setFleetBudget, setMissionBudget, setRoverBudget, signOut,
     missions, missionCounts, pilots, crews, labels, routines, rovers, enrollmentCodes, signals, newEnrollmentCode, boardTick,
     members, myRole, fleetInvites, myInvites,
     selectedOperation, openOperation, backOperation, operationDetail, selectedRun, setSelectedRun, runDetail,
     selectedUserId, userProfile, openUser,
     createOperation, setOperationTags, setOperationWorktree, updateOperation, setOperationMission, setPriority, setDates, setMainOperation, setArchived,
-    createLabel, updateLabel, deleteLabel, createRoutine, updateRoutine, deleteRoutine, pulseRoutine, attachLabel, detachLabel, addRelation, removeRelation, createSourceAction, addPullRequest, deletePullRequest, uploadAsset, searchOperations, react,
+    createLabel, updateLabel, deleteLabel, createRoutine, updateRoutine, deleteRoutine, pulseRoutine, listRoutinePulses, attachLabel, detachLabel, addRelation, removeRelation, createSourceAction, addPullRequest, deletePullRequest, uploadAsset, searchOperations, react,
     reassign, cancelRun, moveOperation, addComment, updateComment, deleteComment,
     addCrew, renameCrew, delCrew, addMission, updateMission, setMissionWorktree, addMember, removeMember,
     createEnrollmentCode, revokeRover, renameRover, setRoverTags, setRoverUnits, revokeEnrollmentCode, savePendingRover, approvePendingRover, denyPendingRover, openSignal, archiveSignal,
@@ -729,10 +826,10 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
     user, fleets, fleet, missions, missionCounts, pilots, crews, labels, routines, rovers, enrollmentCodes, signals, newEnrollmentCode, boardTick,
     members, myRole, fleetInvites, myInvites,
     selectedOperation, operationDetail, selectedRun, runDetail, selectedUserId, userProfile,
-    updateUserName, switchFleet, createFleet, updateFleet, setFleetContext, setFleetWorktree, signOut,
+    updateUserName, switchFleet, createFleet, updateFleet, setFleetContext, setFleetWorktree, setFleetBudget, setMissionBudget, setRoverBudget, signOut,
     openOperation, backOperation, setSelectedRun, openUser,
     createOperation, setOperationTags, setOperationWorktree, updateOperation, setOperationMission, setPriority, setDates, setMainOperation, setArchived,
-    createLabel, updateLabel, deleteLabel, createRoutine, updateRoutine, deleteRoutine, pulseRoutine, attachLabel, detachLabel, addRelation, removeRelation, createSourceAction, addPullRequest, deletePullRequest, uploadAsset, searchOperations, react,
+    createLabel, updateLabel, deleteLabel, createRoutine, updateRoutine, deleteRoutine, pulseRoutine, listRoutinePulses, attachLabel, detachLabel, addRelation, removeRelation, createSourceAction, addPullRequest, deletePullRequest, uploadAsset, searchOperations, react,
     reassign, cancelRun, moveOperation, addComment, updateComment, deleteComment,
     addCrew, renameCrew, delCrew, addMission, updateMission, setMissionWorktree, addMember, removeMember,
     createEnrollmentCode, revokeRover, renameRover, setRoverTags, setRoverUnits, revokeEnrollmentCode, savePendingRover, approvePendingRover, denyPendingRover, openSignal, archiveSignal,

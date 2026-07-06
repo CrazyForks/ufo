@@ -1,4 +1,3 @@
-// Package database resolves Hub PostgreSQL connection settings from env.
 package database
 
 import (
@@ -9,10 +8,8 @@ import (
 	"strings"
 )
 
-// DefaultURL is the local compose PostgreSQL URL when no env is set.
 const DefaultURL = "postgres://ufo:ufo@localhost:5432/ufo?sslmode=disable"
 
-// HubURL: UFO_HUB_DATABASE_URL, else libpq PG*, else DefaultURL.
 func HubURL() string {
 	if u := strings.TrimSpace(os.Getenv("UFO_HUB_DATABASE_URL")); u != "" {
 		return u
@@ -29,16 +26,12 @@ func HubTestURL() string {
 	return strings.TrimSpace(os.Getenv("UFO_HUB_TEST_DATABASE_URL"))
 }
 
-// SameDatabase reports whether two connection strings refer to the same
-// PostgreSQL database (user@host:port/dbname), ignoring password and query.
 func SameDatabase(a, b string) bool {
 	ia, okA := dbIdentity(a)
 	ib, okB := dbIdentity(b)
 	return okA && okB && ia == ib
 }
 
-// EnsureDistinctTestURL returns an error if the test URL is unset or points at
-// the same database as HubURL().
 func EnsureDistinctTestURL(testURL string) error {
 	testURL = strings.TrimSpace(testURL)
 	if testURL == "" {
