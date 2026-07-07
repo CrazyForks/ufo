@@ -33,7 +33,7 @@ The installer puts `ufo` in `~/.local/bin` by default. Override with
 `UFO_ROVER_INSTALL_DIR=/usr/local/bin`, or pin a release with:
 
 ```bash
-curl -fsSL https://getufo.dev/install.sh | UFO_ROVER_VERSION=v0.6.1 sh
+curl -fsSL https://getufo.dev/install.sh | UFO_ROVER_VERSION=v0.6.2 sh
 ```
 
 Homebrew (macOS, Linux):
@@ -58,8 +58,9 @@ Cargo fallback:
 cargo install ufo-cli
 ```
 
-The rover CI runs on macOS, FreeBSD, Linux, and Windows. Other operating
-systems may work, but are not tested yet.
+Rover CI runs tests on macOS, Linux, and Windows. Release CI builds archives
+for macOS, FreeBSD, Linux, and Windows. Other operating systems may work, but
+are not tested yet.
 
 ## Enroll and start
 
@@ -132,6 +133,7 @@ UFO only lets a rover accept work when its tags match the queued operation.
 | Pi | `pi` | `pilot:pi` |
 | Kimi | `kimi` | `pilot:kimi` |
 | Kiro | `kiro-cli` | `pilot:kiro` |
+| CodeBuddy Code | `codebuddy` | `pilot:codebuddy` |
 
 Rovers also report host tags such as `os:macos` and `arch:aarch64`.
 

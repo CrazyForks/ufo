@@ -2065,6 +2065,7 @@ fn pilot_registry_includes_default_pilots() {
         "pi",
         "kimi",
         "kiro",
+        "codebuddy",
     ] {
         assert!(find_pilot(kind).is_some(), "{kind} pilot missing");
     }
@@ -2201,6 +2202,14 @@ fn plain_text_pilots_use_non_interactive_prompt_mode() {
                 "-p",
                 "do it",
             ],
+        ),
+        (
+            codebuddy_command(Path::new("codebuddy"), &run, "do it", Path::new("/tmp"))
+                .as_std()
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec!["-p", "do it"],
         ),
     ] {
         assert_eq!(args, expected);

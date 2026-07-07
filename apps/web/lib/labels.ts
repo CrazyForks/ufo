@@ -68,6 +68,7 @@ const PILOT_LABELS: Record<string, string> = {
   pi: "Pi",
   kimi: "Kimi",
   kiro: "Kiro",
+  codebuddy: "CodeBuddy Code",
 };
 
 export function pilotLabel(pilot: string): string {

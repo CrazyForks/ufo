@@ -4774,6 +4774,13 @@ const PILOTS: &[Pilot] = &[
         output: PilotOutput::PlainText,
         command: kiro_command,
     },
+    Pilot {
+        kind: "codebuddy",
+        binary: "codebuddy",
+        probe_args: &["--version"],
+        output: PilotOutput::PlainText,
+        command: codebuddy_command,
+    },
 ];
 
 /// Pilots available on this host.
@@ -4859,6 +4866,15 @@ fn codex_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd: &Path)
             .arg(prompt);
     }
     cmd.current_dir(cwd).stdin(Stdio::null());
+    cmd
+}
+
+fn codebuddy_command(executable: &Path, _run: &AcceptedRun, prompt: &str, cwd: &Path) -> Command {
+    let mut cmd = Command::new(executable);
+    cmd.arg("-p")
+        .arg(prompt)
+        .current_dir(cwd)
+        .stdin(Stdio::null());
     cmd
 }
 

@@ -1,25 +1,27 @@
-# UFO: Unified Fleet Orchestrator
+<h1 align="center">UFO: Unified Fleet Orchestrator</h1>
 
-**An open-source zero-human ops platform** 🦾🩶
+<p align="center"><strong>An open-source zero-human ops platform</strong> 🦾🩶</p>
 
-**English | [简体中文](README.zh-CN.md)**
+<p align="center">
+  Connect AI sessions into a zero-human ops loop: keep context, route work,
+  and hand off across runs!
+</p>
 
-Stand up a **fleet**. Put **operations** on the board. **Rovers** connect
-human-controlled runtimes to local **pilots** (Claude, Codex, Grok, …) and
-carry shared context, history, and diffs back to the Hub — so the next leg can
-continue from the same operational picture.
+<p align="center">
+  <a href="https://github.com/fengsi/ufo/actions/workflows/ci.yml"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/fengsi/ufo/ci.yml?logo=github&style=flat-square"></a>
+  <a href="https://github.com/fengsi/ufo/releases"><img alt="Release" src="https://img.shields.io/github/v/release/fengsi/ufo?style=flat-square"></a>
+  <a href="https://crates.io/crates/ufo-cli"><img alt="crates.io" src="https://img.shields.io/crates/v/ufo-cli?style=flat-square"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/fengsi/ufo?style=flat-square"></a>
+  <a href="CHANGELOG.md"><img alt="Status" src="https://img.shields.io/badge/status-beta-blue?style=flat-square"></a>
+  <a href="apps/api/go.mod"><img alt="Go" src="https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go&style=flat-square"></a>
+  <a href="apps/web/package.json"><img alt="Node" src="https://img.shields.io/badge/Node-20.9%2B-5FA04E?logo=node.js&style=flat-square"></a>
+  <a href="apps/rover/Cargo.toml"><img alt="Rust" src="https://img.shields.io/badge/Rust-2024-B7410E?logo=rust&style=flat-square"></a>
+  <a href="https://gitmoji.dev"><img alt="Gitmoji" src="https://img.shields.io/badge/commits-gitmoji-FDD563?style=flat-square"></a>
+</p>
+
+<p align="center"><strong>English | <a href="README.zh-CN.md">简体中文</a></strong></p>
 
 ![UFO coordinating a fleet of local rovers from orbit](.github/assets/banner.png)
-
-[![Build](https://img.shields.io/github/actions/workflow/status/fengsi/ufo/ci.yml?logo=github&style=flat-square)](https://github.com/fengsi/ufo/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/fengsi/ufo?style=flat-square)](https://github.com/fengsi/ufo/releases)
-[![crates.io](https://img.shields.io/crates/v/ufo-cli?style=flat-square)](https://crates.io/crates/ufo-cli)
-[![License](https://img.shields.io/github/license/fengsi/ufo?style=flat-square)](LICENSE)
-[![Status](https://img.shields.io/badge/status-beta-blue?style=flat-square)](CHANGELOG.md)
-[![Go](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go&style=flat-square)](apps/api/go.mod)
-[![Node](https://img.shields.io/badge/Node-20.9%2B-5FA04E?logo=node.js&style=flat-square)](apps/web/package.json)
-[![Rust](https://img.shields.io/badge/Rust-2024-B7410E?logo=rust&style=flat-square)](apps/rover/Cargo.toml)
-[![Gitmoji](https://img.shields.io/badge/commits-gitmoji-FDD563?style=flat-square)](https://gitmoji.dev)
 
 > **Public beta.** The core loop works. Prefer
 > [tagged releases](https://github.com/fengsi/ufo/releases); APIs and schema
@@ -27,17 +29,31 @@ continue from the same operational picture.
 
 ---
 
+## What is UFO?
+
+UFO connects AI sessions into a zero-human ops loop for complex work, not
+just coding. Work lands on a board, context keeps compounding, and each run
+can hand off cleanly to the next while workspaces and credentials stay on
+machines you control.
+
+In UFO terms: a **Hub** is the control plane, a **Fleet** is the trust
+boundary, and a **Mission** frames the project. **Operations** are work items
+on the board, **Routines** launch work on a schedule or after completion, and
+**Rovers** run local **Pilots** such as Claude Code, Codex, and Grok Build.
+
+---
+
 ## Why UFO?
 
-Most agent setups still live as separate sessions: context is split across
-chat tabs, terminals, local worktrees, and human notes. Each run may work, but
-the shared operational picture gets lost between handoffs.
+Most agent setups still live across separate sessions: context is split
+between chat tabs, terminals, local worktrees, and human notes. Each run can
+work well, but handoffs lack one shared operational picture.
 
-| Chat / one-shot agents | UFO |
+| Standalone AI sessions | UFO |
 | --- | --- |
-| Context is scattered across sessions | **Operations** carry shared history in the fleet |
-| Humans coordinate every handoff | **Routines** and **crews** launch the next leg |
-| Local runs stay isolated from shared state | **Rovers** bridge local runtimes into one Hub |
+| Context stays session-local | **Operations** carry shared history in the fleet |
+| Handoffs are mostly manual | **Routines** and **crews** launch the next leg |
+| Local runs need a shared state bridge | **Rovers** bridge local runtimes into one Hub |
 | “Who ran what?” is tribal | Board, **signals**, diffs, membership |
 
 Humans keep **Claude Code**, **Codex**, **Grok Build**, and the rest. UFO is
@@ -62,28 +78,15 @@ the **fleet** layer — one Hub, many rovers, shared context.
 - **Crews & membership** — fleets, roles, email invites, crews (pilots +
   humans).
 - **Bring the pilots** — Claude Code, Codex, Antigravity, Grok Build, Cursor
-  Agent, GitHub Copilot, Amp Code, OpenCode, OpenClaw, Hermes, Pi, Kimi, Kiro
-  (binary on `PATH`).
-
----
-
-## Screenshots
-
-**Hub**
-
-![Hub board (light)](.github/assets/hub-light.png#gh-light-mode-only)
-![Hub board (dark)](.github/assets/hub-dark.png#gh-dark-mode-only)
-
-**Rover**
-
-![Rover TUI](.github/assets/rover.png)
+  Agent, GitHub Copilot, Amp Code, OpenCode, OpenClaw, Hermes, Pi, Kimi,
+  Kiro, CodeBuddy Code (binary on `PATH`).
 
 ---
 
 ## Quick start (local)
 
-No cloud account. Stand up a **Hub** on this machine, then connect a
-**rover**.
+No cloud account is required. Stand up a **Hub** on this machine, then
+connect a **rover**.
 
 **Needs:** [Docker](https://docs.docker.com/get-docker/) and
 [Rust/Cargo](https://rustup.rs) (rovers run on the **host**, so they can use
@@ -134,12 +137,25 @@ Install at least one supported CLI and ensure it’s on `PATH` (e.g. `claude`,
 ### 5. Dispatch the first operation
 
 1. Open a **mission** (project frame on the fleet).
-2. Drop an **operation** (the work unit).
+2. Drop an **operation** (the work item).
 3. Assign a **pilot**.
 4. Watch the board: queued → accepted → running → review/done, with live
    updates and a diff when code changed.
 
 That’s the loop. Routines, skills, crews, and auto-commit all build on it.
+
+---
+
+## Screenshots
+
+**Hub**
+
+![Hub board (light)](.github/assets/hub-light.png#gh-dark-mode-only)
+![Hub board (dark)](.github/assets/hub-dark.png#gh-light-mode-only)
+
+**Rover**
+
+![Rover TUI](.github/assets/rover.png)
 
 ---
 
@@ -168,7 +184,8 @@ loads the stored enrollments from `~/.ufo/rovers.json`.
 `PATH`, then the same `enroll` / `start` commands. Details:
 [apps/rover/README.md](apps/rover/README.md).
 
-Tested on **macOS, FreeBSD, Linux, and Windows**.
+Release artifacts cover **macOS, FreeBSD, Linux, and Windows**. Routine CI
+tests run on macOS, Linux, and Windows.
 
 ---
 
@@ -178,7 +195,7 @@ Tested on **macOS, FreeBSD, Linux, and Windows**.
 | --- | --- |
 | **Fleet** | Trust boundary — owns missions, operations, and rovers |
 | **Mission** | Project frame on a fleet (codes like `MSJ-123`) |
-| **Operation** | One unit of work on the board |
+| **Operation** | One work item on the board |
 | **Hub** | Control plane in “orbit” (API + state) |
 | **Rover** | Local runtime connector that accepts work and runs pilots |
 | **Pilot** | Local AI CLI the rover runs |
@@ -210,6 +227,9 @@ flowchart TD
     api <--> db["PostgreSQL<br/>fleet state"]
     api <--> rover["Rust rover<br/>runtime host"]
     rover --> pilot["Pilot CLI<br/>Claude / Codex / Grok<br/>worktree"]
+    click web href "apps/web" "View source"
+    click api href "apps/api" "View source"
+    click rover href "apps/rover" "View source"
 ```
 
 **Trust note:** anyone in a fleet can dispatch work to that fleet’s rovers.
@@ -276,8 +296,7 @@ Contributor workflow: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Contributing
 
-Issues, [Discussions](https://github.com/fengsi/ufo/discussions), and PRs are
-welcome — start with [CONTRIBUTING.md](CONTRIBUTING.md).
+Issues and PRs are welcome — start with [CONTRIBUTING.md](CONTRIBUTING.md).
 
 During the public beta, schema changes usually land in one init migration.
 When release notes mention a schema reset, back up or wipe local DBs before

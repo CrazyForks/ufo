@@ -5,13 +5,23 @@ All notable changes to UFO are recorded here.
 > **Public beta:** before 1.0, contracts may still evolve. Prefer tagged
 > releases; release notes call out anything that needs a careful upgrade.
 
+## [0.6.2] — 2026-07-06
+
+Public beta patch release. Rover CLI **0.6.2+**.
+
+### Pilots & rovers
+- Added CodeBuddy Code as a built-in pilot.
+
+### CI
+- Removed cross-platform rover binary builds from routine CI.
+
 ## [0.6.1] — 2026-07-05
 
-Public beta feature release. Adds email-first onboarding, reusable skills,
-usage and budget controls, safer unattended routine loops, and English,
-Simplified Chinese, and Traditional Chinese UI. Prefer a fresh local Hub DB
-when coming from 0.5.x unless you migrate the pre-release schema manually.
-Rover CLI **0.6.1+**.
+Public beta feature release. Adds email-first onboarding, reusable skills and
+repo context, usage and budget controls, safer unattended routine loops, and
+English, Simplified Chinese, and Traditional Chinese UI. Prefer a fresh local
+Hub DB when coming from 0.5.x unless you migrate the pre-release schema
+manually. Rover CLI **0.6.1+**.
 
 ### Accounts & onboarding
 - Email/password signup now validates input earlier, creates a personal fleet,
@@ -27,7 +37,7 @@ Rover CLI **0.6.1+**.
   or operations.
 - Pilots receive the selected skills when they accept work, making repeated
   team practices easier to reuse.
-- Rovers can include tracked repo context from `.ufo/context/repo.md` so
+- Pilot prompts can include repo context from `.ufo/context/repo.md` so
   pilots start with the project rules that live beside the code.
 
 ### Usage & budgets
@@ -37,8 +47,7 @@ Rover CLI **0.6.1+**.
 - Fleets, missions, operations, and rovers can set spend or run caps that the
   Hub enforces before assigning more work.
 - UFO notifies the fleet once per budget period when a cap stops new work.
-- Budget controls now live in Hub settings, so rovers no longer need separate
-  budget environment variables.
+- Budget controls now live on Hub resources instead of rover process settings.
 
 ### Routines & loops
 - Routines can continue into follow-up operations automatically when
@@ -55,14 +64,12 @@ Rover CLI **0.6.1+**.
 ### Pilot handoff & rover
 - If a pilot needs input, UFO can try another available pilot before asking a
   human to review the operation.
-- Rovers now give clearer branch and worktree status after automated updates.
+- The CLI now gives clearer branch and worktree status after automated
+  updates.
 - Successful self-development loop commits can clean up their operation
   worktrees automatically.
-
-### Rover CLI
-- Fixed the outpost TUI home screen so many rovers, units, operations, and
-  events stay inside the terminal frame instead of scrolling the banner off
-  the top row.
+- Fixed the outpost TUI home screen so dense rover, unit, operation, and event
+  lists stay inside the terminal frame instead of scrolling the banner away.
 
 ### Web UI
 - Added English, Simplified Chinese, and Traditional Chinese UI catalogs.
@@ -73,6 +80,9 @@ Rover CLI **0.6.1+**.
 - Added usage summaries and budget editors for fleet, mission, and rover
   scopes.
 - Added settings for skills and routine controls for self-development loops.
+
+### Docs
+- Added a Simplified Chinese README.
 
 ## [0.5.0] — 2026-07-01
 
