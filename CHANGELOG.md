@@ -5,6 +5,14 @@ All notable changes to UFO are recorded here.
 > **Public beta:** before 1.0, contracts may still evolve. Prefer tagged
 > releases; release notes call out anything that needs a careful upgrade.
 
+## [0.7.1] - 2026-07-10
+
+Rover patch release.
+
+### Rover CLI
+- Fixed pre-commit checks on Windows when Git Bash is installed but WSL is not
+  set up.
+
 ## [0.7.0] - 2026-07-09
 
 Public beta feature release: **GitHub and GitLab forges**, optional unattended

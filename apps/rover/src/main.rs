@@ -4711,25 +4711,87 @@ fn write_git_exclude(path: &Path, git_dir: &str) -> Result<()> {
     Ok(())
 }
 
+fn is_windows_wsl_bash_stub(path: &Path) -> bool {
+    let lower = path
+        .to_string_lossy()
+        .to_ascii_lowercase()
+        .replace('/', "\\");
+    lower.contains(r"\system32\bash")
+        || lower.contains(r"\syswow64\bash")
+        || lower.contains(r"\windowsapps\")
+        || lower.contains(r"\system32\wsl")
+}
+
 fn check_shell_candidates() -> Vec<(PathBuf, Vec<&'static str>)> {
-    let mut out = vec![(PathBuf::from("bash"), vec!["-lc"])];
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut push = |path: PathBuf| {
+        if cfg!(windows) && is_windows_wsl_bash_stub(&path) {
+            return;
+        }
+        if path.as_os_str().is_empty() {
+            return;
+        }
+        if seen.insert(path.clone()) {
+            out.push((path, vec!["-c"]));
+        }
+    };
+
     if cfg!(windows) {
-        let mut extras = vec![
+        let mut known = vec![
             PathBuf::from(r"C:\Program Files\Git\bin\bash.exe"),
             PathBuf::from(r"C:\Program Files\Git\usr\bin\bash.exe"),
+            PathBuf::from(r"C:\Program Files\Git\bin\sh.exe"),
+            PathBuf::from(r"C:\Program Files\Git\usr\bin\sh.exe"),
         ];
         if let Ok(pf) = std::env::var("ProgramFiles") {
-            extras.push(PathBuf::from(&pf).join(r"Git\bin\bash.exe"));
-            extras.push(PathBuf::from(&pf).join(r"Git\usr\bin\bash.exe"));
+            known.push(PathBuf::from(&pf).join(r"Git\bin\bash.exe"));
+            known.push(PathBuf::from(&pf).join(r"Git\usr\bin\bash.exe"));
+            known.push(PathBuf::from(&pf).join(r"Git\bin\sh.exe"));
+            known.push(PathBuf::from(&pf).join(r"Git\usr\bin\sh.exe"));
         }
         if let Ok(pf86) = std::env::var("ProgramFiles(x86)") {
-            extras.push(PathBuf::from(&pf86).join(r"Git\bin\bash.exe"));
+            known.push(PathBuf::from(&pf86).join(r"Git\bin\bash.exe"));
+            known.push(PathBuf::from(&pf86).join(r"Git\usr\bin\bash.exe"));
         }
-        for path in extras {
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            known.push(PathBuf::from(local).join(r"Programs\Git\bin\bash.exe"));
+        }
+        for path in known {
             if path.is_file() {
-                out.push((path, vec!["-lc"]));
+                push(path);
             }
         }
+        if let Ok(path_var) = std::env::var("PATH") {
+            for dir in path_var.split(';').filter(|d| !d.is_empty()) {
+                let dir = PathBuf::from(dir);
+                let git = dir.join("git.exe");
+                if git.is_file()
+                    && let Some(git_root) = dir.parent()
+                {
+                    for rel in [
+                        r"bin\bash.exe",
+                        r"usr\bin\bash.exe",
+                        r"bin\sh.exe",
+                        r"usr\bin\sh.exe",
+                    ] {
+                        let cand = git_root.join(rel);
+                        if cand.is_file() {
+                            push(cand);
+                        }
+                    }
+                }
+                for name in ["bash.exe", "sh.exe"] {
+                    let cand = dir.join(name);
+                    if cand.is_file() {
+                        push(cand);
+                    }
+                }
+            }
+        }
+    } else {
+        push(PathBuf::from("bash"));
+        push(PathBuf::from("sh"));
     }
     out
 }

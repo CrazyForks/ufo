@@ -17,10 +17,10 @@ async fn init_test_git_repo(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn make_executable(path: &Path) -> Result<()> {
+fn make_executable(_path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
+        fs::set_permissions(_path, fs::Permissions::from_mode(0o755))?;
     }
     Ok(())
 }
@@ -1176,6 +1176,23 @@ fn commit_to_branch_fails_pre_commit_checks_without_committing() {
 
         let _ = fs::remove_dir_all(base);
     });
+}
+
+#[test]
+fn windows_wsl_bash_stub_paths_are_detected() {
+    assert!(is_windows_wsl_bash_stub(Path::new(
+        r"C:\Windows\System32\bash.exe"
+    )));
+    assert!(is_windows_wsl_bash_stub(Path::new(
+        r"C:\Windows\System32\wsl.exe"
+    )));
+    assert!(is_windows_wsl_bash_stub(Path::new(
+        r"C:\Program Files\WindowsApps\MicrosoftCorporationII.WindowsSubsystemForLinux_1.0\bash.exe"
+    )));
+    assert!(!is_windows_wsl_bash_stub(Path::new(
+        r"C:\Program Files\Git\bin\bash.exe"
+    )));
+    assert!(!is_windows_wsl_bash_stub(Path::new("/usr/bin/bash")));
 }
 
 #[test]

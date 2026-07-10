@@ -381,6 +381,7 @@ pub(crate) fn remote_https_url(action: &AcceptedForgeAction) -> Result<String> {
 
 fn askpass_script() -> Result<PathBuf> {
     let dir = env::temp_dir();
+    #[cfg(not(windows))]
     let path = dir.join(format!("ufo-git-askpass-{}.sh", std::process::id()));
     #[cfg(unix)]
     {

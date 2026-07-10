@@ -69,7 +69,40 @@ workflow:
   before_script:
     - Invoke-WebRequest -Uri https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
     - .\rustup-init.exe -y --profile minimal --default-toolchain stable
-    - $env:Path = "C:\Program Files\Git\bin;C:\Program Files\Git\usr\bin;$env:USERPROFILE\.cargo\bin;$env:Path"
+    - |
+      $cargoBin = Join-Path $env:USERPROFILE ".cargo\bin"
+      $parts = @($cargoBin)
+      $git = (Get-Command git -ErrorAction SilentlyContinue).Source
+      if ($git) {
+        $gitRoot = Split-Path (Split-Path $git -Parent) -Parent
+        $parts += @(
+          (Join-Path $gitRoot "bin"),
+          (Join-Path $gitRoot "usr\bin"),
+          (Join-Path $gitRoot "cmd")
+        )
+      }
+      $parts += @(
+        "C:\Program Files\Git\bin",
+        "C:\Program Files\Git\usr\bin",
+        "C:\Program Files\Git\cmd"
+      )
+      $env:Path = (($parts + ($env:Path -split ';')) -join ';')
+      $gitBash = @(
+        (Join-Path ${env:ProgramFiles} "Git\bin\bash.exe"),
+        (Join-Path ${env:ProgramFiles} "Git\usr\bin\bash.exe")
+      ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+      if (-not $gitBash -and $git) {
+        $gitRoot = Split-Path (Split-Path $git -Parent) -Parent
+        $cand = Join-Path $gitRoot "bin\bash.exe"
+        if (Test-Path $cand) { $gitBash = $cand }
+      }
+      if (-not $gitBash) {
+        throw "Git for Windows bash.exe not found (WSL bash stub is not enough)"
+      }
+      & $gitBash -c "exit 0"
+      if ($LASTEXITCODE -ne 0) {
+        throw "Git bash failed a smoke check: $gitBash"
+      }
   script:
     - cd apps/rover
     - cargo test

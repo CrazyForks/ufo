@@ -171,7 +171,7 @@ func clientIP(r *http.Request, trustProxy bool) string {
 }
 
 const (
-	currentRoverVersion = "0.7.0"
+	currentRoverVersion = "0.7.1"
 	roverVersionHeader  = "X-UFO-Rover-Version"
 	maxRoverUnits       = 100
 )
