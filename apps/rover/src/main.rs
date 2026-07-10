@@ -1,8 +1,6 @@
 //! UFO local rover.
-//!
-//! Accepts queued runs from the Hub, lets the assigned pilot
-//! drive the rover, streams typed messages back, captures
-//! the resulting `git diff`, and reports a terminal state.
+
+mod forge;
 
 use std::collections::{HashMap, VecDeque};
 #[cfg(windows)]
@@ -87,7 +85,6 @@ fn format_ts(time: &chrono::DateTime<chrono::Local>) -> String {
     time.format("%Y-%m-%d %H:%M:%S %z").to_string()
 }
 
-/// Print a timestamped log line.
 macro_rules! logline {
     ($($arg:tt)*) => {{
         if !TUI_ACTIVE.load(Ordering::Relaxed) {
@@ -247,7 +244,6 @@ enum RoverAction {
     },
 }
 
-/// Rover-facing view of an accepted run (matches the API's AcceptedRun).
 #[derive(Debug, Deserialize)]
 struct AcceptedRun {
     id: String,
@@ -257,6 +253,14 @@ struct AcceptedRun {
     worktree_enabled: bool,
     #[serde(default)]
     worktree_base_ref: String,
+    #[serde(default)]
+    worktree_fallback_ref: String,
+    #[serde(default)]
+    worktree_refresh_ref: String,
+    #[serde(default)]
+    worktree_base_sync: String,
+    #[serde(default)]
+    auto_commit_branch: String,
     #[allow(dead_code)]
     status: String,
     #[serde(default)]
@@ -268,9 +272,22 @@ struct AcceptedRun {
     #[serde(default)]
     can_propose_sub_operations: bool,
     #[serde(default)]
+    reconcile: bool,
+    #[serde(default)]
+    reconcile_imports: Vec<ReconcileImport>,
+    #[serde(default)]
     assets: Vec<AcceptedAsset>,
     #[serde(default)]
     skills: Vec<AcceptedSkill>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct ReconcileImport {
+    operation_id: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    diff: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -309,6 +326,10 @@ struct AcceptedSourceAction {
     branch_name: String,
     #[serde(default)]
     drop_worktree_on_success: bool,
+    #[serde(default)]
+    checks_commands: Vec<String>,
+    #[serde(default)]
+    checks_timeout_seconds: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -488,7 +509,6 @@ fn default_outpost() -> PathBuf {
 
 fn http_client() -> Client {
     let _ = rustls::crypto::ring::default_provider().install_default();
-    // Timeout must exceed the hub accept wait (default 25s); other calls quick.
     Client::builder()
         .default_headers(rover_headers())
         .timeout(Duration::from_secs(60))
@@ -765,7 +785,7 @@ async fn enroll_web(
                     return Err(anyhow!("enrollment check returned {status}: {message}"));
                 }
                 if std::time::Instant::now() >= deadline {
-                    return Err(anyhow!("enrollment timed out — code was not approved"));
+                    return Err(anyhow!("enrollment timed out - code was not approved"));
                 }
                 sleep(interval).await;
             }
@@ -916,7 +936,7 @@ fn prompt_line(prompt: &str) -> Result<String> {
 fn cmd_list() -> Result<()> {
     let cfg = load_config()?;
     if cfg.rovers.is_empty() {
-        println!("no rover enrollments — run `ufo rover enroll`");
+        println!("no rover enrollments - run `ufo rover enroll`");
         return Ok(());
     }
     for (rover_id, e) in &cfg.rovers {
@@ -945,7 +965,7 @@ async fn cmd_status(rover: Option<String>) -> Result<()> {
         None => cfg.rovers.into_iter().collect(),
     };
     if selected.is_empty() {
-        println!("no rover enrollments — run `ufo rover enroll`");
+        println!("no rover enrollments - run `ufo rover enroll`");
         return Ok(());
     }
 
@@ -1010,7 +1030,6 @@ async fn cmd_remove(rover: Option<String>, all: bool) -> Result<()> {
     }
     let client = http_client();
     for (u, e) in removed {
-        // Best-effort hub-side enrollment removal (ignore if unreachable / already gone).
         let _ = client
             .delete(hub_url(&e.hub, format!("rovers/{u}")))
             .bearer_auth(&e.token)
@@ -1205,7 +1224,7 @@ async fn cmd_start(
         None => cfg.rovers.into_iter().collect(),
     };
     if selected.is_empty() {
-        return Err(anyhow!("no rover enrollments — run `ufo rover enroll`"));
+        return Err(anyhow!("no rover enrollments - run `ufo rover enroll`"));
     }
     let units = units.map(validate_rover_units).transpose()?;
     let base = outpost.unwrap_or_else(default_outpost);
@@ -1246,7 +1265,6 @@ async fn run_rovers(
     let caps = PilotCaps::detect().await;
     let active_runs = Arc::new(AtomicUsize::new(0));
 
-    // One async task per enrollment; a long run on one rover never stalls another.
     let mut set = JoinSet::new();
     for (rover_id, entry) in selected {
         let base = base.clone();
@@ -3261,7 +3279,6 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
-/// One rover's accept/execute loop.
 #[allow(clippy::too_many_arguments)]
 async fn rover_loop(
     rover_id: &str,
@@ -3331,7 +3348,7 @@ async fn rover_loop(
     dashboard_rover_units(&dashboard, rover_id, units);
     let fleet = fleet_label(&entry);
     logline!(
-        "rover {} ({rover_id}) started — hub={hub} fleet={fleet} ready for operation (units={units})",
+        "rover {} ({rover_id}) started - hub={hub} fleet={fleet} ready for operation (units={units})",
         entry.name
     );
     dashboard_rover_status(&dashboard, rover_id, "ready");
@@ -3391,12 +3408,11 @@ async fn rover_loop(
             }
             dashboard_rover_remove(&dashboard, rover_id);
             logline!(
-                "rover {} ({rover_id}) revoked by hub — stopping",
+                "rover {} ({rover_id}) revoked by hub - stopping",
                 entry.name
             );
             return Ok(());
         }
-        // Acquire a slot *before* accepting, so we never hold more work than we can run.
         let permit = sem.clone().acquire_owned().await?;
         if revoked.load(Ordering::Relaxed) {
             drop(permit);
@@ -3442,6 +3458,62 @@ async fn rover_loop(
                     auto_tags.join(", ")
                 );
                 caps = refreshed;
+            }
+        }
+
+        match forge::accept_forge_action(&client, &hub, &token).await {
+            Ok(Some(action)) => {
+                let client = client.clone();
+                let hub = hub.clone();
+                let token = token.clone();
+                let operation_directory = if !action.operation_id.is_empty()
+                    && !action.operation_worktree_name.is_empty()
+                {
+                    operation_directory_path(
+                        &operation_base,
+                        &action.operation_id,
+                        &action.operation_worktree_name,
+                        &action.operation_created_at,
+                    )
+                    .ok()
+                } else {
+                    None
+                };
+                let source_worktree = source_worktree.clone();
+                let dashboard = dashboard.clone();
+                let rover_id = rover_id.to_string();
+                active_runs.fetch_add(1, Ordering::Relaxed);
+                let active_runs = active_runs.clone();
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    dashboard_rover_status(
+                        &dashboard,
+                        &rover_id,
+                        &format!("forge:{}", action.kind),
+                    );
+                    let report = forge::execute_forge_action(
+                        &client,
+                        &action,
+                        operation_directory.as_deref(),
+                        source_worktree.as_deref(),
+                    )
+                    .await;
+                    if let Err(e) =
+                        forge::report_forge_action(&client, &hub, &token, &action.id, &report).await
+                    {
+                        errline!("[{rover_id}] forge report error: {e:#}");
+                    }
+                    active_runs.fetch_sub(1, Ordering::Relaxed);
+                    dashboard_rover_waiting(&dashboard, &rover_id, "ready");
+                });
+                continue;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                drop(permit);
+                errline!("[{rover_id}] forge action accept error: {e:#}");
+                sleep(Duration::from_secs(retry_seconds)).await;
+                continue;
             }
         }
 
@@ -3896,7 +3968,6 @@ async fn upload_referenced_files(
     let max_bytes = asset_upload_max_bytes();
     let max_count = asset_upload_max_files();
     let mut uploaded = 0usize;
-    // longest-path-first avoids prefix corruption
     let mut replacements: Vec<(PathBuf, String)> = local_assets
         .iter()
         .map(|asset| (asset.path.clone(), asset.url.clone()))
@@ -4004,7 +4075,6 @@ async fn upload_generated_asset(
     Ok(asset.url)
 }
 
-/// Prepare the operation work tree and execute the run.
 #[allow(clippy::too_many_arguments)]
 async fn run_one(
     client: &Client,
@@ -4023,6 +4093,7 @@ async fn run_one(
         operation_directory,
         source_worktree,
         run.worktree_base_ref.as_str(),
+        run.worktree_fallback_ref.as_str(),
     )
     .await
     {
@@ -4033,6 +4104,30 @@ async fn run_one(
                 run.operation_id,
                 operation_directory.display()
             );
+            if let Some(msg) = refresh_worktree_for_loop(
+                operation_directory,
+                run.worktree_refresh_ref.as_str(),
+                run.worktree_base_sync.as_str(),
+                run.auto_commit_branch.as_str(),
+            )
+            .await
+            {
+                logline!("run {} base refresh: {msg}", run.id);
+                let _ = append_event(client, hub, token, &run.id, "status", &msg).await;
+            }
+            if run.reconcile || !run.reconcile_imports.is_empty() {
+                apply_reconcile_imports(
+                    client,
+                    hub,
+                    token,
+                    run,
+                    operation_directory,
+                    run.worktree_base_ref.as_str(),
+                    run.worktree_fallback_ref.as_str(),
+                    &run.reconcile_imports,
+                )
+                .await;
+            }
             if let Err(e) = execute_run(
                 client,
                 hub,
@@ -4091,11 +4186,12 @@ async fn ensure_work_directory(
     path: &Path,
     source_worktree: Option<&Path>,
     base_ref: &str,
+    fallback_ref: &str,
 ) -> Result<()> {
     if path.join(".git").exists() {
         if let Some(source) = source_worktree {
             if marker_work_directory(path)? {
-                migrate_marker_work_directory(source, path, base_ref).await?;
+                migrate_marker_work_directory(source, path, base_ref, fallback_ref).await?;
                 return Ok(());
             }
             if !same_git_common_dir(source, path).await? {
@@ -4104,6 +4200,7 @@ async fn ensure_work_directory(
                 ));
             }
             exclude_operation_assets(path).await?;
+            sync_clean_worktree_to_base(path, base_ref, fallback_ref).await?;
         } else if !path.join(".ufo-work-directory").is_file() {
             return Err(anyhow!("operation directory is not a UFO work directory"));
         } else {
@@ -4112,7 +4209,7 @@ async fn ensure_work_directory(
         return Ok(());
     }
     if let Some(source) = source_worktree {
-        create_operation_worktree(source, path, base_ref).await?;
+        create_operation_worktree(source, path, base_ref, fallback_ref).await?;
         return Ok(());
     }
     fs::create_dir_all(path)?;
@@ -4150,7 +4247,12 @@ async fn canonical_git_common_dir(path: &Path) -> Result<PathBuf> {
     fs::canonicalize(path).context("canonicalize git common dir")
 }
 
-async fn migrate_marker_work_directory(source: &Path, path: &Path, base_ref: &str) -> Result<()> {
+async fn migrate_marker_work_directory(
+    source: &Path,
+    path: &Path,
+    base_ref: &str,
+    fallback_ref: &str,
+) -> Result<()> {
     if !marker_work_directory(path)? {
         return Err(anyhow!(
             "operation directory is not a marker work directory"
@@ -4170,7 +4272,7 @@ async fn migrate_marker_work_directory(source: &Path, path: &Path, base_ref: &st
             .unwrap_or_default()
     ));
     fs::rename(path, &backup)?;
-    match create_operation_worktree(source, path, base_ref).await {
+    match create_operation_worktree(source, path, base_ref, fallback_ref).await {
         Ok(()) => {
             let assets = backup.join("assets");
             if assets.exists() {
@@ -4201,27 +4303,137 @@ fn marker_work_directory(path: &Path) -> Result<bool> {
     Ok(true)
 }
 
-async fn resolve_worktree_start_point(source: &Path, preferred: &str) -> String {
-    let preferred = preferred.trim();
-    if !preferred.is_empty() {
-        let branch_ref = format!("refs/heads/{preferred}");
-        if git_success(source, &["show-ref", "--verify", "--quiet", &branch_ref])
-            .await
-            .unwrap_or(false)
-        {
-            return preferred.to_string();
-        }
-        if git_success(source, &["rev-parse", "--verify", "--quiet", preferred])
-            .await
-            .unwrap_or(false)
-        {
-            return preferred.to_string();
-        }
+async fn resolve_worktree_start_point(source: &Path, preferred: &str, fallback: &str) -> String {
+    if let Some(r) = resolve_existing_ref(source, preferred).await {
+        return r;
+    }
+    if let Some(r) = resolve_existing_ref(source, fallback).await {
+        return r;
     }
     "HEAD".to_string()
 }
 
-async fn create_operation_worktree(source: &Path, path: &Path, base_ref: &str) -> Result<()> {
+async fn refresh_worktree_for_loop(
+    worktree: &Path,
+    refresh_ref: &str,
+    sync: &str,
+    tip_branch: &str,
+) -> Option<String> {
+    let refresh_ref = refresh_ref.trim();
+    let tip_branch = tip_branch.trim();
+    if refresh_ref.is_empty() && tip_branch.is_empty() {
+        return None;
+    }
+    let _ = git(worktree, &["fetch", "--all", "--prune"]).await;
+    let mut notes: Vec<String> = Vec::new();
+    if !refresh_ref.is_empty() {
+        let target = resolve_existing_ref(worktree, refresh_ref)
+            .await
+            .or(resolve_existing_ref(worktree, &format!("origin/{refresh_ref}")).await);
+        if let Some(target) = target {
+            let sync = match sync.trim().to_ascii_lowercase().as_str() {
+                "reset" => "merge",
+                "rebase" => "rebase",
+                _ => "merge",
+            };
+            let err = if sync == "rebase" {
+                git(worktree, &["rebase", &target]).await.err()
+            } else {
+                git(
+                    worktree,
+                    &[
+                        "merge",
+                        "--no-edit",
+                        "-m",
+                        &format!("UFO refresh base from {refresh_ref}"),
+                        &target,
+                    ],
+                )
+                .await
+                .err()
+            };
+            if let Some(e) = err {
+                let _ = git(worktree, &["rebase", "--abort"]).await;
+                let _ = git(worktree, &["merge", "--abort"]).await;
+                notes.push(format!(
+                    "refresh from {refresh_ref} conflicted ({e:#}); resolve in this worktree and continue"
+                ));
+            } else {
+                notes.push(format!("refreshed worktree with {refresh_ref} ({sync})"));
+            }
+        } else {
+            notes.push(format!("refresh ref {refresh_ref} not found locally"));
+        }
+    }
+    if !tip_branch.is_empty()
+        && let Some(tip) = resolve_existing_ref(worktree, tip_branch).await
+    {
+        let head = git(worktree, &["rev-parse", "HEAD"])
+            .await
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let tip_sha = git(worktree, &["rev-parse", &tip])
+            .await
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if !tip_sha.is_empty() && tip_sha != head {
+            if let Err(e) = git(
+                worktree,
+                &[
+                    "merge",
+                    "--no-edit",
+                    "-m",
+                    &format!("UFO continue loop tip {tip_branch}"),
+                    &tip,
+                ],
+            )
+            .await
+            {
+                let _ = git(worktree, &["merge", "--abort"]).await;
+                notes.push(format!(
+                    "merge loop tip {tip_branch} conflicted ({e:#}); resolve in this worktree and continue"
+                ));
+            } else {
+                notes.push(format!("merged loop tip {tip_branch}"));
+            }
+        }
+    }
+    if notes.is_empty() {
+        None
+    } else {
+        Some(notes.join("; "))
+    }
+}
+
+async fn resolve_existing_ref(source: &Path, name: &str) -> Option<String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let branch_ref = format!("refs/heads/{name}");
+    if git_success(source, &["show-ref", "--verify", "--quiet", &branch_ref])
+        .await
+        .unwrap_or(false)
+    {
+        return Some(name.to_string());
+    }
+    if git_success(source, &["rev-parse", "--verify", "--quiet", name])
+        .await
+        .unwrap_or(false)
+    {
+        return Some(name.to_string());
+    }
+    None
+}
+
+async fn create_operation_worktree(
+    source: &Path,
+    path: &Path,
+    base_ref: &str,
+    fallback_ref: &str,
+) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -4233,7 +4445,7 @@ async fn create_operation_worktree(source: &Path, path: &Path, base_ref: &str) -
             return Err(anyhow!("operation directory is not empty"));
         }
     }
-    let start = resolve_worktree_start_point(source, base_ref).await;
+    let start = resolve_worktree_start_point(source, base_ref, fallback_ref).await;
     let out = Command::new("git")
         .arg("-C")
         .arg(source)
@@ -4248,7 +4460,6 @@ async fn create_operation_worktree(source: &Path, path: &Path, base_ref: &str) -
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    // Only mirror uncommitted source dirt when basing on the live source HEAD.
     if start == "HEAD" {
         apply_source_dirty_state(source, path).await?;
     }
@@ -4400,7 +4611,7 @@ async fn git_untracked_names(path: &Path) -> Result<Vec<PathBuf>> {
         .collect())
 }
 
-async fn git_success(directory: &Path, args: &[&str]) -> Result<bool> {
+pub(crate) async fn git_success(directory: &Path, args: &[&str]) -> Result<bool> {
     let out = Command::new("git")
         .arg("-C")
         .arg(directory)
@@ -4500,25 +4711,208 @@ fn write_git_exclude(path: &Path, git_dir: &str) -> Result<()> {
     Ok(())
 }
 
-async fn git(directory: &Path, args: &[&str]) -> Result<String> {
-    Ok(String::from_utf8_lossy(&git_bytes(directory, args).await?).to_string())
+fn check_shell_candidates() -> Vec<(PathBuf, Vec<&'static str>)> {
+    let mut out = vec![(PathBuf::from("bash"), vec!["-lc"])];
+    if cfg!(windows) {
+        let mut extras = vec![
+            PathBuf::from(r"C:\Program Files\Git\bin\bash.exe"),
+            PathBuf::from(r"C:\Program Files\Git\usr\bin\bash.exe"),
+        ];
+        if let Ok(pf) = std::env::var("ProgramFiles") {
+            extras.push(PathBuf::from(&pf).join(r"Git\bin\bash.exe"));
+            extras.push(PathBuf::from(&pf).join(r"Git\usr\bin\bash.exe"));
+        }
+        if let Ok(pf86) = std::env::var("ProgramFiles(x86)") {
+            extras.push(PathBuf::from(&pf86).join(r"Git\bin\bash.exe"));
+        }
+        for path in extras {
+            if path.is_file() {
+                out.push((path, vec!["-lc"]));
+            }
+        }
+    }
+    out
+}
+
+async fn spawn_bash_lc(cmd: &str, dir: &Path) -> Result<tokio::process::Child, String> {
+    let mut last_err = String::from("bash not found");
+    for (prog, args) in check_shell_candidates() {
+        match Command::new(&prog)
+            .args(args)
+            .arg(cmd)
+            .current_dir(dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+        {
+            Ok(child) => return Ok(child),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                last_err = format!("program not found ({})", prog.display());
+                continue;
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Err(last_err)
+}
+
+pub(crate) async fn run_bash_check_commands(
+    dir: &Path,
+    commands: &[String],
+    timeout_seconds: i64,
+    label: &str,
+) -> Option<String> {
+    let cmds: Vec<&str> = commands
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if cmds.is_empty() {
+        return None;
+    }
+    let timeout_seconds = if timeout_seconds > 0 {
+        timeout_seconds as u64
+    } else {
+        1200
+    };
+    for (i, cmd) in cmds.iter().enumerate() {
+        let child = match spawn_bash_lc(cmd, dir).await {
+            Ok(c) => c,
+            Err(e) => {
+                return Some(format!("{label} checks[{i}] failed to start: {e}"));
+            }
+        };
+        let output = match tokio::time::timeout(
+            Duration::from_secs(timeout_seconds),
+            child.wait_with_output(),
+        )
+        .await
+        {
+            Ok(Ok(o)) => o,
+            Ok(Err(e)) => {
+                return Some(format!("{label} checks[{i}] error: {e}"));
+            }
+            Err(_) => {
+                return Some(format!(
+                    "{label} checks[{i}] timed out after {timeout_seconds} seconds"
+                ));
+            }
+        };
+        if output.status.success() {
+            continue;
+        }
+        let mut msg = format!(
+            "{label} checks[{i}] failed (exit {})",
+            output.status.code().unwrap_or(-1)
+        );
+        let tail = String::from_utf8_lossy(&output.stderr);
+        let tail = if tail.trim().is_empty() {
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        } else {
+            tail.into_owned()
+        };
+        let tail = redact_secrets(tail.trim());
+        if !tail.is_empty() {
+            let snippet: String = tail
+                .chars()
+                .rev()
+                .take(800)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
+            msg.push_str(": ");
+            msg.push_str(snippet.trim());
+        }
+        return Some(msg);
+    }
+    None
+}
+
+pub(crate) async fn git(directory: &Path, args: &[&str]) -> Result<String> {
+    git_env(directory, args, &[]).await
+}
+
+pub(crate) async fn git_env(
+    directory: &Path,
+    args: &[&str],
+    env: &[(&str, String)],
+) -> Result<String> {
+    Ok(String::from_utf8_lossy(&git_bytes_env(directory, args, env).await?).to_string())
 }
 
 async fn git_bytes(directory: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(directory)
-        .args(args)
-        .output()
-        .await?;
+    git_bytes_env(directory, args, &[]).await
+}
+
+async fn git_bytes_env(directory: &Path, args: &[&str], env: &[(&str, String)]) -> Result<Vec<u8>> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(directory).args(args);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let out = cmd.output().await?;
     if !out.status.success() {
+        let args_safe: Vec<String> = args.iter().map(|a| redact_secrets(a)).collect();
         return Err(anyhow!(
             "git {:?} failed: {}",
-            args,
-            String::from_utf8_lossy(&out.stderr).trim()
+            args_safe,
+            redact_secrets(String::from_utf8_lossy(&out.stderr).trim())
         ));
     }
     Ok(out.stdout)
+}
+
+pub(crate) fn redact_secrets(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if let Some(rest) = s.get(i..) {
+            if let Some(at) = rest.find('@')
+                && let Some(scheme) = rest.find("://")
+                && scheme < at
+            {
+                let host_start = scheme + 3;
+                if host_start < at {
+                    out.push_str(&rest[..host_start]);
+                    out.push_str("***@");
+                    i += at + 1;
+                    continue;
+                }
+            }
+            let token_prefix = [
+                ("github_pat_", 11usize),
+                ("glpat-", 6),
+                ("ghp_", 4),
+                ("gho_", 4),
+                ("ghs_", 4),
+                ("ghu_", 4),
+                ("ghr_", 4),
+            ]
+            .into_iter()
+            .find(|(p, _)| rest.starts_with(p));
+            if let Some((prefix, prefix_len)) = token_prefix {
+                out.push_str(prefix);
+                out.push_str("***");
+                i += prefix_len;
+                while i < bytes.len() {
+                    let c = bytes[i] as char;
+                    if c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.' {
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                continue;
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
 }
 
 #[derive(Debug)]
@@ -4635,7 +5029,7 @@ fn response_error_message(status: StatusCode, body: &str) -> String {
 fn web_enrollment_check_error(status: StatusCode, message: &str) -> Option<&'static str> {
     match (status, message) {
         (StatusCode::UNAUTHORIZED, "enrollment code expired") => {
-            Some("web enrollment expired — run `ufo rover enroll` again")
+            Some("web enrollment expired - run `ufo rover enroll` again")
         }
         (StatusCode::FORBIDDEN, "enrollment denied") => Some("web enrollment denied"),
         _ => None,
@@ -4783,7 +5177,6 @@ const PILOTS: &[Pilot] = &[
     },
 ];
 
-/// Pilots available on this host.
 #[derive(Clone, PartialEq, Eq)]
 struct PilotCaps {
     paths: HashMap<String, PathBuf>,
@@ -5147,19 +5540,15 @@ async fn log_pilot_start(
     .await
 }
 
-/// Sentinel a pilot appends when it needs a human to answer before it can
-/// continue. The Hub turns this into an "input requested" signal.
 const NEEDS_INPUT_SENTINEL: &str = "@@UFO_NEEDS_INPUT@@";
 const NEEDS_INPUT_INSTRUCTION: &str = "If you cannot proceed without a decision or information only a human can provide, do not guess: end your reply with a line containing exactly @@UFO_NEEDS_INPUT@@ followed by your question.";
 const WORK_DIRECTORY_INSTRUCTION: &str = "Work only in the current operation directory. If this is a project checkout, it is already an isolated git worktree; do not edit the rover's original source checkout.";
 const STATUS_PREFIX: &str = "@@UFO_STATUS:";
 const STATUS_INSTRUCTION: &str = "By default, finishing leaves the operation In Review for a human. To set a different outcome, end your reply with a line containing exactly @@UFO_STATUS:<status>@@ where <status> is one of in_review, done, blocked, canceled.";
 
-// Explicit top-level operation creation protocol.
 const OPERATIONS_SENTINEL: &str = "@@UFO_OPERATIONS@@";
 const OPERATIONS_INSTRUCTION: &str = "Default conversation belongs to the current operation. Only if the user explicitly asks to create new top-level operations, end your reply with a line containing exactly @@UFO_OPERATIONS@@ followed by a JSON array of objects {\"title\": string, \"body\": string}. These create first-class operations, not sub-operations. Omit this entirely otherwise.";
 
-// Captain split protocol.
 const SUB_OPERATIONS_SENTINEL: &str = "@@UFO_SUB_OPERATIONS@@";
 const SUB_OPERATIONS_INSTRUCTION: &str = "If this operation splits cleanly into independent, non-overlapping pieces that can run in parallel, do the planning/research first, then end your reply with a line containing exactly @@UFO_SUB_OPERATIONS@@ followed by a JSON array of objects {\"title\": string, \"body\": string, \"assignee\": optional pilot kind}. Each piece must touch different files/areas so they merge cleanly. Omit this entirely if the work is not worth splitting.";
 const SUB_OPERATIONS_FEEDBACK_SENTINEL: &str = "@@UFO_SUB_OPERATIONS_FEEDBACK@@";
@@ -5200,7 +5589,6 @@ fn parse_sub_operations_feedback(msg: &str) -> Option<serde_json::Value> {
     v.is_array().then_some(v)
 }
 
-/// Remove @@UFO_SUB_OPERATIONS_FEEDBACK@@ and its trailing JSON from the human message.
 fn strip_sub_operations_feedback(msg: &str) -> String {
     match msg.find(SUB_OPERATIONS_FEEDBACK_SENTINEL) {
         Some(i) => msg[..i].trim().to_string(),
@@ -5387,7 +5775,6 @@ async fn execute_run(
     )
     .await?;
 
-    // Capture the working-tree diff (include untracked via intent-to-add).
     let _ = git(operation_directory, &["add", "-N", "."]).await;
     let content = match git_diff(operation_directory).await {
         Ok(diff) if diff.trim().is_empty() => "(no changes)".to_string(),
@@ -5791,6 +6178,396 @@ async fn apply_operation_to_source(source: &Path, operation: &Path) -> Result<So
     })
 }
 
+async fn sync_clean_worktree_to_base(
+    path: &Path,
+    base_ref: &str,
+    fallback_ref: &str,
+) -> Result<()> {
+    if base_ref.trim().is_empty() && fallback_ref.trim().is_empty() {
+        return Ok(());
+    }
+    let status = git(
+        path,
+        &["status", "--porcelain=v1", "--untracked-files=normal"],
+    )
+    .await?;
+    if !status.trim().is_empty() {
+        return Ok(());
+    }
+    let start = resolve_worktree_start_point(path, base_ref, fallback_ref).await;
+    let head = git(path, &["rev-parse", "HEAD"]).await?.trim().to_string();
+    let tip = git(path, &["rev-parse", &start]).await?.trim().to_string();
+    if head == tip {
+        return Ok(());
+    }
+    git(path, &["reset", "--hard", &start]).await?;
+    let _ = git(path, &["clean", "-fd", "-e", "assets", "-e", "assets/**"]).await;
+    Ok(())
+}
+
+async fn reset_worktree_for_reconcile(
+    operation: &Path,
+    base_ref: &str,
+    fallback_ref: &str,
+) -> Result<String> {
+    let start = resolve_worktree_start_point(operation, base_ref, fallback_ref).await;
+    git(operation, &["reset", "--hard", &start]).await?;
+    let _ = git(
+        operation,
+        &["clean", "-fd", "-e", "assets", "-e", "assets/**"],
+    )
+    .await;
+    Ok(start)
+}
+
+struct ReconcileApplyResult {
+    label: String,
+    operation_id: String,
+    ok: bool,
+    detail: String,
+}
+
+async fn apply_reconcile_import_diffs(
+    operation_directory: &Path,
+    imports: &[ReconcileImport],
+) -> Vec<ReconcileApplyResult> {
+    let mut results = Vec::new();
+    for item in imports {
+        let Some(patch) = normalize_reconcile_patch(&item.diff) else {
+            continue;
+        };
+        let label = if item.title.trim().is_empty() {
+            item.operation_id.clone()
+        } else {
+            item.title.clone()
+        };
+        let apply = git_apply_bytes(
+            operation_directory,
+            &["apply", "--binary", "--whitespace=nowarn"],
+            patch.as_bytes(),
+        )
+        .await;
+        let apply = match apply {
+            Ok(()) => Ok(()),
+            Err(_) => {
+                git_apply_bytes(
+                    operation_directory,
+                    &["apply", "--binary", "--3way", "--whitespace=nowarn"],
+                    patch.as_bytes(),
+                )
+                .await
+            }
+        };
+        match apply {
+            Ok(()) => results.push(ReconcileApplyResult {
+                label,
+                operation_id: item.operation_id.clone(),
+                ok: true,
+                detail: String::new(),
+            }),
+            Err(e) => results.push(ReconcileApplyResult {
+                label,
+                operation_id: item.operation_id.clone(),
+                ok: false,
+                detail: format!("{e:#}"),
+            }),
+        }
+    }
+    results
+}
+
+fn normalize_reconcile_patch(raw: &str) -> Option<String> {
+    let body = raw.trim_start();
+    let body = body.trim_end_matches(['\n', '\r', ' ', '\t']);
+    if body.is_empty() || body == "(no changes)" {
+        return None;
+    }
+    let mut out = body.to_string();
+    out.push('\n');
+    Some(out)
+}
+
+fn write_reconcile_status_file(
+    operation_directory: &Path,
+    reset_to: &str,
+    results: &[ReconcileApplyResult],
+) -> Result<()> {
+    let assets = operation_directory.join("assets");
+    fs::create_dir_all(&assets)?;
+    let mut body = String::new();
+    body.push_str("# Reconcile import status\n\n");
+    body.push_str(&format!(
+        "Worktree reset to `{reset_to}` before applying the latest sub-operation patches.\n\n"
+    ));
+    if results.is_empty() {
+        body.push_str("No non-empty sub-operation diffs to apply.\n");
+    } else {
+        body.push_str("| Sub-operation | Result | Detail |\n| --- | --- | --- |\n");
+        for r in results {
+            let status = if r.ok { "applied" } else { "FAILED" };
+            let detail = r.detail.replace('|', "\\|").replace('\n', " ");
+            body.push_str(&format!(
+                "| {} (`{}`) | {status} | {detail} |\n",
+                r.label, r.operation_id
+            ));
+        }
+    }
+    let conflict_paths = worktree_conflict_marker_paths(operation_directory);
+    if !conflict_paths.is_empty() {
+        body.push_str("\n**Conflict markers detected** (resolve before finishing):\n");
+        for p in conflict_paths.iter().take(40) {
+            body.push_str(&format!("- `{p}`\n"));
+        }
+        if conflict_paths.len() > 40 {
+            body.push_str(&format!("- ...and {} more\n", conflict_paths.len() - 40));
+        }
+    }
+    body.push_str(
+        "\nResolve any FAILED rows and conflict markers, run verification/e2e, and leave one \
+         consolidated tree. When acceptable, finish with `@@UFO_STATUS:done@@`.\n",
+    );
+    fs::write(assets.join("ufo-reconcile-status.md"), body)?;
+    Ok(())
+}
+
+fn worktree_conflict_marker_paths(operation: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack = vec![operation.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = match fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name == ".git" || name == "assets" {
+                continue;
+            }
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !path.is_file() {
+                continue;
+            }
+            let meta = match fs::metadata(&path) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if meta.len() > 1_000_000 {
+                continue;
+            }
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
+            if text_has_git_conflict_markers(&text) {
+                let rel = path
+                    .strip_prefix(operation)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                out.push(rel);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+async fn worktree_unmerged_paths(operation: &Path) -> Result<Vec<String>> {
+    let out = git(operation, &["ls-files", "-u"]).await?;
+    let mut paths: Vec<String> = out
+        .lines()
+        .filter_map(|line| line.split('\t').nth(1).map(|p| p.replace('\\', "/")))
+        .collect();
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
+fn git_conflict_marker_pair() -> (String, String) {
+    ("<".repeat(7), ">".repeat(7))
+}
+
+fn text_has_git_conflict_markers(text: &str) -> bool {
+    let (open, close) = git_conflict_marker_pair();
+    let mut has_open = false;
+    let mut has_close = false;
+    for line in text.lines() {
+        if line.starts_with(&open) {
+            has_open = true;
+        }
+        if line.starts_with(&close) {
+            has_close = true;
+        }
+        if has_open && has_close {
+            return true;
+        }
+    }
+    false
+}
+
+const CONFLICT_PATHS_REPORT_CAP: usize = 20;
+
+fn conflicted_commit_metadata(
+    conflict_paths: &[String],
+    unmerged_paths: &[String],
+) -> Option<serde_json::Value> {
+    let conflict_paths: Vec<&String> = conflict_paths
+        .iter()
+        .take(CONFLICT_PATHS_REPORT_CAP)
+        .collect();
+    let unmerged_paths: Vec<&String> = unmerged_paths
+        .iter()
+        .take(CONFLICT_PATHS_REPORT_CAP)
+        .collect();
+    Some(json!({
+        "new_commit": false,
+        "tip_advanced": false,
+        "conflict_paths": conflict_paths,
+        "unmerged_paths": unmerged_paths,
+    }))
+}
+
+fn conflicted_commit_message(conflict_paths: &[String], unmerged_paths: &[String]) -> String {
+    let mut all = conflict_paths.to_vec();
+    for p in unmerged_paths {
+        if !all.iter().any(|x| x == p) {
+            all.push(p.clone());
+        }
+    }
+    all.sort();
+    let n = all.len();
+    let mut msg = format!(
+        "refusing to commit: conflicted worktree ({} path{})",
+        n,
+        if n == 1 { "" } else { "s" }
+    );
+    if n == 0 {
+        return msg;
+    }
+    let shown: Vec<&str> = all
+        .iter()
+        .take(CONFLICT_PATHS_REPORT_CAP)
+        .map(String::as_str)
+        .collect();
+    msg.push_str(": ");
+    msg.push_str(&shown.join(", "));
+    if n > CONFLICT_PATHS_REPORT_CAP {
+        msg.push_str(&format!(" ...and {} more", n - CONFLICT_PATHS_REPORT_CAP));
+    }
+    msg
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn apply_reconcile_imports(
+    client: &Client,
+    hub: &str,
+    token: &str,
+    run: &AcceptedRun,
+    operation_directory: &Path,
+    base_ref: &str,
+    fallback_ref: &str,
+    imports: &[ReconcileImport],
+) {
+    let reset_to =
+        match reset_worktree_for_reconcile(operation_directory, base_ref, fallback_ref).await {
+            Ok(r) => {
+                logline!(
+                    "run {} reset worktree to {r} before reconcile imports",
+                    run.id
+                );
+                let _ = append_event(
+                    client,
+                    hub,
+                    token,
+                    &run.id,
+                    "status",
+                    &format!("reset worktree to {r} before reconcile imports"),
+                )
+                .await;
+                r
+            }
+            Err(e) => {
+                errline!(
+                    "run {} failed to reset worktree before reconcile imports: {e:#}",
+                    run.id
+                );
+                let _ = append_event(
+                    client,
+                    hub,
+                    token,
+                    &run.id,
+                    "error",
+                    &format!("failed to reset worktree before reconcile imports: {e:#}"),
+                )
+                .await;
+                base_ref.trim().to_string()
+            }
+        };
+
+    let results = apply_reconcile_import_diffs(operation_directory, imports).await;
+    let mut applied = 0usize;
+    let mut failed = 0usize;
+    for r in &results {
+        if r.ok {
+            applied += 1;
+            logline!(
+                "run {} applied reconcile import from {} ({})",
+                run.id,
+                r.label,
+                r.operation_id
+            );
+            let _ = append_event(
+                client,
+                hub,
+                token,
+                &run.id,
+                "status",
+                &format!("applied sub-operation patch: {}", r.label),
+            )
+            .await;
+        } else {
+            failed += 1;
+            errline!(
+                "run {} failed to apply reconcile import from {} ({}): {}",
+                run.id,
+                r.label,
+                r.operation_id,
+                r.detail
+            );
+            let _ = append_event(
+                client,
+                hub,
+                token,
+                &run.id,
+                "error",
+                &format!(
+                    "failed to apply sub-operation patch {}: {}",
+                    r.label, r.detail
+                ),
+            )
+            .await;
+        }
+    }
+    if let Err(e) = write_reconcile_status_file(operation_directory, &reset_to, &results) {
+        errline!(
+            "run {} failed to write reconcile status file: {e:#}",
+            run.id
+        );
+    }
+    if applied > 0 || failed > 0 {
+        let summary = format!(
+            "reconcile imports: {applied} applied, {failed} failed (of {} with diffs)",
+            results.len()
+        );
+        logline!("run {} {summary}", run.id);
+        let _ = append_event(client, hub, token, &run.id, "status", &summary).await;
+    }
+}
+
 async fn branch_operation_changes(
     source: &Path,
     operation: &Path,
@@ -5830,12 +6607,55 @@ async fn branch_operation_changes(
     }
     let base_sha = git_head(operation).await.unwrap_or_default();
     let source_head_sha = git_head(source).await.unwrap_or_default();
+
+    let conflict_paths = worktree_conflict_marker_paths(operation);
+    let unmerged_paths = worktree_unmerged_paths(operation).await?;
+    if !conflict_paths.is_empty() || !unmerged_paths.is_empty() {
+        let tip = if branch_exists {
+            git(operation, &["rev-parse", &branch_ref])
+                .await
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        return Ok(SourceActionReport {
+            status: "conflicted".to_string(),
+            branch_name: action.branch_name.clone(),
+            commit_sha: tip,
+            base_sha,
+            source_head_sha,
+            message: conflicted_commit_message(&conflict_paths, &unmerged_paths),
+            metadata: conflicted_commit_metadata(&conflict_paths, &unmerged_paths),
+        });
+    }
+
+    if update_existing
+        && let Some(message) = run_bash_check_commands(
+            operation,
+            &action.checks_commands,
+            action.checks_timeout_seconds,
+            "pre-commit",
+        )
+        .await
+    {
+        return Ok(SourceActionReport {
+            status: "failed".to_string(),
+            branch_name: action.branch_name.clone(),
+            base_sha,
+            source_head_sha,
+            message,
+            ..SourceActionReport::default()
+        });
+    }
+
     let mut add_args = vec!["add", "--all", "--"];
     add_args.extend_from_slice(GIT_SOURCE_PATHSPECS);
     git(operation, &add_args).await?;
     let mut staged_args = vec!["diff", "--cached", "--name-only", "--"];
     staged_args.extend_from_slice(GIT_SOURCE_PATHSPECS);
     let staged = git(operation, &staged_args).await?;
+    let staged_files = parse_name_only_paths(&staged);
     if staged.trim().is_empty() {
         if branch_exists {
             let tip = git(operation, &["rev-parse", &branch_ref])
@@ -5843,7 +6663,7 @@ async fn branch_operation_changes(
                 .trim()
                 .to_string();
             if tip == base_sha {
-                return Ok(source_action_report_with_changes(
+                return Ok(source_action_report_with_progress(
                     SourceActionReport {
                         status: "succeeded".to_string(),
                         branch_name: action.branch_name.clone(),
@@ -5857,11 +6677,33 @@ async fn branch_operation_changes(
                         ),
                         ..SourceActionReport::default()
                     },
-                    false,
+                    BranchActionProgress::none(),
+                ));
+            }
+            let tip_is_ancestor_of_head =
+                git_success(operation, &["merge-base", "--is-ancestor", &tip, &base_sha])
+                    .await
+                    .unwrap_or(false);
+            if !tip_is_ancestor_of_head {
+                return Ok(source_action_report_with_progress(
+                    SourceActionReport {
+                        status: "succeeded".to_string(),
+                        branch_name: action.branch_name.clone(),
+                        commit_sha: tip.clone(),
+                        base_sha,
+                        source_head_sha,
+                        message: format!(
+                            "branch {} stays at {} (worktree has no new commit to advance it)",
+                            action.branch_name,
+                            short_id(&tip)
+                        ),
+                        ..SourceActionReport::default()
+                    },
+                    BranchActionProgress::none(),
                 ));
             }
             git(operation, &["branch", "-f", &action.branch_name, "HEAD"]).await?;
-            return Ok(source_action_report_with_changes(
+            return Ok(source_action_report_with_progress(
                 SourceActionReport {
                     status: "succeeded".to_string(),
                     branch_name: action.branch_name.clone(),
@@ -5875,13 +6717,17 @@ async fn branch_operation_changes(
                     ),
                     ..SourceActionReport::default()
                 },
-                true,
+                BranchActionProgress {
+                    tip_advanced: true,
+                    new_commit: false,
+                    changed_files: Vec::new(),
+                },
             ));
         }
         if base_sha != source_head_sha || update_existing {
             git(operation, &["branch", &action.branch_name, "HEAD"]).await?;
             let commit_sha = base_sha.clone();
-            return Ok(source_action_report_with_changes(
+            return Ok(source_action_report_with_progress(
                 SourceActionReport {
                     status: "succeeded".to_string(),
                     branch_name: action.branch_name.clone(),
@@ -5895,10 +6741,14 @@ async fn branch_operation_changes(
                     ),
                     ..SourceActionReport::default()
                 },
-                true,
+                BranchActionProgress {
+                    tip_advanced: true,
+                    new_commit: false,
+                    changed_files: Vec::new(),
+                },
             ));
         }
-        return Ok(source_action_report_with_changes(
+        return Ok(source_action_report_with_progress(
             SourceActionReport {
                 status: "failed".to_string(),
                 branch_name: action.branch_name.clone(),
@@ -5907,15 +6757,51 @@ async fn branch_operation_changes(
                 message: "operation worktree has no changes to commit".to_string(),
                 ..SourceActionReport::default()
             },
-            false,
+            BranchActionProgress::none(),
         ));
     }
     let message = source_action_message(action);
     git(operation, &["commit", "-m", &message]).await?;
     let commit_sha = git_head(operation).await?;
+    let progress = BranchActionProgress {
+        tip_advanced: true,
+        new_commit: true,
+        changed_files: staged_files,
+    };
     if branch_exists {
+        let tip = git(operation, &["rev-parse", &branch_ref])
+            .await?
+            .trim()
+            .to_string();
+        if tip != commit_sha {
+            let can_ff = git_success(
+                operation,
+                &["merge-base", "--is-ancestor", &tip, &commit_sha],
+            )
+            .await
+            .unwrap_or(false);
+            if !can_ff {
+                return Ok(source_action_report_with_progress(
+                    SourceActionReport {
+                        status: "failed".to_string(),
+                        branch_name: action.branch_name.clone(),
+                        commit_sha: tip.clone(),
+                        base_sha,
+                        source_head_sha,
+                        message: format!(
+                            "refusing to move branch {} to {} (not a fast-forward from {})",
+                            action.branch_name,
+                            short_id(&commit_sha),
+                            short_id(&tip)
+                        ),
+                        ..SourceActionReport::default()
+                    },
+                    BranchActionProgress::none(),
+                ));
+            }
+        }
         git(operation, &["branch", "-f", &action.branch_name, "HEAD"]).await?;
-        return Ok(source_action_report_with_changes(
+        return Ok(source_action_report_with_progress(
             SourceActionReport {
                 status: "succeeded".to_string(),
                 branch_name: action.branch_name.clone(),
@@ -5929,11 +6815,11 @@ async fn branch_operation_changes(
                 ),
                 ..SourceActionReport::default()
             },
-            true,
+            progress,
         ));
     }
     git(operation, &["branch", &action.branch_name, "HEAD"]).await?;
-    Ok(source_action_report_with_changes(
+    Ok(source_action_report_with_progress(
         SourceActionReport {
             status: "succeeded".to_string(),
             branch_name: action.branch_name.clone(),
@@ -5947,19 +6833,71 @@ async fn branch_operation_changes(
             ),
             ..SourceActionReport::default()
         },
-        true,
+        progress,
     ))
 }
 
-fn source_action_report_with_changes(
+const MAX_BRANCH_ACTION_CHANGED_FILES: usize = 40;
+
+struct BranchActionProgress {
+    tip_advanced: bool,
+    new_commit: bool,
+    changed_files: Vec<String>,
+}
+
+impl BranchActionProgress {
+    fn none() -> Self {
+        Self {
+            tip_advanced: false,
+            new_commit: false,
+            changed_files: Vec::new(),
+        }
+    }
+}
+
+fn parse_name_only_paths(raw: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for line in raw.lines() {
+        let path = line.trim();
+        if path.is_empty() || !seen.insert(path.to_string()) {
+            continue;
+        }
+        out.push(path.to_string());
+        if out.len() >= MAX_BRANCH_ACTION_CHANGED_FILES {
+            break;
+        }
+    }
+    out
+}
+
+fn source_action_report_with_progress(
     mut report: SourceActionReport,
-    had_changes: bool,
+    progress: BranchActionProgress,
 ) -> SourceActionReport {
     let mut map = match report.metadata.take() {
         Some(Value::Object(map)) => map,
         _ => Map::new(),
     };
+    let had_changes = progress.tip_advanced || progress.new_commit;
     map.insert("had_changes".to_string(), Value::Bool(had_changes));
+    map.insert(
+        "tip_advanced".to_string(),
+        Value::Bool(progress.tip_advanced),
+    );
+    map.insert("new_commit".to_string(), Value::Bool(progress.new_commit));
+    if !progress.changed_files.is_empty() {
+        map.insert(
+            "changed_files".to_string(),
+            Value::Array(
+                progress
+                    .changed_files
+                    .into_iter()
+                    .map(Value::String)
+                    .collect(),
+            ),
+        );
+    }
     report.metadata = Some(Value::Object(map));
     report
 }
@@ -5968,7 +6906,6 @@ fn first_line(s: &str) -> &str {
     s.lines().next().unwrap_or("")
 }
 
-/// Renew the run's lease (UFO_ROVER_HEARTBEAT_SECONDS, default 5), returning if the hub says ownership was lost.
 async fn heartbeat(client: &Client, hub: &str, token: &str, run_id: &str) -> Result<()> {
     let interval = std::env::var("UFO_ROVER_HEARTBEAT_SECONDS")
         .ok()
@@ -6015,7 +6952,6 @@ async fn run_streaming(
     let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
     let stderr = child.stderr.take().ok_or_else(|| anyhow!("no stderr"))?;
 
-    // Drain stderr concurrently so a full pipe can't deadlock the child.
     let err_task = {
         let client = client.clone();
         let hub = hub.to_string();
@@ -6159,7 +7095,6 @@ async fn run_streaming_json(
     Ok((status, session, message, usage))
 }
 
-/// Translate one structured JSON pilot event into transcript messages.
 #[allow(clippy::too_many_arguments)]
 async fn process_event(
     client: &Client,
@@ -6172,7 +7107,6 @@ async fn process_event(
     dashboard: &Option<Dashboard>,
 ) -> Result<()> {
     match v.get("type").and_then(|x| x.as_str()) {
-        // claude: an assistant turn carries text / thinking / tool_use blocks.
         Some("assistant") => {
             if let Some(content) = v
                 .get("message")
@@ -6246,7 +7180,6 @@ async fn process_event(
                 }
             }
         }
-        // claude: tool results come back as a user message.
         Some("user") => {
             if let Some(content) = v
                 .get("message")
@@ -6397,7 +7330,6 @@ fn tool_result_text(content: Option<&serde_json::Value>) -> String {
     }
 }
 
-/// Post one typed transcript message and advance the per-run sequence.
 #[allow(clippy::too_many_arguments)]
 async fn post_message(
     client: &Client,
@@ -6914,9 +7846,9 @@ fn resolve_rover_id(cfg: &RoverConfig, key: &str) -> Result<String> {
     let matches: Vec<&String> = cfg.rovers.keys().filter(|k| k.starts_with(key)).collect();
     match matches.len() {
         1 => Ok(matches[0].clone()),
-        0 => Err(anyhow!("no rover matching '{key}' — run `ufo rover list`")),
+        0 => Err(anyhow!("no rover matching '{key}' - run `ufo rover list`")),
         _ => Err(anyhow!(
-            "'{key}' is ambiguous ({} rovers match) — use more characters",
+            "'{key}' is ambiguous ({} rovers match) - use more characters",
             matches.len()
         )),
     }
@@ -6993,11 +7925,11 @@ fn remove_entry(rover_id: &str) -> Result<Option<RoverEntry>> {
 fn forget_rejected_rover(rover_id: &str, hub: &str) -> anyhow::Error {
     match remove_entry(rover_id) {
         Ok(Some(entry)) => anyhow!(
-            "stored connection token rejected by {hub}; removed local enrollment for '{}' ({rover_id}) — run `ufo rover enroll`",
+            "stored connection token rejected by {hub}; removed local enrollment for '{}' ({rover_id}) - run `ufo rover enroll`",
             entry.name
         ),
         Ok(None) => anyhow!(
-            "stored connection token rejected by {hub}; local enrollment was already removed — run `ufo rover enroll`"
+            "stored connection token rejected by {hub}; local enrollment was already removed - run `ufo rover enroll`"
         ),
         Err(err) => anyhow!(
             "stored connection token rejected by {hub}; failed to remove local enrollment for {rover_id}: {err:#}"
@@ -7060,7 +7992,6 @@ async fn default_name() -> String {
             host = h;
         }
     }
-    // Suffix to distinguish multiple enrollments on one host.
     let suffix = format!(
         "{:05x}",
         chrono::Local::now().timestamp_subsec_nanos() & 0xfffff
@@ -7150,7 +8081,6 @@ async fn fetch_rover_config(
     }
 }
 
-// Streaming requests must outlive the 60s client timeout; the hub keepalives every ~20s.
 fn stream_client() -> Client {
     let _ = rustls::crypto::ring::default_provider().install_default();
     Client::builder()
@@ -7159,7 +8089,6 @@ fn stream_client() -> Client {
         .expect("build stream http client")
 }
 
-/// Apply a hub-pushed unit target to the live semaphore without killing in-flight runs.
 fn resize_units(sem: &Arc<Semaphore>, current: &mut usize, target: usize) {
     let target = clamp_rover_units(target);
     if target > *current {
@@ -7176,7 +8105,6 @@ fn resize_units(sem: &Arc<Semaphore>, current: &mut usize, target: usize) {
     *current = target;
 }
 
-/// Listen on the rover's config stream and resize units live; sets `revoked` on a revoke event.
 #[allow(clippy::too_many_arguments)]
 async fn stream_rover_config(
     hub: String,
@@ -7405,7 +8333,6 @@ async fn fetch_hub_version(client: &Client, hub: &str) -> Option<String> {
     (!version.trim().is_empty()).then(|| version.trim().to_string())
 }
 
-/// Exchange an enrollment code for a per-rover connection token (advertising tags).
 async fn enroll(
     client: &Client,
     hub: &str,

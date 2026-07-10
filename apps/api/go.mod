@@ -4,13 +4,13 @@ go 1.26.4
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.42.1
-	github.com/aws/aws-sdk-go-v2/credentials v1.19.27
+	github.com/aws/aws-sdk-go-v2/credentials v1.19.28
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.105.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/zeebo/blake3 v0.2.4
-	golang.org/x/crypto v0.53.0
+	golang.org/x/crypto v0.54.0
 )
 
 require (
@@ -28,7 +28,7 @@ require (
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/zeebo/assert v1.3.1 // indirect
-	golang.org/x/sync v0.21.0 // indirect
-	golang.org/x/sys v0.46.0 // indirect
-	golang.org/x/text v0.39.0 // indirect
+	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/text v0.40.0 // indirect
 )

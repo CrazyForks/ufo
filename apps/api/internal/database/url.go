@@ -20,8 +20,6 @@ func HubURL() string {
 	return DefaultURL
 }
 
-// HubTestURL is UFO_HUB_TEST_DATABASE_URL (empty means integration tests should skip).
-// It never falls back to HubURL / PG*.
 func HubTestURL() string {
 	return strings.TrimSpace(os.Getenv("UFO_HUB_TEST_DATABASE_URL"))
 }
@@ -66,7 +64,6 @@ func dbIdentity(raw string) (string, bool) {
 		}
 		return user + "@" + host + ":" + port + "/" + strings.ToLower(dbname), true
 	}
-	// libpq keyword/value string, e.g. "host=db user=ufo dbname=ufo port=5432"
 	return dbIdentityFromKeywords(raw)
 }
 

@@ -171,7 +171,7 @@ func clientIP(r *http.Request, trustProxy bool) string {
 }
 
 const (
-	currentRoverVersion = "0.6.2"
+	currentRoverVersion = "0.7.0"
 	roverVersionHeader  = "X-UFO-Rover-Version"
 	maxRoverUnits       = 100
 )
@@ -241,12 +241,10 @@ func (s *Server) Handler() http.Handler {
 	api := http.NewServeMux()
 	mux.Handle("/v1/", http.StripPrefix("/v1", api))
 
-	// Auth (public).
 	api.HandleFunc("POST /auth/signup", s.signup)
 	api.HandleFunc("POST /auth/login", s.login)
 	api.HandleFunc("POST /auth/logout", s.logout)
 
-	// UI surface (requires a session).
 	api.HandleFunc("GET /users/me", s.requireUser(s.me))
 	api.HandleFunc("PATCH /users/me", s.requireUser(s.updateMe))
 	api.HandleFunc("GET /users/{id}", s.requireUser(s.getUser))
@@ -288,6 +286,11 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /missions/stats", s.requireUser(s.missionsStats))
 	api.HandleFunc("POST /missions", s.requireUser(s.createMission))
 	api.HandleFunc("GET /missions/{id}", s.requireUser(s.getMission))
+	api.HandleFunc("GET /forges", s.requireUser(s.listForges))
+	api.HandleFunc("POST /forges", s.requireUser(s.createForge))
+	api.HandleFunc("GET /forges/{id}", s.requireUser(s.getForge))
+	api.HandleFunc("PATCH /forges/{id}", s.requireUser(s.updateForge))
+	api.HandleFunc("DELETE /forges/{id}", s.requireUser(s.deleteForge))
 	api.HandleFunc("GET /signals", s.requireUser(s.listSignals))
 	api.HandleFunc("GET /ws", s.requireUser(s.websocketConnect))
 	api.HandleFunc("GET /rovers/{id}", s.getRover)
@@ -309,6 +312,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /source-actions", s.requireUser(s.createSourceAction))
 	api.HandleFunc("POST /pull-requests", s.requireUser(s.addPullRequest))
 	api.HandleFunc("DELETE /pull-requests/{id}", s.requireUser(s.deletePullRequest))
+	api.HandleFunc("POST /forge-actions/accept", s.roverAuth(s.acceptForgeAction))
+	api.HandleFunc("PATCH /forge-actions/{id}", s.roverAuth(s.completeForgeAction))
 	api.HandleFunc("POST /assets", s.createAsset)
 	api.HandleFunc("PATCH /assets/{id}", s.patchAsset)
 	api.HandleFunc("DELETE /assets/{id}", s.deleteAsset)
@@ -345,10 +350,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("PATCH /missions/{id}", s.requireUser(s.updateMission))
 	api.HandleFunc("PATCH /signals/{id}", s.requireUser(s.patchSignal))
 
-	// Rover enrollment (code:approved auth -> exchange; no auth -> web:pending browser flow).
 	api.HandleFunc("POST /rovers", s.createRover)
 
-	// Rover run surface (per-rover connection-token auth).
 	api.HandleFunc("POST /runs/accept", s.roverAuth(s.acceptRun))
 	api.HandleFunc("POST /source-actions/accept", s.roverAuth(s.acceptSourceAction))
 	api.HandleFunc("PATCH /source-actions/{id}", s.roverAuth(s.completeSourceAction))
@@ -586,13 +589,13 @@ func (s *Server) signup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !validPasswordLength(req.Password) {
-		httpError(w, http.StatusBadRequest, "password must be 8–128 characters")
+		httpError(w, http.StatusBadRequest, "password must be 8-128 characters")
 		return
 	}
 	if req.Name == "" {
 		req.Name = emailLocalPart(req.Email)
 	} else if !validDisplayName(req.Name) {
-		httpError(w, http.StatusBadRequest, "name must be 1–80 characters")
+		httpError(w, http.StatusBadRequest, "name must be 1-80 characters")
 		return
 	}
 	hash, err := auth.HashPassword(req.Password)
@@ -638,7 +641,6 @@ func (s *Server) signup(w http.ResponseWriter, r *http.Request) {
 		serverError(w, err)
 		return
 	}
-	// Cookies only after commit so a failed signup never leaves a dead session cookie.
 	accessToken, accessExp, err := s.signUserAccessToken(user)
 	if err != nil {
 		serverError(w, err)
@@ -771,7 +773,7 @@ func (s *Server) updateMe(w http.ResponseWriter, r *http.Request) {
 	}
 	name := strings.TrimSpace(req.Name)
 	if !validDisplayName(name) {
-		httpError(w, http.StatusBadRequest, "name must be 1–80 characters")
+		httpError(w, http.StatusBadRequest, "name must be 1-80 characters")
 		return
 	}
 	user, err := s.q.UpdateUserName(r.Context(), db.UpdateUserNameParams{ID: currentUser(r).ID, Name: name})
@@ -836,10 +838,6 @@ func jwtAudience() string {
 	return "ufo-api"
 }
 
-// jwtSigningKeyFromEnv loads the Hub access-token signing key.
-// Production must set UFO_HUB_JWT_PRIVATE_KEY (base64 Ed25519 seed or private
-// key). An ephemeral per-process key is allowed only when
-// UFO_HUB_JWT_ALLOW_EPHEMERAL is explicitly enabled (local/dev/tests).
 func jwtSigningKeyFromEnv() (ed25519.PrivateKey, error) {
 	raw := strings.TrimSpace(os.Getenv("UFO_HUB_JWT_PRIVATE_KEY"))
 	if raw == "" {
@@ -1694,7 +1692,6 @@ func (s *Server) deleteEnrollmentCode(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// enroll exchanges an enrollment code for a per-rover connection token.
 type enrollReq struct {
 	Name     string   `json:"name"`
 	Units    *int     `json:"units"`
@@ -2077,6 +2074,18 @@ func metadataStringSlice(raw []byte, key string) ([]string, bool) {
 	return normTags(v), true
 }
 
+func metadataStringList(raw []byte, key string) ([]string, bool) {
+	value, ok := metadataMap(raw)[key]
+	if !ok {
+		return nil, false
+	}
+	var v []string
+	if err := json.Unmarshal(value, &v); err != nil {
+		return nil, false
+	}
+	return normTextList(v), true
+}
+
 func operationMetadataJSON(raw []byte) json.RawMessage { return metadataJSON(raw) }
 
 func enrollmentApprovalMetadata(units int, tags []string) []byte {
@@ -2189,40 +2198,142 @@ type routineAssigneeRef struct {
 }
 
 type routineOperationConfig struct {
-	StartImmediately     bool
-	SkipIfActive         bool
-	RePulseOnClose       bool
-	AutoCommitBranch     string
-	DropWorktreeOnCommit bool
-	Priority             int16
-	Assignee             *routineAssigneeRef
-	RequiredTags         []string
-	ExcludedTags         []string
+	StartImmediately      bool
+	SkipIfActive          bool
+	RePulseOnClose        bool
+	AutoCommitBranch      string
+	DropWorktreeOnCommit  bool
+	CreatePullRequest     bool
+	PullRequestBaseBranch string
+	ShipBaseReference     string
+	ShipBaseSync          string
+	PullRequestLabels     []string
+	ForgeKey              string
+	ChecksCommands        []string
+	ChecksTimeoutSeconds  int
+	CIWaitTimeoutSeconds  *int
+	Priority              int16
+	Assignee              *routineAssigneeRef
+	RequiredTags          []string
+	ExcludedTags          []string
+}
+
+const (
+	shipBaseSyncRebase = "rebase"
+	shipBaseSyncMerge  = "merge"
+	shipBaseSyncReset  = "reset"
+)
+
+func normalizeShipBaseSync(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", shipBaseSyncMerge:
+		return shipBaseSyncMerge
+	case shipBaseSyncRebase:
+		return shipBaseSyncRebase
+	case shipBaseSyncReset:
+		return shipBaseSyncReset
+	default:
+		return ""
+	}
+}
+
+func parseAutoCommitBranchValue(branch string) string {
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		return ""
+	}
+	if strings.Contains(branch, "{{") {
+		return branch
+	}
+	return normalizeSourceBranchName(branch)
 }
 
 func routineOperationConfigFromMetadata(r db.Routine) routineOperationConfig {
 	m := nestedMetadataMap(r.Metadata, routineMetadataOperation)
 	cfg := routineOperationConfig{
 		StartImmediately: true, SkipIfActive: true, RePulseOnClose: true,
-		DropWorktreeOnCommit: true,
+		DropWorktreeOnCommit: true, CreatePullRequest: false,
+		PullRequestBaseBranch: defaultPullRequestBaseBranch,
 	}
-	if raw, ok := m["start_immediately"]; ok {
-		_ = json.Unmarshal(raw, &cfg.StartImmediately)
-	}
-	if raw, ok := m["skip_if_active"]; ok {
-		_ = json.Unmarshal(raw, &cfg.SkipIfActive)
-	}
-	if raw, ok := m["re_pulse_on_close"]; ok {
-		_ = json.Unmarshal(raw, &cfg.RePulseOnClose)
-	}
-	if raw, ok := m["auto_commit_branch"]; ok {
-		var branch string
-		if err := json.Unmarshal(raw, &branch); err == nil {
-			cfg.AutoCommitBranch = normalizeSourceBranchName(branch)
+	if raw, ok := m["pulse"]; ok {
+		var pulse struct {
+			StartImmediately *bool `json:"start_immediately"`
+			SkipIfActive     *bool `json:"skip_if_active"`
+			RePulseOnClose   *bool `json:"re_pulse_on_close"`
+		}
+		if err := json.Unmarshal(raw, &pulse); err == nil {
+			if pulse.StartImmediately != nil {
+				cfg.StartImmediately = *pulse.StartImmediately
+			}
+			if pulse.SkipIfActive != nil {
+				cfg.SkipIfActive = *pulse.SkipIfActive
+			}
+			if pulse.RePulseOnClose != nil {
+				cfg.RePulseOnClose = *pulse.RePulseOnClose
+			}
 		}
 	}
-	if raw, ok := m["drop_worktree_on_commit"]; ok {
-		_ = json.Unmarshal(raw, &cfg.DropWorktreeOnCommit)
+	if raw, ok := m["auto_commit"]; ok {
+		var ac struct {
+			Branch       string `json:"branch"`
+			DropWorktree *bool  `json:"drop_worktree"`
+		}
+		if err := json.Unmarshal(raw, &ac); err == nil {
+			cfg.AutoCommitBranch = parseAutoCommitBranchValue(ac.Branch)
+			if ac.DropWorktree != nil {
+				cfg.DropWorktreeOnCommit = *ac.DropWorktree
+			}
+		}
+	}
+	if raw, ok := m["ship_base"]; ok {
+		var sb struct {
+			Branch    string `json:"branch"`
+			Reference string `json:"reference"`
+			Sync      string `json:"sync"`
+		}
+		if err := json.Unmarshal(raw, &sb); err == nil {
+			if b := normalizeSourceBranchName(sb.Branch); b != "" {
+				cfg.PullRequestBaseBranch = b
+			}
+			if r := normalizeSourceBranchName(sb.Reference); r != "" {
+				cfg.ShipBaseReference = r
+			}
+			if s := normalizeShipBaseSync(sb.Sync); s != "" {
+				cfg.ShipBaseSync = s
+			}
+		}
+	}
+	if cfg.ShipBaseSync == "" {
+		cfg.ShipBaseSync = shipBaseSyncMerge
+	}
+	if raw, ok := m["forge"]; ok {
+		var forge struct {
+			Key string `json:"key"`
+		}
+		if err := json.Unmarshal(raw, &forge); err == nil {
+			cfg.ForgeKey = strings.TrimSpace(forge.Key)
+		}
+	}
+	if raw, ok := m["pull_request"]; ok {
+		var pr struct {
+			Create               *bool    `json:"create"`
+			Labels               []string `json:"labels"`
+			CIWaitTimeoutSeconds *int     `json:"ci_wait_timeout_seconds"`
+		}
+		if err := json.Unmarshal(raw, &pr); err == nil {
+			if pr.Create != nil {
+				cfg.CreatePullRequest = *pr.Create
+			}
+			if len(pr.Labels) > 0 {
+				cfg.PullRequestLabels = pr.Labels
+			}
+			if pr.CIWaitTimeoutSeconds != nil && *pr.CIWaitTimeoutSeconds > 0 {
+				cfg.CIWaitTimeoutSeconds = pr.CIWaitTimeoutSeconds
+			}
+		}
+	}
+	if raw, ok := m["checks"]; ok {
+		cfg.ChecksCommands, cfg.ChecksTimeoutSeconds = parseChecksConfig(raw)
 	}
 	if raw, ok := m["priority"]; ok {
 		var priority int16
@@ -2517,7 +2628,6 @@ func (s *Server) dispatchRun(ctx context.Context, q *db.Queries, op db.Operation
 	if !validPilotKind(kind) {
 		return fmt.Errorf("invalid pilot kind %q", kind)
 	}
-	// Resume only on the rover that owns the matching pilot session.
 	canResume := op.PilotSessionID.Valid &&
 		op.PilotSessionKind.Valid && op.PilotSessionKind.String == kind &&
 		op.PilotSessionRoverID.Valid && s.roverOnline(ctx, op.PilotSessionRoverID.Int64)
@@ -2533,7 +2643,6 @@ func (s *Server) dispatchRun(ctx context.Context, q *db.Queries, op db.Operation
 	case prompt != "":
 		command = s.contextPrompt(ctx, q, op)
 	}
-	// First run: command stays empty, and the rover derives title + body.
 
 	run, err := q.CreateRun(ctx, db.CreateRunParams{
 		FleetID: op.FleetID, OperationID: op.ID, MissionID: pgtype.Int8{Int64: op.MissionID, Valid: true}, Command: command, Pilot: kind,
@@ -2567,7 +2676,7 @@ func (s *Server) contextPrompt(ctx context.Context, q *db.Queries, op db.Operati
 		b.WriteString(context)
 		b.WriteByte('\n')
 	} else {
-		fmt.Fprintf(&b, "\n--- Context for %s — none set ---\n", missionLabel)
+		fmt.Fprintf(&b, "\n--- Context for %s - none set ---\n", missionLabel)
 	}
 	b.WriteString("\n--- Conversation so far ---\n")
 	if main, ok := s.mainOperation(ctx, q, op); ok {
@@ -2657,7 +2766,7 @@ func (s *Server) createOperation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Priority < 0 || req.Priority > 4 {
-		httpError(w, http.StatusBadRequest, "priority must be 0–4")
+		httpError(w, http.StatusBadRequest, "priority must be 0-4")
 		return
 	}
 	startDate, startOK := parseDate(req.StartDate)
@@ -2677,7 +2786,6 @@ func (s *Server) createOperation(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	user := currentUser(r)
-	// Every operation belongs to a mission; a fleet with no mission can't take operations.
 	if req.MissionID == nil || *req.MissionID == "" {
 		httpError(w, http.StatusBadRequest, "create a mission first")
 		return
@@ -2732,7 +2840,6 @@ func (s *Server) createOperation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Auto-exec policy: a pilot assignment dispatches; human-only work stays backlog.
 	kind := s.resolveDispatchKind(ctx, qtx, wid, req.AssigneeType, pilotKind, assigneeID)
 	startNow := req.StartNow == nil || *req.StartNow
 	subOperationsEnabled := req.SubOperationsEnabled == nil || *req.SubOperationsEnabled
@@ -3089,6 +3196,7 @@ type operationDetail struct {
 	SourceActionAvailable bool              `json:"source_action_available"`
 	SourceRoverID         *string           `json:"source_rover_id"`
 	SourceActions         []sourceActionDTO `json:"source_actions"`
+	ForgeActions          []map[string]any  `json:"forge_actions"`
 	PullRequests          []pullRequestDTO  `json:"pull_requests"`
 }
 
@@ -3162,6 +3270,11 @@ func (s *Server) getOperation(w http.ResponseWriter, r *http.Request) {
 	subOperations, _ := s.q.ListSubOperations(ctx, pgtype.Int8{Int64: op.ID, Valid: true})
 	relations, _ := s.q.ListRelationsForOperation(ctx, op.ID)
 	sourceActions, _ := s.q.ListSourceActionsForOperation(ctx, op.ID)
+	forgeActions, _ := s.q.ListForgeActionsForOperation(ctx, pgtype.Int8{Int64: op.ID, Valid: true})
+	forgeActionDTOs := make([]map[string]any, 0, len(forgeActions))
+	for _, a := range forgeActions {
+		forgeActionDTOs = append(forgeActionDTOs, s.forgeActionDTO(a))
+	}
 	sourceRun, sourceActionErr := s.q.LatestSourceRunForOperation(ctx, db.LatestSourceRunForOperationParams{OperationID: op.ID, FleetID: op.FleetID})
 	var sourceRoverID *string
 	if sourceActionErr == nil && sourceRun.RoverID.Valid {
@@ -3169,7 +3282,7 @@ func (s *Server) getOperation(w http.ResponseWriter, r *http.Request) {
 			sourceRoverID = strPtr(roverID)
 		}
 	}
-	pullRequests, _ := s.q.ListPullRequestsForOperation(ctx, op.ID)
+	pullRequests, _ := s.q.ListPullRequestsForOperation(ctx, pgtype.Int8{Int64: op.ID, Valid: true})
 	pullRequestDTOs := make([]pullRequestDTO, 0, len(pullRequests))
 	for _, p := range pullRequests {
 		pullRequestDTOs = append(pullRequestDTOs, s.pullRequestDTO(ctx, p))
@@ -3189,6 +3302,7 @@ func (s *Server) getOperation(w http.ResponseWriter, r *http.Request) {
 		SourceActionAvailable: sourceActionErr == nil,
 		SourceRoverID:         sourceRoverID,
 		SourceActions:         s.sourceActionDTOs(ctx, sourceActions),
+		ForgeActions:          forgeActionDTOs,
 		PullRequests:          pullRequestDTOs,
 	})
 }
@@ -3198,16 +3312,18 @@ var validOperationStatus = map[string]bool{
 	"in_review": true, "done": true, "blocked": true, "canceled": true,
 }
 
-// Statuses a pilot may request after a run finishes.
 var pilotSettableStatus = map[string]bool{
 	"in_review": true, "done": true, "blocked": true, "canceled": true,
 }
 
 const (
-	runSourceFailover     = "failover"
-	runSourceHumanComment = "human_comment"
-	runSourceReconcile    = "reconcile"
-	runSourceRoutine      = "routine_pulse"
+	runSourceFailover          = "failover"
+	runSourceHumanComment      = "human_comment"
+	runSourceReconcile         = "reconcile"
+	runSourceRoutine           = "routine_pulse"
+	runSourceAutoCommitResolve = "auto_commit_resolve"
+	runSourceShipBaseResolve   = "ship_base_resolve"
+	maxAutoCommitResolveTries  = 5
 )
 
 var errActiveRun = errors.New("operation already has an active run")
@@ -3428,7 +3544,7 @@ func (s *Server) patchOperation(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if priority < 0 || priority > 4 {
-			httpError(w, http.StatusBadRequest, "priority must be 0–4")
+			httpError(w, http.StatusBadRequest, "priority must be 0-4")
 			return
 		}
 		if err := qtx.SetOperationPriority(ctx, db.SetOperationPriorityParams{ID: op.ID, FleetID: wid, Priority: priority}); err != nil {
@@ -3632,12 +3748,12 @@ func (s *Server) patchOperationMission(w http.ResponseWriter, ctx context.Contex
 		}
 		updated.Metadata = meta
 		msg := fmt.Sprintf(
-			"Moved from mission %s (%s) to %s (%s). Pilot session cleared — the next run must follow only the new mission/fleet context and instructions (prior mission context no longer applies).",
+			"Moved from mission %s (%s) to %s (%s). Pilot session cleared - the next run must follow only the new mission/fleet context and instructions (prior mission context no longer applies).",
 			fromMission.Key, fromMission.Name, toMission.Key, toMission.Name,
 		)
 		if withMain {
 			msg = fmt.Sprintf(
-				"Moved from mission %s (%s) to %s (%s) with the main operation. Pilot session cleared — the next run must follow only the new mission/fleet context and instructions (prior mission context no longer applies).",
+				"Moved from mission %s (%s) to %s (%s) with the main operation. Pilot session cleared - the next run must follow only the new mission/fleet context and instructions (prior mission context no longer applies).",
 				fromMission.Key, fromMission.Name, toMission.Key, toMission.Name,
 			)
 		}
@@ -3958,6 +4074,34 @@ func routineTriggerMetadataFromRequest(w http.ResponseWriter, raw json.RawMessag
 	}
 }
 
+func normalizeOptionalBranchField(w http.ResponseWriter, obj map[string]json.RawMessage, key, fieldPath string, allowTemplate bool) bool {
+	raw, ok := obj[key]
+	if !ok || strings.TrimSpace(string(raw)) == "null" {
+		return true
+	}
+	var branch string
+	if err := json.Unmarshal(raw, &branch); err != nil {
+		httpError(w, http.StatusBadRequest, fieldPath+" must be a string")
+		return false
+	}
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		delete(obj, key)
+		return true
+	}
+	if allowTemplate && strings.Contains(branch, "{{") {
+		obj[key] = jsonRaw(branch)
+		return true
+	}
+	branch = normalizeSourceBranchName(branch)
+	if branch == "" {
+		httpError(w, http.StatusBadRequest, "invalid "+fieldPath)
+		return false
+	}
+	obj[key] = jsonRaw(branch)
+	return true
+}
+
 func (s *Server) routineOperationMetadataFromRequest(w http.ResponseWriter, ctx context.Context, wid int64, raw json.RawMessage) (json.RawMessage, bool) {
 	m, ok := objectMapFromRaw(w, raw, "metadata.operation")
 	if !ok {
@@ -3966,51 +4110,162 @@ func (s *Server) routineOperationMetadataFromRequest(w http.ResponseWriter, ctx 
 	startNow := true
 	skipIfActive := true
 	rePulseOnClose := true
-	if rawSkip, ok := m["skip_if_active"]; ok {
-		if err := json.Unmarshal(rawSkip, &skipIfActive); err != nil {
-			httpError(w, http.StatusBadRequest, "metadata.operation.skip_if_active must be a boolean")
+	if rawPulse, ok := m["pulse"]; ok && strings.TrimSpace(string(rawPulse)) != "null" {
+		pulse, ok := objectMapFromRaw(w, rawPulse, "metadata.operation.pulse")
+		if !ok {
 			return nil, false
 		}
-	}
-	m["skip_if_active"] = jsonRaw(skipIfActive)
-	if rawRe, ok := m["re_pulse_on_close"]; ok {
-		if err := json.Unmarshal(rawRe, &rePulseOnClose); err != nil {
-			httpError(w, http.StatusBadRequest, "metadata.operation.re_pulse_on_close must be a boolean")
-			return nil, false
-		}
-	}
-	m["re_pulse_on_close"] = jsonRaw(rePulseOnClose)
-	dropWorktreeOnCommit := true
-	if rawDrop, ok := m["drop_worktree_on_commit"]; ok {
-		if err := json.Unmarshal(rawDrop, &dropWorktreeOnCommit); err != nil {
-			httpError(w, http.StatusBadRequest, "metadata.operation.drop_worktree_on_commit must be a boolean")
-			return nil, false
-		}
-	}
-	m["drop_worktree_on_commit"] = jsonRaw(dropWorktreeOnCommit)
-	if rawBranch, ok := m["auto_commit_branch"]; ok && strings.TrimSpace(string(rawBranch)) != "null" {
-		var branch string
-		if err := json.Unmarshal(rawBranch, &branch); err != nil {
-			httpError(w, http.StatusBadRequest, "metadata.operation.auto_commit_branch must be a string")
-			return nil, false
-		}
-		branch = strings.TrimSpace(branch)
-		if branch == "" {
-			delete(m, "auto_commit_branch")
-		} else {
-			branch = normalizeSourceBranchName(branch)
-			if branch == "" {
-				httpError(w, http.StatusBadRequest, "invalid metadata.operation.auto_commit_branch")
+		if rawStart, ok := pulse["start_immediately"]; ok {
+			if err := json.Unmarshal(rawStart, &startNow); err != nil {
+				httpError(w, http.StatusBadRequest, "metadata.operation.pulse.start_immediately must be a boolean")
 				return nil, false
 			}
-			m["auto_commit_branch"] = jsonRaw(branch)
 		}
+		if rawSkip, ok := pulse["skip_if_active"]; ok {
+			if err := json.Unmarshal(rawSkip, &skipIfActive); err != nil {
+				httpError(w, http.StatusBadRequest, "metadata.operation.pulse.skip_if_active must be a boolean")
+				return nil, false
+			}
+		}
+		if rawRe, ok := pulse["re_pulse_on_close"]; ok {
+			if err := json.Unmarshal(rawRe, &rePulseOnClose); err != nil {
+				httpError(w, http.StatusBadRequest, "metadata.operation.pulse.re_pulse_on_close must be a boolean")
+				return nil, false
+			}
+		}
+		pulse["start_immediately"] = jsonRaw(startNow)
+		pulse["skip_if_active"] = jsonRaw(skipIfActive)
+		pulse["re_pulse_on_close"] = jsonRaw(rePulseOnClose)
+		m["pulse"] = json.RawMessage(metadataBytes(pulse))
+	} else {
+		m["pulse"] = jsonRaw(map[string]any{
+			"start_immediately": startNow,
+			"skip_if_active":    skipIfActive,
+			"re_pulse_on_close": rePulseOnClose,
+		})
 	}
-	if rawStart, ok := m["start_immediately"]; ok {
-		if err := json.Unmarshal(rawStart, &startNow); err != nil {
-			httpError(w, http.StatusBadRequest, "metadata.operation.start_immediately must be a boolean")
+	if rawAC, ok := m["auto_commit"]; ok && strings.TrimSpace(string(rawAC)) != "null" {
+		ac, ok := objectMapFromRaw(w, rawAC, "metadata.operation.auto_commit")
+		if !ok {
 			return nil, false
 		}
+		if !normalizeOptionalBranchField(w, ac, "branch", "metadata.operation.auto_commit.branch", true) {
+			return nil, false
+		}
+		if _, hasBranch := ac["branch"]; !hasBranch {
+			delete(m, "auto_commit")
+		} else {
+			drop := true
+			if rawDrop, ok := ac["drop_worktree"]; ok {
+				if err := json.Unmarshal(rawDrop, &drop); err != nil {
+					httpError(w, http.StatusBadRequest, "metadata.operation.auto_commit.drop_worktree must be a boolean")
+					return nil, false
+				}
+			}
+			ac["drop_worktree"] = jsonRaw(drop)
+			m["auto_commit"] = json.RawMessage(metadataBytes(ac))
+		}
+	} else {
+		delete(m, "auto_commit")
+	}
+	if rawSB, ok := m["ship_base"]; ok && strings.TrimSpace(string(rawSB)) != "null" {
+		sb, ok := objectMapFromRaw(w, rawSB, "metadata.operation.ship_base")
+		if !ok {
+			return nil, false
+		}
+		if !normalizeOptionalBranchField(w, sb, "branch", "metadata.operation.ship_base.branch", false) {
+			return nil, false
+		}
+		if !normalizeOptionalBranchField(w, sb, "reference", "metadata.operation.ship_base.reference", false) {
+			return nil, false
+		}
+		if rawSync, ok := sb["sync"]; ok && strings.TrimSpace(string(rawSync)) != "null" {
+			var sync string
+			if err := json.Unmarshal(rawSync, &sync); err != nil {
+				httpError(w, http.StatusBadRequest, "metadata.operation.ship_base.sync must be a string")
+				return nil, false
+			}
+			sync = normalizeShipBaseSync(sync)
+			if sync == "" {
+				httpError(w, http.StatusBadRequest, "metadata.operation.ship_base.sync must be rebase, merge, or reset")
+				return nil, false
+			}
+			sb["sync"] = jsonRaw(sync)
+		}
+		if len(sb) == 0 {
+			delete(m, "ship_base")
+		} else {
+			m["ship_base"] = json.RawMessage(metadataBytes(sb))
+		}
+	} else {
+		delete(m, "ship_base")
+	}
+	if rawForge, ok := m["forge"]; ok && strings.TrimSpace(string(rawForge)) != "null" {
+		forge, ok := objectMapFromRaw(w, rawForge, "metadata.operation.forge")
+		if !ok {
+			return nil, false
+		}
+		if rawKey, ok := forge["key"]; ok && strings.TrimSpace(string(rawKey)) != "null" {
+			var key string
+			if err := json.Unmarshal(rawKey, &key); err != nil {
+				httpError(w, http.StatusBadRequest, "metadata.operation.forge.key must be a string")
+				return nil, false
+			}
+			key = strings.TrimSpace(key)
+			if key == "" {
+				delete(m, "forge")
+			} else {
+				forge["key"] = jsonRaw(key)
+				m["forge"] = json.RawMessage(metadataBytes(forge))
+			}
+		} else {
+			delete(m, "forge")
+		}
+	} else {
+		delete(m, "forge")
+	}
+	if rawPR, ok := m["pull_request"]; ok && strings.TrimSpace(string(rawPR)) != "null" {
+		pr, ok := objectMapFromRaw(w, rawPR, "metadata.operation.pull_request")
+		if !ok {
+			return nil, false
+		}
+		if rawCreate, ok := pr["create"]; ok {
+			var create bool
+			if err := json.Unmarshal(rawCreate, &create); err != nil {
+				httpError(w, http.StatusBadRequest, "metadata.operation.pull_request.create must be a boolean")
+				return nil, false
+			}
+			pr["create"] = jsonRaw(create)
+		}
+		if rawLabels, ok := pr["labels"]; ok && strings.TrimSpace(string(rawLabels)) != "null" {
+			var labels []string
+			if err := json.Unmarshal(rawLabels, &labels); err != nil {
+				httpError(w, http.StatusBadRequest, "metadata.operation.pull_request.labels must be an array")
+				return nil, false
+			}
+			clean := make([]string, 0, len(labels))
+			for _, l := range labels {
+				if t := strings.TrimSpace(l); t != "" {
+					clean = append(clean, t)
+				}
+			}
+			if len(clean) == 0 {
+				delete(pr, "labels")
+			} else {
+				pr["labels"] = jsonRaw(clean)
+			}
+		}
+		if rawWait, ok := pr["ci_wait_timeout_seconds"]; ok && strings.TrimSpace(string(rawWait)) != "null" {
+			var n int
+			if err := json.Unmarshal(rawWait, &n); err != nil || n <= 0 {
+				httpError(w, http.StatusBadRequest, "metadata.operation.pull_request.ci_wait_timeout_seconds must be a positive integer")
+				return nil, false
+			}
+			pr["ci_wait_timeout_seconds"] = jsonRaw(n)
+		}
+		m["pull_request"] = json.RawMessage(metadataBytes(pr))
+	} else {
+		delete(m, "pull_request")
 	}
 	priority := int16(0)
 	if rawPriority, ok := m["priority"]; ok {
@@ -4019,7 +4274,7 @@ func (s *Server) routineOperationMetadataFromRequest(w http.ResponseWriter, ctx 
 			return nil, false
 		}
 		if v < 0 || v > 4 {
-			httpError(w, http.StatusBadRequest, "priority must be 0–4")
+			httpError(w, http.StatusBadRequest, "priority must be 0-4")
 			return nil, false
 		}
 		priority = v
@@ -4072,7 +4327,6 @@ func (s *Server) routineOperationMetadataFromRequest(w http.ResponseWriter, ctx 
 			return nil, false
 		}
 	}
-	m["start_immediately"] = jsonRaw(startNow)
 	m["priority"] = jsonRaw(priority)
 	m["required_tags"] = jsonRaw(normTags(requiredTags))
 	m["excluded_tags"] = jsonRaw(normTags(excludedTags))
@@ -4527,8 +4781,7 @@ func (s *Server) createOperationFromRoutine(ctx context.Context, q *db.Queries, 
 	opMeta = operationMetadataWithLoop(opMeta, uuidStr(routine.PublicID), uuidStr(pulse.PublicID))
 	if branch := cfg.AutoCommitBranch; branch != "" {
 		m := metadataMap(opMeta)
-		m["auto_commit_branch"] = jsonRaw(branch)
-		m["drop_worktree_on_commit"] = jsonRaw(cfg.DropWorktreeOnCommit)
+		stampRoutineShipMetadata(m, cfg, branch)
 		opMeta = metadataBytes(m)
 	}
 	op, err := q.CreateOperation(ctx, db.CreateOperationParams{
@@ -4540,6 +4793,25 @@ func (s *Server) createOperationFromRoutine(ctx context.Context, q *db.Queries, 
 	})
 	if err != nil {
 		return db.Operation{}, err
+	}
+	if tmpl := cfg.AutoCommitBranch; tmpl != "" {
+		routineKey := ""
+		if mission, err := q.GetMission(ctx, routine.MissionID); err == nil {
+			routineKey = mission.Key
+		}
+		if routineKey == "" {
+			routineKey = strings.ReplaceAll(uuidStr(routine.PublicID), "-", "")
+			if len(routineKey) > 8 {
+				routineKey = routineKey[:8]
+			}
+		}
+		concrete := expandBranchTemplate(tmpl, routineKey, op, uuidStr(pulse.PublicID))
+		if concrete != "" {
+			m := metadataMap(op.Metadata)
+			stampRoutineShipMetadata(m, cfg, concrete)
+			op.Metadata = metadataBytes(m)
+			_ = q.SetOperationMetadata(ctx, db.SetOperationMetadataParams{ID: op.ID, FleetID: wid, Metadata: op.Metadata})
+		}
 	}
 	source := strings.TrimSpace(triggerKind)
 	if source == "" {
@@ -4561,10 +4833,41 @@ func (s *Server) createOperationFromRoutine(ctx context.Context, q *db.Queries, 
 				m := metadataMap(op.Metadata)
 				loop := nestedMetadataMap(op.Metadata, "loop")
 				loop["previous_operation_id"] = jsonRaw(prevPub)
+				if streak, ok := metadataInt(pulse.Metadata, "empty_streak"); ok && streak > 0 {
+					loop["empty_streak"] = jsonRaw(streak)
+				}
+				if sha, ok := metadataString(pulse.Metadata, "last_commit_sha"); ok && sha != "" {
+					loop["last_commit_sha"] = jsonRaw(sha)
+				}
+				if branch, ok := metadataString(pulse.Metadata, "last_commit_branch"); ok && branch != "" {
+					loop["last_commit_branch"] = jsonRaw(branch)
+				}
+				if files, ok := metadataStringList(pulse.Metadata, "last_changed_files"); ok {
+					if bounded := boundChangedFiles(files); len(bounded) > 0 {
+						loop["last_changed_files"] = jsonRaw(bounded)
+					}
+				}
+				prevIter, _ := metadataInt(pulse.Metadata, "iteration")
+				if prevIter <= 0 {
+					prevIter = loopMetadataInt(prev.Metadata, "iteration")
+				}
+				if prevIter <= 0 {
+					prevIter = 1
+				}
+				loop["iteration"] = jsonRaw(prevIter + 1)
 				m["loop"] = json.RawMessage(metadataBytes(loop))
 				op.Metadata = metadataBytes(m)
 				_ = q.SetOperationMetadata(ctx, db.SetOperationMetadataParams{ID: op.ID, FleetID: wid, Metadata: op.Metadata})
 			}
+		}
+	} else if cfg.AutoCommitBranch != "" {
+		m := metadataMap(op.Metadata)
+		loop := nestedMetadataMap(op.Metadata, "loop")
+		if _, ok := loop["iteration"]; !ok {
+			loop["iteration"] = jsonRaw(1)
+			m["loop"] = json.RawMessage(metadataBytes(loop))
+			op.Metadata = metadataBytes(m)
+			_ = q.SetOperationMetadata(ctx, db.SetOperationMetadataParams{ID: op.ID, FleetID: wid, Metadata: op.Metadata})
 		}
 	}
 	_, _ = q.CreateComment(ctx, db.CreateCommentParams{
@@ -4641,10 +4944,8 @@ func (s *Server) loopRoutine(ctx context.Context, op db.Operation) (db.Routine, 
 }
 
 func (s *Server) operationAutoCommitBranch(ctx context.Context, op db.Operation) string {
-	if branch, ok := metadataString(op.Metadata, "auto_commit_branch"); ok {
-		if b := normalizeSourceBranchName(branch); b != "" {
-			return b
-		}
+	if b := normalizeSourceBranchName(operationMetadataNestedString(op.Metadata, "auto_commit", "branch")); b != "" {
+		return b
 	}
 	routine, ok := s.loopRoutine(ctx, op)
 	if !ok {
@@ -4653,12 +4954,190 @@ func (s *Server) operationAutoCommitBranch(ctx context.Context, op db.Operation)
 	return routineOperationConfigFromMetadata(routine).AutoCommitBranch
 }
 
-func (s *Server) operationDropWorktreeOnCommit(ctx context.Context, op db.Operation) bool {
-	if raw, ok := metadataMap(op.Metadata)["drop_worktree_on_commit"]; ok {
-		var v bool
-		if json.Unmarshal(raw, &v) == nil {
+func stampRoutineShipMetadata(m map[string]json.RawMessage, cfg routineOperationConfig, autoCommitBranch string) {
+	m["auto_commit"] = jsonRaw(map[string]any{
+		"branch":        autoCommitBranch,
+		"drop_worktree": cfg.DropWorktreeOnCommit,
+	})
+	sb := map[string]any{}
+	if b := cfg.pullRequestBaseBranch(); b != "" {
+		sb["branch"] = b
+	}
+	if r := strings.TrimSpace(cfg.ShipBaseReference); r != "" {
+		sb["reference"] = r
+	}
+	if s := normalizeShipBaseSync(cfg.ShipBaseSync); s != "" {
+		sb["sync"] = s
+	}
+	if len(sb) > 0 {
+		m["ship_base"] = jsonRaw(sb)
+	}
+	pr := map[string]any{"create": cfg.CreatePullRequest}
+	if labels := cfg.pullRequestLabels(); len(labels) > 0 {
+		pr["labels"] = labels
+	}
+	if cfg.CIWaitTimeoutSeconds != nil && *cfg.CIWaitTimeoutSeconds > 0 {
+		pr["ci_wait_timeout_seconds"] = *cfg.CIWaitTimeoutSeconds
+	}
+	m["pull_request"] = jsonRaw(pr)
+	if k := strings.TrimSpace(cfg.ForgeKey); k != "" {
+		m["forge"] = jsonRaw(map[string]any{"key": k})
+	}
+}
+
+func operationMetadataBool(meta []byte, path ...string) (bool, bool) {
+	if len(path) == 0 {
+		return false, false
+	}
+	cur := metadataMap(meta)
+	for i, key := range path {
+		raw, ok := cur[key]
+		if !ok {
+			return false, false
+		}
+		if i == len(path)-1 {
+			var v bool
+			if json.Unmarshal(raw, &v) != nil {
+				return false, false
+			}
+			return v, true
+		}
+		next := map[string]json.RawMessage{}
+		if json.Unmarshal(raw, &next) != nil {
+			return false, false
+		}
+		cur = next
+	}
+	return false, false
+}
+
+func operationMetadataNestedString(meta []byte, path ...string) string {
+	if len(path) == 0 {
+		return ""
+	}
+	cur := metadataMap(meta)
+	for i, key := range path {
+		raw, ok := cur[key]
+		if !ok {
+			return ""
+		}
+		if i == len(path)-1 {
+			var s string
+			if json.Unmarshal(raw, &s) != nil {
+				return ""
+			}
+			return strings.TrimSpace(s)
+		}
+		next := map[string]json.RawMessage{}
+		if json.Unmarshal(raw, &next) != nil {
+			return ""
+		}
+		cur = next
+	}
+	return ""
+}
+
+func (s *Server) operationShipBaseBranch(ctx context.Context, op db.Operation) string {
+	if b := normalizeSourceBranchName(operationMetadataNestedString(op.Metadata, "ship_base", "branch")); b != "" {
+		return b
+	}
+	if routine, ok := s.loopRoutine(ctx, op); ok {
+		if b := routineOperationConfigFromMetadata(routine).pullRequestBaseBranch(); b != "" {
+			return b
+		}
+	}
+	return defaultPullRequestBaseBranch
+}
+
+func (s *Server) operationShipBaseReference(ctx context.Context, op db.Operation) string {
+	if r := normalizeSourceBranchName(operationMetadataNestedString(op.Metadata, "ship_base", "reference")); r != "" {
+		return r
+	}
+	if routine, ok := s.loopRoutine(ctx, op); ok {
+		if r := normalizeSourceBranchName(routineOperationConfigFromMetadata(routine).ShipBaseReference); r != "" {
+			return r
+		}
+	}
+	return ""
+}
+
+func (s *Server) operationShipBaseSync(ctx context.Context, op db.Operation) string {
+	if s := normalizeShipBaseSync(operationMetadataNestedString(op.Metadata, "ship_base", "sync")); s != "" {
+		return s
+	}
+	if routine, ok := s.loopRoutine(ctx, op); ok {
+		if s := normalizeShipBaseSync(routineOperationConfigFromMetadata(routine).ShipBaseSync); s != "" {
+			return s
+		}
+	}
+	return shipBaseSyncMerge
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
 			return v
 		}
+	}
+	return ""
+}
+
+func worktreeRefs(autoCommitBranch, shipBase string) (baseRef, fallbackRef string) {
+	baseRef = firstNonEmpty(autoCommitBranch, shipBase)
+	if shipBase != "" && shipBase != baseRef {
+		fallbackRef = shipBase
+	}
+	return baseRef, fallbackRef
+}
+
+func parseChecksConfig(raw json.RawMessage) (cmds []string, timeout int) {
+	var checks struct {
+		Command        string   `json:"command"`
+		Commands       []string `json:"commands"`
+		TimeoutSeconds *int     `json:"timeout_seconds"`
+	}
+	if err := json.Unmarshal(raw, &checks); err != nil {
+		return nil, 0
+	}
+	for _, c := range checks.Commands {
+		if t := strings.TrimSpace(c); t != "" {
+			cmds = append(cmds, t)
+		}
+	}
+	if t := strings.TrimSpace(checks.Command); t != "" {
+		cmds = append(cmds, t)
+	}
+	if checks.TimeoutSeconds != nil && *checks.TimeoutSeconds > 0 {
+		timeout = *checks.TimeoutSeconds
+	}
+	return cmds, timeout
+}
+
+func checksFromMetadataMap(m map[string]json.RawMessage) (cmds []string, timeout int) {
+	raw, ok := m["checks"]
+	if !ok {
+		return nil, 0
+	}
+	return parseChecksConfig(raw)
+}
+
+func (s *Server) operationChecks(ctx context.Context, op db.Operation) (cmds []string, timeout int) {
+	if cmds, timeout = checksFromMetadataMap(metadataMap(op.Metadata)); len(cmds) > 0 {
+		return cmds, timeout
+	}
+	if cmds, timeout = checksFromMetadataMap(nestedMetadataMap(op.Metadata, "operation")); len(cmds) > 0 {
+		return cmds, timeout
+	}
+	if routine, ok := s.loopRoutine(ctx, op); ok {
+		cfg := routineOperationConfigFromMetadata(routine)
+		return cfg.ChecksCommands, cfg.ChecksTimeoutSeconds
+	}
+	return nil, 0
+}
+
+func (s *Server) operationDropWorktreeOnCommit(ctx context.Context, op db.Operation) bool {
+	if v, ok := operationMetadataBool(op.Metadata, "auto_commit", "drop_worktree"); ok {
+		return v
 	}
 	routine, ok := s.loopRoutine(ctx, op)
 	if !ok {
@@ -4681,14 +5160,34 @@ func (s *Server) maybeQueueAutoCommitOnClose(ctx context.Context, op db.Operatio
 		OperationID: op.ID, FleetID: op.FleetID,
 	})
 	if err != nil || !run.RoverID.Valid {
-		s.failAutoCommitQueue(ctx, op, branch, "no worktree run available to auto-commit from")
+		run, err = s.q.LatestSucceededRunWithRoverForOperation(ctx, db.LatestSucceededRunWithRoverForOperationParams{
+			OperationID: op.ID, FleetID: op.FleetID,
+		})
+	}
+	if err != nil || !run.RoverID.Valid {
+		stub := db.SourceAction{
+			FleetID: op.FleetID, OperationID: op.ID,
+			BranchName: branch, Status: "failed",
+			Message: "no worktree run available to auto-commit from",
+		}
+		if s.requeuePilotForAutoCommitIssue(ctx, op, stub, stub.Message) {
+			return true
+		}
+		s.failAutoCommitQueue(ctx, op, branch, stub.Message)
 		return true
 	}
-	meta := metadataBytes(map[string]json.RawMessage{
+	metaMap := map[string]json.RawMessage{
 		"auto_commit":              jsonRaw(true),
 		"re_pulse_on_success":      jsonRaw(true),
 		"drop_worktree_on_success": jsonRaw(s.operationDropWorktreeOnCommit(ctx, op)),
-	})
+	}
+	if cmds, timeout := s.operationChecks(ctx, op); len(cmds) > 0 {
+		metaMap["checks_commands"] = jsonRaw(cmds)
+		if timeout > 0 {
+			metaMap["checks_timeout_seconds"] = jsonRaw(timeout)
+		}
+	}
+	meta := metadataBytes(metaMap)
 	action, err := s.q.CreateSourceAction(ctx, db.CreateSourceActionParams{
 		FleetID: op.FleetID, OperationID: op.ID,
 		RunID:      pgtype.Int8{Int64: run.ID, Valid: true},
@@ -4758,6 +5257,23 @@ func (s *Server) rePulseOperation(ctx context.Context, op db.Operation) {
 	extra := map[string]json.RawMessage{
 		"source":              jsonRaw("loop_close"),
 		"source_operation_id": jsonRaw(uuidStr(op.PublicID)),
+	}
+	if streak := loopMetadataInt(op.Metadata, "empty_streak"); streak > 0 {
+		extra["empty_streak"] = jsonRaw(streak)
+	}
+	if sha := loopMetadataString(op.Metadata, "last_commit_sha"); sha != "" {
+		extra["last_commit_sha"] = jsonRaw(sha)
+	}
+	if branch := loopMetadataString(op.Metadata, "last_commit_branch"); branch != "" {
+		extra["last_commit_branch"] = jsonRaw(branch)
+	}
+	if files := loopMetadataStringSlice(op.Metadata, "last_changed_files"); len(files) > 0 {
+		extra["last_changed_files"] = jsonRaw(files)
+	}
+	if n := loopMetadataInt(op.Metadata, "iteration"); n > 0 {
+		extra["iteration"] = jsonRaw(n)
+	} else if s.operationAutoCommitBranch(ctx, op) != "" {
+		extra["iteration"] = jsonRaw(1)
 	}
 	_, pulse, err := s.executeRoutinePulse(ctx, routine, createdBy, "loop_close", extra)
 	if err != nil {
@@ -4930,7 +5446,6 @@ func (s *Server) addRelation(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "invalid target operation")
 		return
 	}
-	// Normalize the display-facing kind to a stored directed (source, target, kind).
 	source, target, kind := op.ID, tid, ""
 	switch req.Kind {
 	case "blocks":
@@ -4980,7 +5495,7 @@ func (s *Server) deleteRelation(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// ---- source actions (local source checkout/worktree handoff) ----
+// ---- source actions ----
 
 var validSourceActionKind = map[string]bool{
 	"apply_to_source":      true,
@@ -5121,6 +5636,8 @@ type acceptedSourceAction struct {
 	Kind                  string    `json:"kind"`
 	BranchName            string    `json:"branch_name"`
 	DropWorktreeOnSuccess bool      `json:"drop_worktree_on_success"`
+	ChecksCommands        []string  `json:"checks_commands,omitempty"`
+	ChecksTimeoutSeconds  int       `json:"checks_timeout_seconds,omitempty"`
 }
 
 func sourceActionDropWorktreeOnSuccess(meta []byte) bool {
@@ -5160,6 +5677,8 @@ func (s *Server) acceptSourceAction(w http.ResponseWriter, r *http.Request) {
 		OperationCreatedAt: op.CreatedAt.Time.UTC(), OperationWorktreeName: worktreeName,
 		Kind: action.Kind, BranchName: action.BranchName,
 		DropWorktreeOnSuccess: sourceActionDropWorktreeOnSuccess(action.Metadata),
+		ChecksCommands:        forgeMetaStringSlice(action.Metadata, "checks_commands"),
+		ChecksTimeoutSeconds:  forgeMetaInt(action.Metadata, "checks_timeout_seconds"),
 	})
 }
 
@@ -5237,8 +5756,8 @@ func sourceActionHadChanges(meta []byte) bool {
 	return json.Unmarshal(raw, &v) == nil && v
 }
 
-const maxSelfDevEmptyStreak = 2
-const maxSelfDevLastChangedFiles = 40
+const maxLoopEmptyStreak = 2
+const maxLoopLastChangedFiles = 40
 
 func boundChangedFiles(files []string) []string {
 	out := make([]string, 0, len(files))
@@ -5248,7 +5767,7 @@ func boundChangedFiles(files []string) []string {
 			continue
 		}
 		out = append(out, f)
-		if len(out) >= maxSelfDevLastChangedFiles {
+		if len(out) >= maxLoopLastChangedFiles {
 			break
 		}
 	}
@@ -5322,6 +5841,26 @@ func mergeOperationLoopMetadata(meta []byte, patch map[string]any) []byte {
 	return metadataBytes(m)
 }
 
+func (s *Server) operationRePulseOnClose(ctx context.Context, op db.Operation) bool {
+	if routine, ok := s.loopRoutine(ctx, op); ok {
+		return routineOperationConfigFromMetadata(routine).RePulseOnClose
+	}
+	return true
+}
+
+func autoCommitPostSuccessAction(progress bool, emptyStreak int, rePulse, wantsShip bool) string {
+	if !progress && emptyStreak >= maxLoopEmptyStreak {
+		return "ship_or_pause"
+	}
+	if progress && wantsShip && !rePulse {
+		return "ship_oneshot"
+	}
+	if rePulse {
+		return "repulse"
+	}
+	return "none"
+}
+
 func (s *Server) afterAutoCommitSourceAction(ctx context.Context, action db.SourceAction) {
 	if action.Kind != "commit_to_branch" || !sourceActionWantsRePulse(action.Metadata) {
 		return
@@ -5339,57 +5878,96 @@ func (s *Server) afterAutoCommitSourceAction(ctx context.Context, action db.Sour
 		} else {
 			streak++
 		}
-		loopPatch := map[string]any{"empty_streak": streak}
+		loopPatch := map[string]any{"empty_streak": streak, "auto_commit_resolve_tries": 0}
 		if sha := strings.TrimSpace(action.CommitSha); sha != "" {
 			loopPatch["last_commit_sha"] = sha
 		}
 		if br := strings.TrimSpace(action.BranchName); br != "" {
 			loopPatch["last_commit_branch"] = br
 		}
-		if raw, ok := metadataMap(action.Metadata)["changed_files"]; ok {
-			var files []string
-			if json.Unmarshal(raw, &files) == nil {
-				if bound := boundChangedFiles(files); len(bound) > 0 {
-					loopPatch["last_changed_files"] = bound
-				}
+		if files, ok := metadataStringList(action.Metadata, "changed_files"); ok {
+			if bound := boundChangedFiles(files); len(bound) > 0 {
+				loopPatch["last_changed_files"] = bound
 			}
 		}
-		iter := loopMetadataInt(op.Metadata, "iteration")
-		if iter <= 0 {
-			iter = 1
+		if iter := loopMetadataInt(op.Metadata, "iteration"); iter <= 0 {
+			loopPatch["iteration"] = 1
 		}
-		if progress {
-			iter++
-		}
-		loopPatch["iteration"] = iter
 		_ = s.q.SetOperationMetadata(ctx, db.SetOperationMetadataParams{
 			ID: op.ID, FleetID: op.FleetID, Metadata: mergeOperationLoopMetadata(op.Metadata, loopPatch),
 		})
-		if !progress {
-			_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
-				OperationID: op.ID, AuthorType: "system",
-				Body: fmt.Sprintf("Auto-commit to branch %s made no branch progress (empty streak %d/%d).", action.BranchName, streak, maxSelfDevEmptyStreak),
-			})
-			if streak >= maxSelfDevEmptyStreak {
-				_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
-					OperationID: op.ID, AuthorType: "system",
-					Body: "Self-dev loop paused after consecutive empty auto-commits; no further re-pulse.",
-				})
-				s.notifyMembers(ctx, action.FleetID, op.ID, "source_action_failed", "action_required",
-					"Self-dev loop stalled: "+op.Title,
-					fmt.Sprintf("Auto-commit to %s produced no progress %d times in a row. Inspect the worktree or adjust the routine.", action.BranchName, streak))
-				return
-			}
-		} else {
-			_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
-				OperationID: op.ID, AuthorType: "system",
-				Body: fmt.Sprintf("Auto-committed to branch %s; starting next loop iteration.", action.BranchName),
-			})
-		}
 		if op2, err := s.q.GetOperation(ctx, db.GetOperationParams{ID: op.ID, FleetID: op.FleetID}); err == nil {
 			op = op2
 		}
-		s.rePulseOperation(ctx, op)
+		rePulse := s.operationRePulseOnClose(ctx, op)
+		wantsShip := s.operationWantsForgeShip(ctx, op)
+		note := fmt.Sprintf("Auto-committed to branch %s", action.BranchName)
+		if sha := strings.TrimSpace(action.CommitSha); sha != "" {
+			if len(sha) > 12 {
+				note += " @" + sha[:12]
+			} else {
+				note += " @" + sha
+			}
+		}
+		switch autoCommitPostSuccessAction(progress, streak, rePulse, wantsShip) {
+		case "ship_or_pause":
+			_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
+				OperationID: op.ID, AuthorType: "system",
+				Body: fmt.Sprintf("Auto-commit to branch %s made no branch progress (no-progress %d/%d).", action.BranchName, streak, maxLoopEmptyStreak),
+			})
+			if s.maybeQueueForgeShip(ctx, op, action.BranchName, action.CommitSha) {
+				_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
+					OperationID: op.ID, AuthorType: "system",
+					Body: "No-progress threshold reached; queuing forge ship instead of re-pulse.",
+				})
+				return
+			}
+			_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
+				OperationID: op.ID, AuthorType: "system",
+				Body: "Unattended loop paused after consecutive no-progress rounds; no further re-pulse.",
+			})
+			s.notifyMembers(ctx, action.FleetID, op.ID, "source_action_failed", "action_required",
+				"Unattended loop stalled: "+op.Title,
+				fmt.Sprintf("Auto-commit to %s made no branch progress %d times in a row. Inspect the worktree or adjust the routine.", action.BranchName, streak))
+			return
+		case "ship_oneshot":
+			_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
+				OperationID: op.ID, AuthorType: "system",
+				Body: note + ".",
+			})
+			if s.maybeQueueForgeShip(ctx, op, action.BranchName, action.CommitSha) {
+				_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
+					OperationID: op.ID, AuthorType: "system",
+					Body: "Queuing forge ship onto the PR base (one-shot land; re-pulse is off).",
+				})
+				return
+			}
+			_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
+				OperationID: op.ID, AuthorType: "system",
+				Body: "Could not queue forge ship after auto-commit; not starting a loop iteration.",
+			})
+			return
+		case "repulse":
+			if progress {
+				_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
+					OperationID: op.ID, AuthorType: "system",
+					Body: note + ".",
+				})
+			} else {
+				_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
+					OperationID: op.ID, AuthorType: "system",
+					Body: fmt.Sprintf("Auto-commit to branch %s made no branch progress (no-progress %d/%d).", action.BranchName, streak, maxLoopEmptyStreak),
+				})
+			}
+			s.rePulseOperation(ctx, op)
+			return
+		default:
+			_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
+				OperationID: op.ID, AuthorType: "system",
+				Body: note + ".",
+			})
+			return
+		}
 	case "failed", "conflicted":
 		msg := strings.TrimSpace(action.Message)
 		if msg == "" {
@@ -5399,17 +5977,94 @@ func (s *Server) afterAutoCommitSourceAction(ctx context.Context, action db.Sour
 			OperationID: op.ID, AuthorType: "system",
 			Body: fmt.Sprintf("Auto-commit to branch %s %s: %s", action.BranchName, action.Status, msg),
 		})
-		if op.Status == "done" {
+		if s.requeuePilotForAutoCommitIssue(ctx, op, action, msg) {
+			return
+		}
+		if op.Status == "done" || op.Status == "in_progress" {
 			_ = s.setOperationStatus(ctx, s.q, op, "blocked")
 			_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
 				OperationID: op.ID, AuthorType: "system",
-				Body: "Reopened as blocked because auto-commit did not land; retry or fix the worktree, then mark done to re-queue commit.",
+				Body: "Could not re-queue a pilot to fix the auto-commit failure; marked blocked.",
 			})
 		}
 		s.notifyMembers(ctx, action.FleetID, op.ID, "source_action_failed", "action_required",
 			"Auto-commit failed: "+op.Title,
-			fmt.Sprintf("Self-development commit to %s %s — next loop iteration was not started. %s", action.BranchName, action.Status, msg))
+			fmt.Sprintf("Auto-commit to %s %s; pilot resolve was not queued. %s", action.BranchName, action.Status, msg))
 	}
+}
+
+func sourceActionConflictPaths(meta []byte) []string {
+	raw, ok := metadataMap(meta)["conflict_paths"]
+	if !ok {
+		return nil
+	}
+	var paths []string
+	if json.Unmarshal(raw, &paths) != nil {
+		return nil
+	}
+	return boundChangedFiles(paths)
+}
+
+func (s *Server) requeuePilotForAutoCommitIssue(ctx context.Context, op db.Operation, action db.SourceAction, msg string) bool {
+	tries := loopMetadataInt(op.Metadata, "auto_commit_resolve_tries")
+	if tries >= maxAutoCommitResolveTries {
+		_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
+			OperationID: op.ID, AuthorType: "system",
+			Body: fmt.Sprintf("Auto-commit still failing after %d pilot resolve attempts; pausing re-queue.", tries),
+		})
+		return false
+	}
+	atype := ""
+	if op.AssigneeType.Valid {
+		atype = op.AssigneeType.String
+	}
+	kind := s.resolvePilotKind(ctx, s.q, atype, textValue(op.AssigneePilotKind), idValue(op.AssigneeID))
+	if kind == "" {
+		kind = s.fleetPickOtherPilot(ctx, s.q, op.FleetID, nil)
+	}
+	if kind == "" || !s.fleetHasRoverFor(ctx, s.q, op.FleetID, kind) {
+		return false
+	}
+	tries++
+	_ = s.q.SetOperationMetadata(ctx, db.SetOperationMetadataParams{
+		ID: op.ID, FleetID: op.FleetID,
+		Metadata: mergeOperationLoopMetadata(op.Metadata, map[string]any{
+			"auto_commit_resolve_tries": tries,
+		}),
+	})
+	var b strings.Builder
+	b.WriteString("Auto-commit could not land; resolve it in this worktree and finish without waiting for a human.\n\n")
+	fmt.Fprintf(&b, "Branch: `%s`\nStatus: %s\nDetail: %s\n", action.BranchName, action.Status, msg)
+	if paths := sourceActionConflictPaths(action.Metadata); len(paths) > 0 {
+		b.WriteString("\nConflicted paths:\n")
+		for _, p := range paths {
+			fmt.Fprintf(&b, "- `%s`\n", p)
+		}
+	}
+	if action.Status == "conflicted" {
+		b.WriteString("\nResolve git conflicts (merge/rebase as needed). Prefer keeping this operation's intent. ")
+		b.WriteString("Remove all conflict markers. Do not invent unrelated changes.\n")
+	} else {
+		b.WriteString("\nDiagnose the auto-commit failure, fix the worktree, and leave it commit-ready.\n")
+	}
+	b.WriteString("Run verification you can. When the tree is clean and correct, finish with `@@UFO_STATUS:done@@` so UFO re-queues auto-commit.\n")
+	prompt := b.String()
+	_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
+		OperationID: op.ID, AuthorType: "system", Body: prompt,
+	})
+	if err := s.dispatchRun(ctx, s.q, op, kind, prompt, runSourceAutoCommitResolve); err != nil {
+		if errors.Is(err, errActiveRun) {
+			_ = s.setOperationStatus(ctx, s.q, op, "in_progress")
+			return true
+		}
+		return false
+	}
+	_ = s.setOperationStatus(ctx, s.q, op, "in_progress")
+	_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
+		OperationID: op.ID, AuthorType: "system",
+		Body: fmt.Sprintf("Re-queued %s to resolve auto-commit issue (attempt %d/%d).", kind, tries, maxAutoCommitResolveTries),
+	})
+	return true
 }
 
 const (
@@ -5953,7 +6608,8 @@ func (s *Server) addPullRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	pullRequest, err := s.q.CreatePullRequest(r.Context(), db.CreatePullRequestParams{
-		OperationID: op.ID, Url: req.URL, Title: req.Title, Number: num,
+		FleetID: op.FleetID, OperationID: pgtype.Int8{Int64: op.ID, Valid: true},
+		Url: req.URL, Title: req.Title, Number: num, Status: "open",
 		Metadata:  metadata,
 		CreatedBy: pgtype.Int8{Int64: currentUser(r).ID, Valid: true},
 	})
@@ -6344,7 +7000,6 @@ func (s *Server) resumePendingUserComment(ctx context.Context, op db.Operation, 
 
 // ---- pilots ----
 
-// Built-in pilot kinds shown before any fleet-specific custom pilot tags.
 var builtinPilotKinds = []string{
 	"claude",
 	"codex",
@@ -6596,7 +7251,6 @@ func (s *Server) addCrewMember(w http.ResponseWriter, r *http.Request) {
 	memberType := r.PathValue("member_type")
 	memberID := r.PathValue("member_id")
 
-	// Resolve + validate before opening the tx.
 	var addUser func(*db.Queries) error
 	switch memberType {
 	case "user":
@@ -6723,9 +7377,10 @@ func (s *Server) listMissions(w http.ResponseWriter, r *http.Request) {
 		missions = append(missions, rows...)
 	}
 	sort.Slice(missions, func(i, j int) bool { return missions[i].ID < missions[j].ID })
+	binds := s.mapMissionForgeBinds(r.Context(), fleetIDs)
 	out := make([]missionDTO, 0, len(missions))
 	for _, m := range missions {
-		out = append(out, toMissionDTO(m))
+		out = append(out, toMissionDTOWithForges(m, binds[m.ID]))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -6743,7 +7398,76 @@ func (s *Server) getMission(w http.ResponseWriter, r *http.Request) {
 	if !s.requireFleetMember(w, r, mission.FleetID) {
 		return
 	}
-	writeJSON(w, http.StatusOK, toMissionDTO(mission))
+	writeJSON(w, http.StatusOK, s.missionDTO(r.Context(), mission))
+}
+
+func (s *Server) mapMissionForgeBinds(ctx context.Context, fleetIDs []int64) map[int64][]string {
+	out := map[int64][]string{}
+	forgeIDs := map[int64]struct{}{}
+	type link struct {
+		missionID int64
+		forgeID   int64
+	}
+	var links []link
+	for _, wid := range fleetIDs {
+		rows, err := s.q.ListMissionForgesForFleet(ctx, wid)
+		if err != nil {
+			continue
+		}
+		for _, row := range rows {
+			links = append(links, link{missionID: row.MissionID, forgeID: row.ForgeID})
+			forgeIDs[row.ForgeID] = struct{}{}
+		}
+	}
+	if len(links) == 0 {
+		return out
+	}
+	ids := make([]int64, 0, len(forgeIDs))
+	for id := range forgeIDs {
+		ids = append(ids, id)
+	}
+	pubRows, err := s.q.PublicIDsForForges(ctx, ids)
+	if err != nil {
+		return out
+	}
+	pub := map[int64]string{}
+	for _, row := range pubRows {
+		pub[row.ID] = uuidStr(row.PublicID)
+	}
+	for _, l := range links {
+		pid, ok := pub[l.forgeID]
+		if !ok {
+			continue
+		}
+		out[l.missionID] = append(out[l.missionID], pid)
+	}
+	return out
+}
+
+func (s *Server) missionDTO(ctx context.Context, m db.Mission) missionDTO {
+	rows, err := s.q.ListMissionForges(ctx, m.ID)
+	if err != nil || len(rows) == 0 {
+		return toMissionDTOWithForges(m, nil)
+	}
+	ids := make([]int64, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.ForgeID)
+	}
+	pubRows, err := s.q.PublicIDsForForges(ctx, ids)
+	if err != nil {
+		return toMissionDTOWithForges(m, nil)
+	}
+	pub := map[int64]string{}
+	for _, row := range pubRows {
+		pub[row.ID] = uuidStr(row.PublicID)
+	}
+	forgeIDs := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if pid, ok := pub[row.ForgeID]; ok {
+			forgeIDs = append(forgeIDs, pid)
+		}
+	}
+	return toMissionDTOWithForges(m, forgeIDs)
 }
 
 // ---- members & invitations ----
@@ -6830,7 +7554,6 @@ func (s *Server) updateMemberRole(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusForbidden, "only the owner can change roles")
 		return
 	}
-	// A fleet must keep at least one owner, or it becomes unmanageable.
 	if cur, _ := qtx.GetMemberRole(ctx, db.GetMemberRoleParams{UserID: uid, FleetID: wid}); cur == "owner" && req.Role != "owner" {
 		if n, err := qtx.CountFleetOwners(ctx, wid); err != nil || n <= 1 {
 			httpError(w, http.StatusBadRequest, "a fleet must keep at least one owner")
@@ -7255,20 +7978,32 @@ func (s *Server) patchRun(w http.ResponseWriter, r *http.Request) {
 // ---- rover handlers ------------------------------------------------------
 
 type acceptedRun struct {
-	ID                      string          `json:"id"`
-	OperationID             string          `json:"operation_id"`
-	OperationCreatedAt      time.Time       `json:"operation_created_at"`
-	OperationWorktreeName   string          `json:"operation_worktree_name"`
-	WorktreeEnabled         bool            `json:"worktree_enabled"`
-	WorktreeBaseRef         string          `json:"worktree_base_ref,omitempty"`
-	Status                  string          `json:"status"`
-	Pilot                   string          `json:"pilot"`
-	Command                 string          `json:"command"`
-	Prompt                  string          `json:"prompt"`
-	SessionID               string          `json:"session_id"`
-	CanProposeSubOperations bool            `json:"can_propose_sub_operations"`
-	Assets                  []acceptedAsset `json:"assets,omitempty"`
-	Skills                  []skillDTO      `json:"skills,omitempty"`
+	ID                      string            `json:"id"`
+	OperationID             string            `json:"operation_id"`
+	OperationCreatedAt      time.Time         `json:"operation_created_at"`
+	OperationWorktreeName   string            `json:"operation_worktree_name"`
+	WorktreeEnabled         bool              `json:"worktree_enabled"`
+	WorktreeBaseRef         string            `json:"worktree_base_ref,omitempty"`
+	WorktreeFallbackRef     string            `json:"worktree_fallback_ref,omitempty"`
+	WorktreeRefreshRef      string            `json:"worktree_refresh_ref,omitempty"`
+	WorktreeBaseSync        string            `json:"worktree_base_sync,omitempty"`
+	AutoCommitBranch        string            `json:"auto_commit_branch,omitempty"`
+	Status                  string            `json:"status"`
+	Pilot                   string            `json:"pilot"`
+	Command                 string            `json:"command"`
+	Prompt                  string            `json:"prompt"`
+	SessionID               string            `json:"session_id"`
+	CanProposeSubOperations bool              `json:"can_propose_sub_operations"`
+	Reconcile               bool              `json:"reconcile,omitempty"`
+	ReconcileImports        []reconcileImport `json:"reconcile_imports,omitempty"`
+	Assets                  []acceptedAsset   `json:"assets,omitempty"`
+	Skills                  []skillDTO        `json:"skills,omitempty"`
+}
+
+type reconcileImport struct {
+	OperationID string `json:"operation_id"`
+	Title       string `json:"title"`
+	Diff        string `json:"diff,omitempty"`
 }
 
 type acceptedAsset struct {
@@ -7278,8 +8013,6 @@ type acceptedAsset struct {
 	ByteSize    int64  `json:"byte_size"`
 	URL         string `json:"url"`
 }
-
-// removeRoverEnrollment lets a rover delete itself (connection-token auth) — used by `rover remove`.
 
 func (s *Server) roverRunID(w http.ResponseWriter, r *http.Request) (int64, int64, bool) {
 	rv := currentRover(r)
@@ -7390,11 +8123,23 @@ func (s *Server) respondAccepted(ctx context.Context, w http.ResponseWriter, run
 		serverError(w, err)
 		return
 	}
+	autoCommitBranch := s.operationAutoCommitBranch(ctx, op)
+	var baseRef, fallbackRef, shipRef, shipSync string
+	if autoCommitBranch != "" {
+		shipBase := s.operationShipBaseBranch(ctx, op)
+		shipRef = s.operationShipBaseReference(ctx, op)
+		shipSync = s.operationShipBaseSync(ctx, op)
+		baseRef, fallbackRef = worktreeRefs(autoCommitBranch, firstNonEmpty(shipBase, shipRef))
+	}
 	resp := acceptedRun{
 		ID: uuidStr(run.PublicID), OperationID: opUUID, OperationCreatedAt: op.CreatedAt.Time.UTC(),
-		WorktreeEnabled: worktreeEnabled,
-		WorktreeBaseRef: s.operationAutoCommitBranch(ctx, op),
-		Status:          run.Status, Pilot: run.Pilot, Command: run.Command,
+		WorktreeEnabled:     worktreeEnabled,
+		WorktreeBaseRef:     baseRef,
+		WorktreeFallbackRef: fallbackRef,
+		WorktreeRefreshRef:  shipRef,
+		WorktreeBaseSync:    shipSync,
+		AutoCommitBranch:    autoCommitBranch,
+		Status:              run.Status, Pilot: run.Pilot, Command: run.Command,
 	}
 	resp.OperationWorktreeName, err = s.operationWorktreeName(ctx, op)
 	if err != nil {
@@ -7404,7 +8149,7 @@ func (s *Server) respondAccepted(ctx context.Context, w http.ResponseWriter, run
 	if run.SessionID.Valid {
 		resp.SessionID = run.SessionID.String
 	}
-	if operationSubOperationsEnabled(op) && op.AssigneeType.String == "crew" && !op.MainOperationID.Valid {
+	if s.canProposeSubOperations(ctx, op) {
 		resp.CanProposeSubOperations = true
 	}
 	if run.Command != "" {
@@ -7412,8 +8157,15 @@ func (s *Server) respondAccepted(ctx context.Context, w http.ResponseWriter, run
 	} else {
 		resp.Prompt = s.contextPrompt(ctx, s.q, op)
 	}
-	if branch := resp.WorktreeBaseRef; branch != "" && run.Command == "" {
-		resp.Prompt = s.appendSelfDevelopmentPrompt(resp.Prompt, branch, !op.MainOperationID.Valid)
+	if s.runHasSource(ctx, run.ID, runSourceReconcile) {
+		resp.Reconcile = true
+		resp.ReconcileImports = s.reconcileImportsFor(ctx, op)
+	}
+	if autoCommitBranch != "" && run.Command == "" {
+		resp.Prompt = s.appendUnattendedLoopPrompt(
+			ctx, s.q, op, resp.Prompt, autoCommitBranch, fallbackRef,
+			!op.MainOperationID.Valid, resp.CanProposeSubOperations,
+		)
 	}
 	assetText := resp.Prompt
 	assetText = s.operationAssetReferenceText(ctx, s.q, op, run.Command)
@@ -7649,11 +8401,11 @@ func (s *Server) applyRunCompletion(ctx context.Context, wid int64, run db.Run, 
 	if err != nil {
 		return
 	}
-	selfDevDefaultDone := false
+	unattendedLoopDefaultDone := false
 	if !pilotSet && !run.NeedsInput && operationStatus == "in_review" && !op.MainOperationID.Valid &&
 		s.operationAutoCommitBranch(ctx, op) != "" {
 		operationStatus = "done"
-		selfDevDefaultDone = true
+		unattendedLoopDefaultDone = true
 	}
 	var mainOperation db.Operation
 	orchestratedSubOperation := false
@@ -7670,7 +8422,7 @@ func (s *Server) applyRunCompletion(ctx context.Context, wid int64, run db.Run, 
 
 	prevStatus := op.Status
 	_ = s.setOperationStatus(ctx, s.q, op, operationStatus)
-	if (pilotSet || selfDevDefaultDone) && operationStatus == "done" && !op.MainOperationID.Valid {
+	if (pilotSet || unattendedLoopDefaultDone) && operationStatus == "done" && !op.MainOperationID.Valid {
 		s.markReviewedSubOperationsDone(ctx, wid, op.ID, nil)
 	}
 	if pilotSet {
@@ -7678,11 +8430,18 @@ func (s *Server) applyRunCompletion(ctx context.Context, wid int64, run db.Run, 
 			OperationID: run.OperationID, AuthorType: "system",
 			Body: "Pilot set status: " + operationStatus,
 		})
-	} else if selfDevDefaultDone {
+	} else if unattendedLoopDefaultDone {
 		_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
 			OperationID: run.OperationID, AuthorType: "system",
-			Body: "Self-development loop: treating successful run as done (no human review between iterations).",
+			Body: "Unattended loop: treating successful run as done (no human review between iterations).",
 		})
+	}
+	if operationStatus == "done" && s.runHasSource(ctx, run.ID, runSourceShipBaseResolve) {
+		if fresh, err := s.q.GetOperation(ctx, db.GetOperationParams{ID: op.ID, FleetID: wid}); err == nil {
+			if s.maybeRetryForgeShipAfterPilot(ctx, fresh) {
+				return
+			}
+		}
 	}
 	if isTerminalOperationStatus(operationStatus) && !isTerminalOperationStatus(prevStatus) {
 		if fresh, err := s.q.GetOperation(ctx, db.GetOperationParams{ID: op.ID, FleetID: wid}); err == nil {
@@ -7701,7 +8460,7 @@ func (s *Server) applyRunCompletion(ctx context.Context, wid int64, run db.Run, 
 		}
 		if run.NeedsInput {
 			s.notifyMembers(ctx, wid, run.OperationID, "input_requested", "action_required",
-				"Needs input: "+op.Title, "No other pilot could continue from context — a human answer is needed.")
+				"Needs input: "+op.Title, "No other pilot could continue from context - a human answer is needed.")
 		} else {
 			s.notifyMembers(ctx, wid, run.OperationID, "review_requested", "action_required",
 				"Review: "+op.Title, "A pilot finished work and needs your review.")
@@ -7722,7 +8481,7 @@ func (s *Server) applyRunCompletion(ctx context.Context, wid int64, run db.Run, 
 		})
 		if !orchestratedSubOperation {
 			s.notifyMembers(ctx, wid, run.OperationID, "task_failed", "action_required",
-				"Blocked: "+op.Title, fmt.Sprintf("run #%d %s — needs your attention.", run.ID, runStatus))
+				"Blocked: "+op.Title, fmt.Sprintf("run #%d %s - needs your attention.", run.ID, runStatus))
 		}
 	default:
 		if s.resumePendingUserComment(ctx, op, run) {
@@ -7970,35 +8729,66 @@ func (s *Server) applySubOperationsFeedback(ctx context.Context, wid int64, run 
 	_ = s.setOperationStatus(ctx, s.q, mainOperation, "in_progress")
 }
 
+func (s *Server) canProposeSubOperations(ctx context.Context, op db.Operation) bool {
+	if !operationSubOperationsEnabled(op) || op.MainOperationID.Valid {
+		return false
+	}
+	if op.AssigneeType.Valid && op.AssigneeType.String == "crew" && op.AssigneeID.Valid {
+		return true
+	}
+	if s.operationAutoCommitBranch(ctx, op) == "" {
+		return false
+	}
+	atype := ""
+	if op.AssigneeType.Valid {
+		atype = op.AssigneeType.String
+	}
+	return s.resolvePilotKind(ctx, s.q, atype, textValue(op.AssigneePilotKind), idValue(op.AssigneeID)) != ""
+}
+
 func (s *Server) spawnSubOperations(ctx context.Context, wid int64, splitRun db.Run, subOperations []subOperationReq) {
 	mainOperation, err := s.q.GetOperation(ctx, db.GetOperationParams{ID: splitRun.OperationID, FleetID: wid})
-	if err != nil || !operationSubOperationsEnabled(mainOperation) || mainOperation.AssigneeType.String != "crew" || !mainOperation.AssigneeID.Valid || mainOperation.MainOperationID.Valid {
+	if err != nil || !s.canProposeSubOperations(ctx, mainOperation) {
 		return
 	}
 	if len(subOperations) > s.maxSubOperations {
 		log.Printf("spawnSubOperations: operation %d capped %d sub-operations to %d", mainOperation.ID, len(subOperations), s.maxSubOperations)
 		subOperations = subOperations[:s.maxSubOperations]
 	}
+	isCrew := mainOperation.AssigneeType.Valid && mainOperation.AssigneeType.String == "crew" && mainOperation.AssigneeID.Valid
 	crewKinds := map[string]bool{}
 	autoKinds := []string{}
-	if members, err := s.q.ListCrewMembers(ctx, mainOperation.AssigneeID.Int64); err == nil {
-		kinds := crewPilotKinds(members)
-		for _, k := range kinds {
-			crewKinds[k] = true
-		}
-		if len(kinds) > 1 {
-			kinds = append(kinds[1:], kinds[0])
-		}
-		rows, _ := s.q.FleetPilotKindFree(ctx, db.FleetPilotKindFreeParams{FleetID: wid, OnlineWindowSeconds: roverOnlineWindow.Seconds()})
-		hasRover := map[string]bool{}
-		for _, row := range rows {
-			hasRover[row.Kind] = true
-		}
-		for _, k := range kinds {
-			if hasRover[k] {
-				autoKinds = append(autoKinds, k)
+	mainPilotKind := ""
+	if isCrew {
+		if members, err := s.q.ListCrewMembers(ctx, mainOperation.AssigneeID.Int64); err == nil {
+			kinds := crewPilotKinds(members)
+			for _, k := range kinds {
+				crewKinds[k] = true
+			}
+			if len(kinds) > 1 {
+				kinds = append(kinds[1:], kinds[0])
+			}
+			rows, _ := s.q.FleetPilotKindFree(ctx, db.FleetPilotKindFreeParams{FleetID: wid, OnlineWindowSeconds: roverOnlineWindow.Seconds()})
+			hasRover := map[string]bool{}
+			for _, row := range rows {
+				hasRover[row.Kind] = true
+			}
+			for _, k := range kinds {
+				if hasRover[k] {
+					autoKinds = append(autoKinds, k)
+				}
 			}
 		}
+	} else {
+		atype := ""
+		if mainOperation.AssigneeType.Valid {
+			atype = mainOperation.AssigneeType.String
+		}
+		mainPilotKind = s.resolvePilotKind(ctx, s.q, atype, textValue(mainOperation.AssigneePilotKind), idValue(mainOperation.AssigneeID))
+		if mainPilotKind == "" {
+			return
+		}
+		autoKinds = []string{mainPilotKind}
 	}
 
 	tx, err := s.pool.Begin(ctx)
@@ -8014,12 +8804,30 @@ func (s *Server) spawnSubOperations(ctx context.Context, wid int64, splitRun db.
 		if strings.TrimSpace(so.Title) == "" {
 			continue
 		}
-		atype, aid, akind := "crew", idValue(mainOperation.AssigneeID), ""
-		if so.Assignee != nil && crewKinds[*so.Assignee] {
-			atype, aid, akind = "pilot", 0, *so.Assignee
-		} else if len(autoKinds) > 0 {
-			kind := autoKinds[autoKind%len(autoKinds)]
-			autoKind++
+		var atype, akind string
+		var aid int64
+		if isCrew {
+			atype, aid, akind = "crew", idValue(mainOperation.AssigneeID), ""
+			if so.Assignee != nil && crewKinds[*so.Assignee] {
+				atype, aid, akind = "pilot", 0, *so.Assignee
+			} else if len(autoKinds) > 0 {
+				kind := autoKinds[autoKind%len(autoKinds)]
+				autoKind++
+				atype, aid, akind = "pilot", 0, kind
+			}
+		} else {
+			kind := mainPilotKind
+			if so.Assignee != nil {
+				if k := strings.TrimSpace(*so.Assignee); k != "" && validPilotKind(k) {
+					kind = k
+				}
+			} else if len(autoKinds) > 0 {
+				kind = autoKinds[autoKind%len(autoKinds)]
+				autoKind++
+			}
+			if kind == "" {
+				continue
+			}
 			atype, aid, akind = "pilot", 0, kind
 		}
 		if _, err := s.createSubOperation(ctx, qtx, wid, mainOperation, so.Title, so.Body, atype, aid, akind); err != nil {
@@ -8034,15 +8842,24 @@ func (s *Server) spawnSubOperations(ctx context.Context, wid int64, splitRun db.
 		return
 	}
 	_ = s.setOperationStatus(ctx, qtx, mainOperation, "in_progress")
+	role := "Captain"
+	if !isCrew {
+		role = "Main operation"
+	}
 	_, _ = qtx.CreateComment(ctx, db.CreateCommentParams{
 		OperationID: mainOperation.ID, AuthorType: "system",
-		Body: fmt.Sprintf("Captain split into %d sub-operations", created),
+		Body: fmt.Sprintf("%s split into %d sub-operations", role, created),
 	})
 	_ = tx.Commit(ctx)
 }
 
 func (s *Server) maybeReconvene(ctx context.Context, wid int64, mainOperation db.Operation) {
-	if !mainOperation.Orchestrating || mainOperation.AssigneeType.String != "crew" || !mainOperation.AssigneeID.Valid {
+	if !mainOperation.Orchestrating {
+		return
+	}
+	isCrew := mainOperation.AssigneeType.Valid && mainOperation.AssigneeType.String == "crew" && mainOperation.AssigneeID.Valid
+	isUnattendedPilot := !isCrew && s.operationAutoCommitBranch(ctx, mainOperation) != ""
+	if !isCrew && !isUnattendedPilot {
 		return
 	}
 	n, err := s.q.CountActiveOrUnsettledSubOperations(ctx, pgtype.Int8{Int64: mainOperation.ID, Valid: true})
@@ -8055,11 +8872,23 @@ func (s *Server) maybeReconvene(ctx context.Context, wid int64, mainOperation db
 	if err := s.q.SetOperationOrchestrating(ctx, db.SetOperationOrchestratingParams{ID: mainOperation.ID, FleetID: wid, Orchestrating: false}); err != nil {
 		return
 	}
-	captainKind := s.crewPickKind(ctx, s.q, wid, mainOperation.AssigneeID.Int64, nil, true)
+	var captainKind string
+	if isCrew {
+		captainKind = s.crewPickKind(ctx, s.q, wid, mainOperation.AssigneeID.Int64, nil, true)
+	} else {
+		atype := ""
+		if mainOperation.AssigneeType.Valid {
+			atype = mainOperation.AssigneeType.String
+		}
+		captainKind = s.resolvePilotKind(ctx, s.q, atype, textValue(mainOperation.AssigneePilotKind), idValue(mainOperation.AssigneeID))
+		if captainKind != "" && !s.fleetHasRoverFor(ctx, s.q, wid, captainKind) {
+			captainKind = ""
+		}
+	}
 	if captainKind == "" {
 		_ = s.setOperationStatus(ctx, s.q, mainOperation, "blocked")
 		s.notifyMembers(ctx, wid, mainOperation.ID, "no_rover", "action_required",
-			"No capable rover", "Sub-operations finished but no crew rover is available to reconcile them.")
+			"No capable rover", "Sub-operations finished but no rover is available to reconcile them.")
 		return
 	}
 	run, err := s.q.CreateRun(ctx, db.CreateRunParams{
@@ -8073,14 +8902,55 @@ func (s *Server) maybeReconvene(ctx context.Context, wid int64, mainOperation db
 	_, _ = s.q.AppendRunEvent(ctx, db.AppendRunEventParams{RunID: run.ID, Kind: "status", Message: "queued"})
 	_ = s.setOperationStatus(ctx, s.q, mainOperation, "in_progress")
 	_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
-		OperationID: mainOperation.ID, AuthorType: "system", Body: "Captain reconvening to reconcile sub-operations",
+		OperationID: mainOperation.ID, AuthorType: "system", Body: "Reconvening to consolidate sub-operations",
 	})
+}
+
+func (s *Server) runHasSource(ctx context.Context, runID int64, source string) bool {
+	events, err := s.q.ListRunEvents(ctx, runID)
+	if err != nil {
+		return false
+	}
+	for _, e := range events {
+		if e.Kind == "source" && e.Message == source {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) reconcileImportsFor(ctx context.Context, mainOperation db.Operation) []reconcileImport {
+	subOperations, err := s.q.ListSubOperations(ctx, pgtype.Int8{Int64: mainOperation.ID, Valid: true})
+	if err != nil {
+		return nil
+	}
+	var out []reconcileImport
+	for _, subOperation := range subOperations {
+		item := reconcileImport{
+			OperationID: uuidStr(subOperation.PublicID),
+			Title:       subOperation.Title,
+		}
+		if artifact, err := s.q.LatestDiffArtifactForOperation(ctx, subOperation.ID); err == nil {
+			diff := strings.TrimSpace(s.artifactContent(ctx, artifact))
+			if diff != "" && diff != "(no changes)" {
+				item.Diff = diff
+			}
+		}
+		if item.Diff != "" {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 func (s *Server) reconcilePrompt(ctx context.Context, mainOperation db.Operation) string {
 	var b strings.Builder
 	b.WriteString(s.contextPrompt(ctx, s.q, mainOperation))
 	b.WriteString("\n--- Sub-operation results to reconcile ---\n")
+	b.WriteString("The rover resets this main worktree to the configured base branch (when " +
+		"set) and re-applies each sub-operation's latest git.diff before you start " +
+		"(see reconcile_imports and assets/ufo-reconcile-status.md). Treat the working tree as " +
+		"already consolidated when apply succeeded; focus on conflicts, verification, and e2e tests.\n")
 	subOperations, _ := s.q.ListSubOperations(ctx, pgtype.Int8{Int64: mainOperation.ID, Valid: true})
 	for _, subOperation := range subOperations {
 		fmt.Fprintf(&b, "\n## %s [%s]\nSub-operation: %s\nMain operation: %s\n", subOperation.Title, subOperation.Status, uuidStr(subOperation.PublicID), uuidStr(mainOperation.PublicID))
@@ -8100,15 +8970,16 @@ func (s *Server) reconcilePrompt(ctx context.Context, mainOperation db.Operation
 		}
 	}
 	b.WriteString("\nReview each sub-operation above as the gatekeeper, the same way you would " +
-		"review private helper-agent work. Apply accepted non-overlapping changes into this " +
-		"operation's working directory (from the diffs and reports above — each sub-operation " +
-		"worked in its own isolated worktree), resolve conflicts, run verification and e2e " +
+		"review private helper-agent work. On each reconvene the worktree is reset to the " +
+		"preferred base and the latest sub-operation diffs are re-applied (each sub-operation " +
+		"worked in its own isolated worktree). Check assets/ufo-reconcile-status.md for " +
+		"per-patch apply results. Resolve any remaining conflicts, run verification and e2e " +
 		"tests as appropriate, and leave a single consolidated working tree. If every reviewed " +
 		"sub-operation is acceptable, finish with @@UFO_STATUS:done@@ so UFO closes the " +
 		"reviewed sub-operations")
 	if branch := s.operationAutoCommitBranch(ctx, mainOperation); branch != "" {
 		fmt.Fprintf(&b, ", auto-commits this worktree to branch %q (creating it if missing), "+
-			"and starts the next self-development iteration", branch)
+			"and starts the next unattended loop iteration", branch)
 	}
 	b.WriteString(". If a sub-operation report is incomplete but you can verify the " +
 		"answer yourself from available tools, repo files, API, or database state, do that " +
@@ -8121,24 +8992,164 @@ func (s *Server) reconcilePrompt(ctx context.Context, mainOperation db.Operation
 	return b.String()
 }
 
-func (s *Server) appendSelfDevelopmentPrompt(prompt, branch string, isMain bool) string {
+func (s *Server) appendUnattendedLoopPrompt(ctx context.Context, q *db.Queries, op db.Operation, prompt, autoCommitBranch, shipBase string, isMain, canSplit bool) string {
 	var b strings.Builder
 	b.WriteString(prompt)
-	b.WriteString("\n\n--- Self-development loop ---\n")
-	fmt.Fprintf(&b, "This operation is part of an unattended self-development loop on branch %q.\n", branch)
-	b.WriteString("Work only in this operation's isolated worktree (already based on that branch when it exists).\n")
+	b.WriteString("\n\n--- Unattended loop ---\n")
+	fmt.Fprintf(&b, "This operation is part of an unattended re-pulse loop.\n")
 	if isMain {
-		b.WriteString("Prefer splitting independent non-overlapping work into sub-operations " +
-			"(@@UFO_SUB_OPERATIONS@@) so each piece runs in its own worktree in parallel. " +
-			"After sub-operations settle, you will reconvene to consolidate their changes, " +
-			"fix conflicts, verify, and run e2e tests here. When the iteration is complete, " +
-			"finish with @@UFO_STATUS:done@@ — UFO will commit this worktree to the branch " +
-			"and open the next iteration. Do not wait for a human review between iterations.\n")
+		fmt.Fprintf(&b, "Auto-commit head (where this main worktree lands as a single commit): %q.\n", autoCommitBranch)
+	} else {
+		fmt.Fprintf(&b, "Worktree base branch: %q (shared with the main operation). "+
+			"Do not commit to that branch yourself - the main operation consolidates and auto-commits once.\n",
+			autoCommitBranch)
+	}
+	if n := loopMetadataInt(op.Metadata, "iteration"); n > 0 {
+		fmt.Fprintf(&b, "Iteration %d.\n", n)
+	}
+	if shipBase != "" && shipBase != autoCommitBranch {
+		fmt.Fprintf(&b, "Worktree starts from %q when the head branch does not exist yet; "+
+			"if head %q already exists on the rover, UFO continues from that tip.\n",
+			shipBase, autoCommitBranch)
+	} else {
+		fmt.Fprintf(&b, "Work only in this operation's isolated worktree (already based on that branch when it exists).\n")
+	}
+	if cmds, timeout := s.operationChecks(ctx, op); len(cmds) > 0 {
+		fmt.Fprintf(&b, "Configured pre-auto-commit checks (run before finishing): %s", strings.Join(cmds, "; "))
+		if timeout > 0 {
+			fmt.Fprintf(&b, " (timeout %ds)", timeout)
+		}
+		b.WriteString(". UFO also runs these before auto-commit lands; keep them green.\n")
+	}
+	if isMain {
+		if sha := loopMetadataString(op.Metadata, "last_commit_sha"); sha != "" {
+			short := sha
+			if len(short) > 12 {
+				short = short[:12]
+			}
+			br := loopMetadataString(op.Metadata, "last_commit_branch")
+			if br == "" {
+				br = autoCommitBranch
+			}
+			fmt.Fprintf(&b, "Branch %q last auto-commit tip: %s. Build on that tip; do not re-apply already-landed work.\n", br, short)
+		}
+		if files := loopMetadataStringSlice(op.Metadata, "last_changed_files"); len(files) > 0 {
+			fmt.Fprintf(&b, "Last auto-commit changed files (%d): %s. Build on that landed work; do not re-apply it.\n",
+				len(files), strings.Join(files, ", "))
+		}
+		if streak := loopMetadataInt(op.Metadata, "empty_streak"); streak > 0 {
+			fmt.Fprintf(&b, "Note: the previous %d iteration(s) auto-committed with no branch progress. "+
+				"Ship a concrete code change this iteration or the loop will pause after %d consecutive empty iterations.\n",
+				streak, maxLoopEmptyStreak)
+		}
+		if prev := s.unattendedLoopPreviousIterationNote(ctx, q, op); prev != "" {
+			b.WriteString(prev)
+		}
+		if canSplit {
+			b.WriteString("Prefer splitting independent non-overlapping work into sub-operations " +
+				"(@@UFO_SUB_OPERATIONS@@) so each piece runs in its own worktree in parallel. " +
+				"After sub-operations settle, you will reconvene to consolidate their changes, " +
+				"fix conflicts, verify, and run e2e tests here. ")
+		} else {
+			b.WriteString("Do the iteration work in this main worktree (a crew assignee is " +
+				"required to split into parallel sub-operations). Verify and run e2e tests here. ")
+		}
+		b.WriteString("When the iteration is complete, finish with @@UFO_STATUS:done@@ (preferred). " +
+			"A successful run without an explicit status is also treated as done so the loop " +
+			"continues without human review. UFO then commits this worktree to the auto-commit " +
+			"head and opens the next iteration. Use @@UFO_STATUS:in_review@@ only if a human must intervene.\n")
 	} else {
 		b.WriteString("Stay scoped to your assigned area so the main operation can merge cleanly. " +
-			"When finished, leave a clear report of what changed; the main operation consolidates.\n")
+			"When finished, leave a clear report of what changed; the main operation consolidates " +
+			"(verify, fix conflicts, e2e tests) and creates the single auto-commit. " +
+			"Prefer @@UFO_STATUS:in_review@@ (or omit status) so the captain can reconvene.\n")
 	}
 	return b.String()
+}
+
+func (s *Server) unattendedLoopPreviousIterationNote(ctx context.Context, q *db.Queries, op db.Operation) string {
+	raw, ok := nestedMetadataMap(op.Metadata, "loop")["previous_operation_id"]
+	if !ok {
+		return ""
+	}
+	var prevPub string
+	if err := json.Unmarshal(raw, &prevPub); err != nil || strings.TrimSpace(prevPub) == "" {
+		return ""
+	}
+	ppid, ok := parseUUID(strings.TrimSpace(prevPub))
+	if !ok {
+		return ""
+	}
+	prev, err := q.GetOperationByPublicID(ctx, ppid)
+	if err != nil || prev.FleetID != op.FleetID {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Continues from previous iteration %s (%s).\n", operationCodeFromParts(prev), strings.TrimSpace(prev.Title))
+	sha := loopMetadataString(prev.Metadata, "last_commit_sha")
+	if sha == "" {
+		if actions, err := q.ListSourceActionsForOperation(ctx, prev.ID); err == nil {
+			for _, a := range actions {
+				if a.Kind == "commit_to_branch" && a.Status == "succeeded" && strings.TrimSpace(a.CommitSha) != "" {
+					sha = strings.TrimSpace(a.CommitSha)
+					break
+				}
+			}
+		}
+	}
+	if sha != "" {
+		short := sha
+		if len(short) > 12 {
+			short = short[:12]
+		}
+		fmt.Fprintf(&b, "Previous auto-commit: %s\n", short)
+	}
+	if comments, err := q.ListComments(ctx, prev.ID); err == nil {
+		for i := len(comments) - 1; i >= 0; i-- {
+			if comments[i].AuthorType == "pilot" {
+				body := stripPilotDirectiveMarkers(strings.TrimSpace(comments[i].Body))
+				if body == "" {
+					break
+				}
+				const maxPrev = 2500
+				if len(body) > maxPrev {
+					body = body[:maxPrev] + "\n...(truncated)"
+				}
+				b.WriteString("Previous pilot report:\n")
+				b.WriteString(body)
+				b.WriteString("\n")
+				break
+			}
+		}
+	}
+	return b.String()
+}
+
+func stripPilotDirectiveMarkers(body string) string {
+	markers := []string{
+		"@@UFO_STATUS:",
+		"@@UFO_SUB_OPERATIONS@@",
+		"@@UFO_SUB_OPERATIONS_FEEDBACK@@",
+		"@@UFO_OPERATIONS@@",
+		"@@UFO_NEEDS_INPUT@@",
+	}
+	cut := -1
+	for _, m := range markers {
+		if i := strings.Index(body, m); i >= 0 && (cut < 0 || i < cut) {
+			cut = i
+		}
+	}
+	if cut < 0 {
+		return strings.TrimSpace(body)
+	}
+	if cut > 0 && body[cut-1] != '\n' {
+		if lineStart := strings.LastIndex(body[:cut], "\n"); lineStart >= 0 {
+			cut = lineStart + 1
+		} else {
+			cut = 0
+		}
+	}
+	return strings.TrimSpace(body[:cut])
 }
 
 func (s *Server) createSubOperation(ctx context.Context, q *db.Queries, wid int64, mainOperation db.Operation, title, body, atype string, aid int64, akind string) (db.Operation, error) {
@@ -8160,12 +9171,14 @@ func (s *Server) createSubOperation(ctx context.Context, q *db.Queries, wid int6
 		}
 	}
 	subMeta := operationMetadataWithSubOperationsEnabled(nil, false)
-	if branch, ok := metadataString(mainOperation.Metadata, "auto_commit_branch"); ok {
-		if b := normalizeSourceBranchName(branch); b != "" {
-			m := metadataMap(subMeta)
-			m["auto_commit_branch"] = jsonRaw(b)
-			subMeta = metadataBytes(m)
+	if b := normalizeSourceBranchName(operationMetadataNestedString(mainOperation.Metadata, "auto_commit", "branch")); b != "" {
+		m := metadataMap(subMeta)
+		ac := map[string]any{"branch": b}
+		if v, ok := operationMetadataBool(mainOperation.Metadata, "auto_commit", "drop_worktree"); ok {
+			ac["drop_worktree"] = v
 		}
+		m["auto_commit"] = jsonRaw(ac)
+		subMeta = metadataBytes(m)
 	}
 	subOperation, err := q.CreateOperation(ctx, db.CreateOperationParams{
 		FleetID: wid, MissionID: mainOperation.MissionID, Sequence: sequence, MainOperationID: pgtype.Int8{Int64: mainOperation.ID, Valid: true},
@@ -8358,6 +9371,7 @@ type missionReq struct {
 	FleetID  string          `json:"fleet_id"`
 	Name     string          `json:"name"`
 	Key      string          `json:"key"`
+	ForgeIDs *[]string       `json:"forge_ids"`
 	Metadata json.RawMessage `json:"metadata"`
 }
 
@@ -8404,7 +9418,12 @@ func (s *Server) createMission(w http.ResponseWriter, r *http.Request) {
 		serverError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, toMissionDTO(m))
+	if req.ForgeIDs != nil {
+		if !s.replaceMissionForges(w, r, m, *req.ForgeIDs) {
+			return
+		}
+	}
+	writeJSON(w, http.StatusCreated, s.missionDTO(r.Context(), m))
 }
 
 func (s *Server) updateMission(w http.ResponseWriter, r *http.Request) {
@@ -8451,7 +9470,65 @@ func (s *Server) updateMission(w http.ResponseWriter, r *http.Request) {
 		serverError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toMissionDTO(m))
+	if req.ForgeIDs != nil {
+		if !s.replaceMissionForges(w, r, m, *req.ForgeIDs) {
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, s.missionDTO(r.Context(), m))
+}
+
+func (s *Server) replaceMissionForges(w http.ResponseWriter, r *http.Request, mission db.Mission, forgeIDs []string) bool {
+	if !s.requireOwnerOrAdmin(w, r, mission.FleetID) {
+		return false
+	}
+	ctx := r.Context()
+	seen := map[string]struct{}{}
+	unique := make([]string, 0, len(forgeIDs))
+	for _, raw := range forgeIDs {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	internal := make([]int64, 0, len(unique))
+	for _, pub := range unique {
+		pid, ok := parseUUID(pub)
+		if !ok {
+			httpError(w, http.StatusBadRequest, "invalid forge_id")
+			return false
+		}
+		row, err := s.q.GetForgeByPublicID(ctx, db.GetForgeByPublicIDParams{
+			PublicID: pid, FleetID: mission.FleetID,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				httpError(w, http.StatusBadRequest, "forge not found in this fleet")
+				return false
+			}
+			serverError(w, err)
+			return false
+		}
+		internal = append(internal, row.ID)
+	}
+	if err := s.q.ClearMissionForges(ctx, mission.ID); err != nil {
+		serverError(w, err)
+		return false
+	}
+	for _, forgeID := range internal {
+		if err := s.q.InsertMissionForge(ctx, db.InsertMissionForgeParams{
+			MissionID: mission.ID, ForgeID: forgeID,
+		}); err != nil {
+			serverError(w, err)
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) StartLeaseSweeper(ctx context.Context, leaseSeconds float64, interval time.Duration) {
@@ -8750,7 +9827,6 @@ func (s *Server) cors(next http.Handler) http.Handler {
 			return
 		}
 		if len(s.allowedOrigins) > 0 {
-			// Reflect only allowlisted origins, with credentials for the web app.
 			if origin != "" && s.originAllowed(r, origin) {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Set("Access-Control-Allow-Credentials", "true")
@@ -8866,7 +9942,6 @@ func readJSONLimit(w http.ResponseWriter, r *http.Request, dst any, limit int64)
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	// Live data should never come from a stale browser cache.
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(v); err != nil {

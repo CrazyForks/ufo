@@ -45,11 +45,17 @@ fn sample_accepted_run(pilot: &str) -> AcceptedRun {
         operation_created_at: "2026-06-18T18:18:18Z".to_string(),
         worktree_enabled: true,
         worktree_base_ref: String::new(),
+        worktree_fallback_ref: String::new(),
+        worktree_refresh_ref: String::new(),
+        worktree_base_sync: String::new(),
+        auto_commit_branch: String::new(),
         status: "queued".to_string(),
         pilot: pilot.to_string(),
         prompt: String::new(),
         session_id: "session".to_string(),
         can_propose_sub_operations: false,
+        reconcile: false,
+        reconcile_imports: Vec::new(),
         assets: Vec::new(),
         skills: vec![],
     }
@@ -81,6 +87,69 @@ fn rover_headers_include_cli_version() {
             .and_then(|v| v.to_str().ok()),
         Some(env!("CARGO_PKG_VERSION"))
     );
+}
+
+#[test]
+fn redact_secrets_covers_github_and_gitlab_token_shapes() {
+    let s = "token github_pat_ABC123 and ghp_XYZ and glpat-QQQ and gho_A ghs_B ghu_C ghr_D";
+    let out = redact_secrets(s);
+    assert!(out.contains("github_pat_***"), "{out}");
+    assert!(out.contains("ghp_***"), "{out}");
+    assert!(out.contains("glpat-***"), "{out}");
+    assert!(out.contains("gho_***"), "{out}");
+    assert!(out.contains("ghs_***"), "{out}");
+    assert!(out.contains("ghu_***"), "{out}");
+    assert!(out.contains("ghr_***"), "{out}");
+    assert!(!out.contains("ABC123"), "{out}");
+    assert!(!out.contains("XYZ"), "{out}");
+    assert!(!out.contains("QQQ"), "{out}");
+
+    let url = "https://x-access-token:sekrit@github.com/a/b.git";
+    let red = redact_secrets(url);
+    assert!(red.contains("***@"), "{red}");
+    assert!(!red.contains("sekrit"), "{red}");
+}
+
+fn sample_forge_action(provider: &str, base_url: &str, repo: &str) -> forge::AcceptedForgeAction {
+    forge::AcceptedForgeAction {
+        id: "1".into(),
+        kind: "push_branch".into(),
+        provider: provider.into(),
+        base_url: base_url.into(),
+        repo: repo.into(),
+        head_branch: "feat".into(),
+        base_branch: "main".into(),
+        commit_sha: String::new(),
+        title: String::new(),
+        body: String::new(),
+        credential_kind: String::new(),
+        credential_name: String::new(),
+        checks_commands: vec![],
+        checks_timeout_seconds: 0,
+        ship_base_sync: String::new(),
+        operation_id: String::new(),
+        operation_worktree_name: String::new(),
+        operation_created_at: String::new(),
+    }
+}
+
+#[test]
+fn forge_remote_url_is_credential_free_and_scheme_aware() {
+    let gh = sample_forge_action("github", "https://api.github.com", "org/repo");
+    let url = forge::remote_https_url(&gh).unwrap();
+    assert_eq!(url, "https://x-access-token@github.com/org/repo.git");
+    assert!(!url.contains("x-access-token:"), "{url}");
+
+    let gl = sample_forge_action("gitlab", "http://gitlab.example/api/v4", "group/proj");
+    let url = forge::remote_https_url(&gl).unwrap();
+    assert_eq!(url, "http://oauth2@gitlab.example/group/proj.git");
+    assert!(!url.contains("oauth2:"), "{url}");
+}
+
+#[test]
+fn forge_percent_encode_branch_names() {
+    assert_eq!(forge::percent_encode("feature/foo"), "feature%2Ffoo");
+    assert_eq!(forge::percent_encode("safe-name_1"), "safe-name_1");
 }
 
 #[test]
@@ -128,7 +197,6 @@ fn version_compare_accepts_release_tags() {
 
 #[test]
 fn rover_version_error_only_auto_upgrades_when_too_old() {
-    // Min above this package version so the binary is considered too old.
     let too_old = rover_version_error("accept", Some("9.0.0"), None, "");
     assert!(too_old.can_auto_upgrade);
     assert!(too_old.to_string().contains("9.0.0 or newer"));
@@ -633,6 +701,44 @@ fn operation_directory_rejects_path_traversal() {
 }
 
 #[test]
+fn worktree_start_point_falls_back_when_preferred_missing() {
+    let _guard = env_lock();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let base = std::env::temp_dir().join(format!(
+            "ufo-worktree-fallback-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let source = base.join("source");
+        fs::create_dir_all(&source).unwrap();
+        init_test_git_repo(&source).await.unwrap();
+        fs::write(source.join("README.md"), "main tip\n").unwrap();
+        git(&source, &["add", "."]).await.unwrap();
+        git(&source, &["commit", "-q", "-m", "main"]).await.unwrap();
+        git(&source, &["branch", "orbit"]).await.unwrap();
+        fs::write(source.join("README.md"), "orbit tip\n").unwrap();
+        git(&source, &["add", "."]).await.unwrap();
+        git(&source, &["commit", "-q", "-m", "on-orbit"])
+            .await
+            .unwrap();
+        git(&source, &["checkout", "-q", "main"]).await.unwrap();
+
+        let start = resolve_worktree_start_point(&source, "feature/auto", "orbit").await;
+        assert_eq!(
+            start, "orbit",
+            "missing preferred tip should use ship base fallback"
+        );
+        let start = resolve_worktree_start_point(&source, "feature/auto", "").await;
+        assert_eq!(
+            start, "HEAD",
+            "missing preferred and fallback should use HEAD"
+        );
+        let _ = fs::remove_dir_all(base);
+    });
+}
+
+#[test]
 fn work_directory_uses_source_worktree_for_git_diff() {
     let _guard = env_lock();
     tokio::runtime::Runtime::new().unwrap().block_on(async {
@@ -654,7 +760,7 @@ fn work_directory_uses_source_worktree_for_git_diff() {
         fs::write(source.join("scratch.txt"), "untracked\n").unwrap();
         fs::write(source.join("ignored-secret.txt"), "secret\n").unwrap();
 
-        ensure_work_directory(&operation, Some(&source), "")
+        ensure_work_directory(&operation, Some(&source), "", "")
             .await
             .unwrap();
         assert_eq!(
@@ -709,7 +815,7 @@ fn source_apply_to_source_applies_only_when_touched_paths_are_clean() {
         git(&source, &["add", "."]).await.unwrap();
         git(&source, &["commit", "-q", "-m", "base"]).await.unwrap();
 
-        ensure_work_directory(&operation, Some(&source), "")
+        ensure_work_directory(&operation, Some(&source), "", "")
             .await
             .unwrap();
         fs::write(operation.join("README.md"), "applied\n").unwrap();
@@ -802,7 +908,7 @@ fn source_refresh_updates_from_source_head_without_conflict() {
         git(&source, &["add", "."]).await.unwrap();
         git(&source, &["commit", "-q", "-m", "base"]).await.unwrap();
 
-        ensure_work_directory(&operation, Some(&source), "")
+        ensure_work_directory(&operation, Some(&source), "", "")
             .await
             .unwrap();
         fs::write(operation.join("README.md"), "operation edit\n").unwrap();
@@ -856,7 +962,7 @@ fn source_refresh_conflict_keeps_operation_worktree_unchanged() {
         git(&source, &["add", "."]).await.unwrap();
         git(&source, &["commit", "-q", "-m", "base"]).await.unwrap();
 
-        ensure_work_directory(&operation, Some(&source), "")
+        ensure_work_directory(&operation, Some(&source), "", "")
             .await
             .unwrap();
         let original_head = git_head(&operation).await.unwrap();
@@ -880,6 +986,24 @@ fn source_refresh_conflict_keeps_operation_worktree_unchanged() {
 
         let _ = fs::remove_dir_all(base);
     });
+}
+
+#[test]
+fn conflict_marker_scan_detects_real_git_markers_not_mentions() {
+    let (open, close) = git_conflict_marker_pair();
+    let conflicted = format!("{open} HEAD\nmine\n=======\ntheirs\n{close} branch\n");
+    assert!(text_has_git_conflict_markers(&conflicted));
+
+    let mention = format!("if text.contains(\"{open}\") && text.contains(\"{close}\") {{\n");
+    assert!(!text_has_git_conflict_markers(&mention));
+    assert!(!text_has_git_conflict_markers("no markers here\n"));
+
+    let main_rs = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"))
+        .expect("read main.rs");
+    assert!(
+        !main_rs.contains(&open) || !main_rs.contains(&close),
+        "main.rs must not embed both full git conflict marker sequences as literals"
+    );
 }
 
 #[test]
@@ -934,7 +1058,7 @@ fn auto_loop_branch_success_removes_operation_worktree() {
         git(&source, &["add", "."]).await.unwrap();
         git(&source, &["commit", "-q", "-m", "base"]).await.unwrap();
 
-        ensure_work_directory(&operation, Some(&source), "")
+        ensure_work_directory(&operation, Some(&source), "", "")
             .await
             .unwrap();
         fs::write(operation.join("README.md"), "on-branch\n").unwrap();
@@ -945,8 +1069,10 @@ fn auto_loop_branch_success_removes_operation_worktree() {
             operation_worktree_name: "UFO-9-drop".to_string(),
             operation_created_at: "2026-06-18T18:18:18Z".to_string(),
             kind: "commit_to_branch".to_string(),
-            branch_name: "self-dev/skill-bindings".to_string(),
+            branch_name: "feature/skill-bindings".to_string(),
             drop_worktree_on_success: true,
+            checks_commands: vec![],
+            checks_timeout_seconds: 0,
         };
 
         let report = branch_operation_changes(&source, &operation, &action, true)
@@ -966,12 +1092,107 @@ fn auto_loop_branch_success_removes_operation_worktree() {
             "auto-loop worktree should be removed after branch lands"
         );
         assert_eq!(
-            git(&source, &["show", "self-dev/skill-bindings:README.md"])
+            git(&source, &["show", "feature/skill-bindings:README.md"])
                 .await
                 .unwrap(),
             "on-branch\n"
         );
         let _ = fs::remove_dir_all(base);
+    });
+}
+
+#[test]
+fn commit_to_branch_fails_pre_commit_checks_without_committing() {
+    let _guard = env_lock();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let base = std::env::temp_dir().join(format!(
+            "ufo-pre-commit-check-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let source = base.join("source");
+        let operation = base.join("operation");
+        fs::create_dir_all(&source).unwrap();
+        init_test_git_repo(&source).await.unwrap();
+        fs::write(source.join("README.md"), "before\n").unwrap();
+        git(&source, &["add", "."]).await.unwrap();
+        git(&source, &["commit", "-q", "-m", "base"]).await.unwrap();
+
+        ensure_work_directory(&operation, Some(&source), "", "")
+            .await
+            .unwrap();
+        fs::write(operation.join("README.md"), "broken\n").unwrap();
+        let action = AcceptedSourceAction {
+            id: "action".to_string(),
+            operation_id: "operation".to_string(),
+            operation_title: "Fail checks".to_string(),
+            operation_worktree_name: "UFO-checks".to_string(),
+            operation_created_at: "2026-06-18T18:18:18Z".to_string(),
+            kind: "commit_to_branch".to_string(),
+            branch_name: "feature/auto".to_string(),
+            drop_worktree_on_success: true,
+            checks_commands: vec![
+                "true".to_string(),
+                "echo check-fail-stderr >&2; exit 17".to_string(),
+            ],
+            checks_timeout_seconds: 30,
+        };
+
+        let report = branch_operation_changes(&source, &operation, &action, true)
+            .await
+            .unwrap();
+        assert_eq!(report.status, "failed");
+        assert!(
+            report
+                .message
+                .contains("pre-commit checks[1] failed (exit 17)"),
+            "message should include index and exit: {}",
+            report.message
+        );
+        assert!(
+            report.message.contains("check-fail-stderr"),
+            "message should include stderr tail: {}",
+            report.message
+        );
+        assert!(
+            !git_success(
+                &source,
+                &["show-ref", "--verify", "--quiet", "refs/heads/feature/auto"]
+            )
+            .await
+            .unwrap(),
+            "failed checks must not create the branch"
+        );
+        assert!(
+            operation.join(".git").exists(),
+            "worktree must remain after check failure"
+        );
+        assert!(!drop_operation_worktree_after_branch_action(
+            &action.kind,
+            &report.status,
+            action.drop_worktree_on_success,
+        ));
+
+        let _ = fs::remove_dir_all(base);
+    });
+}
+
+#[test]
+fn run_bash_check_commands_empty_is_noop() {
+    let _guard = env_lock();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let dir = std::env::temp_dir();
+        assert!(
+            run_bash_check_commands(&dir, &[], 5, "pre-commit")
+                .await
+                .is_none()
+        );
+        assert!(
+            run_bash_check_commands(&dir, &[String::new(), "   ".to_string()], 5, "pre-commit")
+                .await
+                .is_none()
+        );
     });
 }
 
@@ -993,7 +1214,7 @@ fn source_branch_commits_operation_changes_without_switching_source() {
         git(&source, &["add", "."]).await.unwrap();
         git(&source, &["commit", "-q", "-m", "base"]).await.unwrap();
 
-        ensure_work_directory(&operation, Some(&source), "")
+        ensure_work_directory(&operation, Some(&source), "", "")
             .await
             .unwrap();
         fs::write(operation.join("README.md"), "branched\n").unwrap();
@@ -1006,6 +1227,8 @@ fn source_branch_commits_operation_changes_without_switching_source() {
             kind: "create_source_branch".to_string(),
             branch_name: "ufo/UFO-2-branch-work".to_string(),
             drop_worktree_on_success: false,
+            checks_commands: vec![],
+            checks_timeout_seconds: 0,
         };
 
         let report = branch_operation_changes(&source, &operation, &action, false)
@@ -1060,7 +1283,7 @@ fn source_branch_commits_operation_changes_without_switching_source() {
             "branched again\n"
         );
 
-        fs::write(operation.join("README.md"), "self-dev iteration\n").unwrap();
+        fs::write(operation.join("README.md"), "loop iteration\n").unwrap();
         let iterate = branch_operation_changes(&source, &operation, &action, true)
             .await
             .unwrap();
@@ -1070,7 +1293,7 @@ fn source_branch_commits_operation_changes_without_switching_source() {
             git(&source, &["show", "ufo/UFO-2-branch-work:README.md"])
                 .await
                 .unwrap(),
-            "self-dev iteration\n"
+            "loop iteration\n"
         );
 
         let _ = fs::remove_dir_all(base);
@@ -1095,10 +1318,12 @@ fn marker_work_directory_migrates_to_source_worktree_and_keeps_assets() {
         git(&source, &["add", "."]).await.unwrap();
         git(&source, &["commit", "-q", "-m", "base"]).await.unwrap();
 
-        ensure_work_directory(&operation, None, "").await.unwrap();
+        ensure_work_directory(&operation, None, "", "")
+            .await
+            .unwrap();
         fs::create_dir_all(operation.join("assets")).unwrap();
         fs::write(operation.join("assets").join("note.txt"), "asset\n").unwrap();
-        ensure_work_directory(&operation, Some(&source), "")
+        ensure_work_directory(&operation, Some(&source), "", "")
             .await
             .unwrap();
 
@@ -1136,7 +1361,7 @@ fn work_directory_fails_when_source_worktree_cannot_be_created() {
         fs::create_dir_all(&operation).unwrap();
         fs::write(operation.join("stray.txt"), "not a worktree\n").unwrap();
 
-        let err = ensure_work_directory(&operation, Some(&source), "")
+        let err = ensure_work_directory(&operation, Some(&source), "", "")
             .await
             .unwrap_err()
             .to_string();
@@ -1145,7 +1370,7 @@ fn work_directory_fails_when_source_worktree_cannot_be_created() {
 
         let file_operation = base.join("operation-file");
         fs::write(&file_operation, "not a directory\n").unwrap();
-        let err = ensure_work_directory(&file_operation, Some(&source), "")
+        let err = ensure_work_directory(&file_operation, Some(&source), "", "")
             .await
             .unwrap_err()
             .to_string();
@@ -1185,7 +1410,7 @@ fn work_directory_rejects_unrelated_existing_git_repo() {
             .await
             .unwrap();
 
-        let err = ensure_work_directory(&operation, Some(&source), "")
+        let err = ensure_work_directory(&operation, Some(&source), "", "")
             .await
             .unwrap_err()
             .to_string();
@@ -1210,11 +1435,15 @@ fn fallback_work_directory_requires_ufo_marker() {
                 .unwrap_or_default()
         ));
         let operation = base.join("operation");
-        ensure_work_directory(&operation, None, "").await.unwrap();
+        ensure_work_directory(&operation, None, "", "")
+            .await
+            .unwrap();
         fs::create_dir_all(operation.join("assets")).unwrap();
         fs::write(operation.join("assets").join("note.txt"), "asset\n").unwrap();
         fs::write(operation.join("note.txt"), "pilot edit\n").unwrap();
-        ensure_work_directory(&operation, None, "").await.unwrap();
+        ensure_work_directory(&operation, None, "", "")
+            .await
+            .unwrap();
         git(&operation, &["add", "-N", "."]).await.unwrap();
         let diff = git_diff(&operation).await.unwrap();
         assert!(diff.contains("pilot edit"));
@@ -1229,7 +1458,7 @@ fn fallback_work_directory_requires_ufo_marker() {
             .await
             .unwrap();
 
-        let err = ensure_work_directory(&unrelated, None, "")
+        let err = ensure_work_directory(&unrelated, None, "", "")
             .await
             .unwrap_err()
             .to_string();

@@ -48,7 +48,7 @@ function renderEmojiNode(node: React.ReactNode): React.ReactNode {
   return node;
 }
 
-/** Allow only http(s) and same-origin relative paths — blocks javascript:/data: etc. */
+/** Allow only http(s) and same-origin relative paths - blocks javascript:/data: etc. */
 function safeMarkdownHref(href?: string): string | null {
   if (!href) return null;
   const trimmed = href.trim();
@@ -143,7 +143,6 @@ function AssetPreviewDialog({ asset, assets, onClose }: { asset: Asset | null; a
   );
 }
 
-// GitHub-flavored Markdown for comments and pilot output. Raw HTML is rendered as text.
 export function Markdown({ children, className, assets = [] }: { children: string; className?: string; assets?: Asset[] }) {
   const app = useApp();
   const text = hideFlowControlFlags(children);

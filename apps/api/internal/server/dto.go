@@ -83,13 +83,26 @@ type missionDTO struct {
 	ID        string          `json:"id"`
 	Name      string          `json:"name"`
 	Key       string          `json:"key"`
+	ForgeIDs  []string        `json:"forge_ids"`
 	Metadata  json.RawMessage `json:"metadata"`
 	CreatedAt time.Time       `json:"created_at"`
 	UpdatedAt time.Time       `json:"updated_at"`
 }
 
 func toMissionDTO(m db.Mission) missionDTO {
-	return missionDTO{ID: uuidStr(m.PublicID), Name: m.Name, Key: m.Key, Metadata: metadataJSON(m.Metadata), CreatedAt: m.CreatedAt.Time, UpdatedAt: m.UpdatedAt.Time}
+	return toMissionDTOWithForges(m, nil)
+}
+
+func toMissionDTOWithForges(m db.Mission, forgePublicIDs []string) missionDTO {
+	if forgePublicIDs == nil {
+		forgePublicIDs = []string{}
+	}
+	return missionDTO{
+		ID: uuidStr(m.PublicID), Name: m.Name, Key: m.Key,
+		ForgeIDs:  forgePublicIDs,
+		Metadata:  metadataJSON(m.Metadata),
+		CreatedAt: m.CreatedAt.Time, UpdatedAt: m.UpdatedAt.Time,
+	}
 }
 
 type skillFileDTO struct {
@@ -458,20 +471,28 @@ func (s *Server) crewMemberDTOs(ctx context.Context, ms []db.CrewMember) []crewM
 }
 
 type pullRequestDTO struct {
-	ID        string          `json:"id"`
-	URL       string          `json:"url"`
-	Title     string          `json:"title"`
-	Status    string          `json:"status"`
-	Number    *int32          `json:"number"`
-	Metadata  json.RawMessage `json:"metadata"`
-	CreatedBy *string         `json:"created_by"`
-	CreatedAt time.Time       `json:"created_at"`
-	UpdatedAt time.Time       `json:"updated_at"`
+	ID           string          `json:"id"`
+	URL          string          `json:"url"`
+	Title        string          `json:"title"`
+	Status       string          `json:"status"`
+	Number       *int32          `json:"number"`
+	Provider     string          `json:"provider,omitempty"`
+	CreatedByUFO bool            `json:"created_by_ufo"`
+	HeadSHA      string          `json:"head_sha,omitempty"`
+	CIStatus     string          `json:"ci_status,omitempty"`
+	HeadBranch   string          `json:"head_branch,omitempty"`
+	BaseBranch   string          `json:"base_branch,omitempty"`
+	Metadata     json.RawMessage `json:"metadata"`
+	CreatedBy    *string         `json:"created_by"`
+	CreatedAt    time.Time       `json:"created_at"`
+	UpdatedAt    time.Time       `json:"updated_at"`
 }
 
 func (s *Server) pullRequestDTO(ctx context.Context, p db.PullRequest) pullRequestDTO {
 	d := pullRequestDTO{
 		ID: uuidStr(p.PublicID), URL: p.Url, Title: p.Title, Status: p.Status,
+		Provider: p.Provider, CreatedByUFO: p.CreatedByUfo, HeadSHA: p.HeadSha,
+		CIStatus: p.CiStatus, HeadBranch: p.HeadBranch, BaseBranch: p.BaseBranch,
 		Metadata: metadataJSON(p.Metadata), CreatedAt: p.CreatedAt.Time, UpdatedAt: p.UpdatedAt.Time,
 	}
 	if p.Number.Valid {

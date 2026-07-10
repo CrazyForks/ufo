@@ -15,6 +15,7 @@ import { CrewsView } from "@/components/views/crews-view";
 import { RoversView } from "@/components/views/rovers-view";
 import { MembersView } from "@/components/views/members-view";
 import { SettingsView } from "@/components/views/settings-view";
+import { IntegrationsView } from "@/components/views/integrations-view";
 import { UserProfileView } from "@/components/user-profile";
 import { InviteBanner } from "@/components/invite-banner";
 import { Button } from "@/components/ui/button";
@@ -29,6 +30,7 @@ const TITLE_KEY: Record<Section, MessageKey> = {
   crews: "nav.crews",
   rovers: "nav.rovers",
   members: "nav.members",
+  integrations: "nav.integrations",
   settings: "nav.settings",
 };
 
@@ -126,6 +128,7 @@ export function AppShell() {
               {section === "crews" && <CrewsView />}
               {section === "rovers" && <RoversView />}
               {section === "members" && <MembersView />}
+              {section === "integrations" && <IntegrationsView />}
               {section === "settings" && <SettingsView />}
             </main>
           </>

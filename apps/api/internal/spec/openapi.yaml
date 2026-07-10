@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: UFO Hub API
-  version: 0.6.2
+  version: 0.7.0
   license:
     name: BSD-3-Clause
     url: https://opensource.org/license/bsd-3-clause
@@ -23,7 +23,7 @@ tags:
     description: Accounts and access tokens (public)
   - name: ui
     description: >
-      Tenant/UI surface — httpOnly access JWT cookie or user bearer token.
+      Tenant/UI surface - httpOnly access JWT cookie or user bearer token.
       Collections use flat list/create (`GET|POST /v1/{resources}`); identity
       is `GET|PATCH|DELETE /v1/{resources}/{id}`. List filters and optional
       `fleet_id` are query params; create/update bodies carry `fleet_id` or
@@ -37,7 +37,7 @@ tags:
     description: Asset metadata, upload, and file URLs
   - name: rover
     description: >
-      Rover surface — per-rover connection token. Prefer collection creates
+      Rover surface - per-rover connection token. Prefer collection creates
       and PATCH for status. Nested under a run for telemetry appends
       (`events`, `artifacts`, `messages`), lease `heartbeat`, and `result`.
 
@@ -46,7 +46,7 @@ paths:
     get:
       tags: [ui]
       operationId: discovery
-      summary: Root — points at the RFC 9727 API catalog
+      summary: Root - points at the RFC 9727 API catalog
       responses:
         "200":
           description: OK
@@ -63,7 +63,7 @@ paths:
     get:
       tags: [ui]
       operationId: apiCatalog
-      summary: API discovery (RFC 9727) — linkset of the hub's APIs + their spec/health
+      summary: API discovery (RFC 9727) - linkset of the hub's APIs + their spec/health
       responses:
         "200":
           description: OK
@@ -166,7 +166,7 @@ paths:
       tags: [ui]
       operationId: me
       summary: Signed-in user private profile
-      description: Full account fields for the current principal (email, timestamps, …).
+      description: Full account fields for the current principal (email, timestamps, ...).
       security: [{ accessCookie: [] }, { userBearer: [] }]
       responses:
         "200":
@@ -525,7 +525,7 @@ paths:
         - { name: mission, in: query, schema: { type: string, format: uuid } }
         - { name: before, in: query, schema: { type: string, format: uuid } }
         - { name: limit, in: query, schema: { type: integer, maximum: 200 }, description: "default 50 (20 when q is set)" }
-        - { name: priority, in: query, schema: { type: integer }, description: 0–4 }
+        - { name: priority, in: query, schema: { type: integer }, description: 0-4 }
         - { name: assignee_kind, in: query, schema: { type: string, enum: [user, pilot, crew] } }
         - { name: assignee, in: query, schema: { type: string, format: uuid }, description: specific user or crew }
         - { name: pilot, in: query, schema: { type: string, pattern: "^[a-z][a-z0-9_-]{0,31}$" }, description: specific pilot kind }
@@ -852,7 +852,7 @@ paths:
     patch:
       tags: [ui]
       operationId: patchOperation
-      summary: Update an operation (title, body, status, assignee, tags, …)
+      summary: Update an operation (title, body, status, assignee, tags, ...)
       security: [{ accessCookie: [] }, { userBearer: [] }]
       parameters: [{ $ref: "#/components/parameters/Id" }]
       requestBody:
@@ -874,7 +874,7 @@ paths:
       tags: [ui]
       operationId: attachLabel
       summary: Attach a fleet label to an operation
-      description: Nested exception — operation↔label join is parent-coupled (no standalone assignment resource).
+      description: Nested exception - operation↔label join is parent-coupled (no standalone assignment resource).
       security: [{ accessCookie: [] }, { userBearer: [] }]
       parameters:
         - { $ref: "#/components/parameters/Id" }
@@ -886,7 +886,7 @@ paths:
       tags: [ui]
       operationId: detachLabel
       summary: Detach a fleet label from an operation
-      description: Nested exception — operation↔label join is parent-coupled (no standalone assignment resource).
+      description: Nested exception - operation↔label join is parent-coupled (no standalone assignment resource).
       security: [{ accessCookie: [] }, { userBearer: [] }]
       parameters:
         - { $ref: "#/components/parameters/Id" }
@@ -925,7 +925,7 @@ paths:
       tags: [ui]
       operationId: addOperationReaction
       summary: Add the caller's emoji reaction to an operation
-      description: Nested exception — reactions are parent-coupled (generic target FK).
+      description: Nested exception - reactions are parent-coupled (generic target FK).
       security: [{ accessCookie: [] }, { userBearer: [] }]
       parameters:
         - { $ref: "#/components/parameters/Id" }
@@ -937,7 +937,7 @@ paths:
       tags: [ui]
       operationId: removeOperationReaction
       summary: Remove the caller's emoji reaction from an operation
-      description: Nested exception — reactions are parent-coupled (generic target FK).
+      description: Nested exception - reactions are parent-coupled (generic target FK).
       security: [{ accessCookie: [] }, { userBearer: [] }]
       parameters:
         - { $ref: "#/components/parameters/Id" }
@@ -1033,7 +1033,7 @@ paths:
       tags: [ui]
       operationId: addReaction
       summary: Add the caller's emoji reaction to a comment
-      description: Nested exception — reactions are parent-coupled (generic target FK).
+      description: Nested exception - reactions are parent-coupled (generic target FK).
       security: [{ accessCookie: [] }, { userBearer: [] }]
       parameters:
         - { $ref: "#/components/parameters/Id" }
@@ -1152,7 +1152,7 @@ paths:
       tags: [ui]
       operationId: addCrewMember
       summary: Add (or update the role of) a crew member (owner/admin only)
-      description: Nested exception — crew membership is a parent-coupled join (compound key).
+      description: Nested exception - crew membership is a parent-coupled join (compound key).
       security: [{ accessCookie: [] }, { userBearer: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
@@ -1172,7 +1172,7 @@ paths:
       tags: [ui]
       operationId: removeCrewMember
       summary: Remove a crew member (owner/admin only)
-      description: Nested exception — crew membership is a parent-coupled join (compound key).
+      description: Nested exception - crew membership is a parent-coupled join (compound key).
       security: [{ accessCookie: [] }, { userBearer: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
@@ -1489,6 +1489,83 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
 
+  /v1/forges:
+    get:
+      tags: [ui]
+      operationId: listForges
+      summary: List fleet forge connections
+      security: [{ accessCookie: [] }, { userBearer: [] }]
+      parameters: [{ $ref: "#/components/parameters/FleetIdQuery" }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Forge" } }
+        "4XX": { description: Client error, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    post:
+      tags: [ui]
+      operationId: createForge
+      summary: Create a named forge connection (owner/admin)
+      security: [{ accessCookie: [] }, { userBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ForgeRequest" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Forge" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /v1/forges/{id}:
+    get:
+      tags: [ui]
+      operationId: getForge
+      summary: Get a forge by public id
+      security: [{ accessCookie: [] }, { userBearer: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/FleetIdQuery" }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Forge" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [ui]
+      operationId: updateForge
+      summary: Update a forge (owner/admin)
+      security: [{ accessCookie: [] }, { userBearer: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ForgeRequest" }
+      responses:
+        "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/Forge" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+    delete:
+      tags: [ui]
+      operationId: deleteForge
+      summary: Delete a forge (owner/admin); drops mission_forges rows via ON DELETE CASCADE
+      security: [{ accessCookie: [] }, { userBearer: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/FleetIdQuery" }
+      responses:
+        "204": { description: Deleted }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /v1/missions:
     get:
       tags: [ui]
@@ -1629,7 +1706,7 @@ paths:
       tags: [ui]
       operationId: listMembers
       summary: Human members of the fleet
-      description: Nested under fleet — membership is scoped to the tenant, not a global collection.
+      description: Nested under fleet - membership is scoped to the tenant, not a global collection.
       security: [{ accessCookie: [] }, { userBearer: [] }]
       parameters: [{ $ref: "#/components/parameters/Id" }]
       responses:
@@ -1645,7 +1722,7 @@ paths:
       tags: [ui]
       operationId: updateMemberRole
       summary: Change a member's role (owner only)
-      description: Nested exception — fleet membership is a parent-coupled join.
+      description: Nested exception - fleet membership is a parent-coupled join.
       security: [{ accessCookie: [] }, { userBearer: [] }]
       parameters:
         - { $ref: "#/components/parameters/Id" }
@@ -1666,7 +1743,7 @@ paths:
       tags: [ui]
       operationId: removeMember
       summary: Remove a member from the fleet (owner/admin only; cannot remove an owner)
-      description: Nested exception — fleet membership is a parent-coupled join.
+      description: Nested exception - fleet membership is a parent-coupled join.
       security: [{ accessCookie: [] }, { userBearer: [] }]
       parameters:
         - { $ref: "#/components/parameters/Id" }
@@ -1819,12 +1896,49 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /v1/forge-actions/accept:
+    post:
+      tags: [rover]
+      operationId: acceptForgeAction
+      summary: Accept a queued forge action for this rover's fleet
+      security: [{ roverConnectionToken: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/RoverVersion" }
+      responses:
+        "200":
+          description: A forge action was accepted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AcceptedForgeAction" }
+        "204": { description: No queued forge action for this fleet }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "426": { $ref: "#/components/responses/UpgradeRequired" }
+
+  /v1/forge-actions/{id}:
+    patch:
+      tags: [rover]
+      operationId: completeForgeAction
+      summary: Report an accepted forge action result
+      security: [{ roverConnectionToken: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/RoverVersion" }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/CompleteForgeActionRequest" } } }
+      responses:
+        "200":
+          description: Updated
+          content: { application/json: { schema: { $ref: "#/components/schemas/ForgeAction" } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /v1/runs/{id}/heartbeat:
     put:
       tags: [rover]
       operationId: heartbeat
       summary: Renew a run's lease
-      description: Nested exception — lease renewal is tightly coupled to the active run (no standalone lease resource).
+      description: Nested exception - lease renewal is tightly coupled to the active run (no standalone lease resource).
       security: [{ roverConnectionToken: [] }]
       parameters:
         - { $ref: "#/components/parameters/Id" }
@@ -1839,7 +1953,7 @@ paths:
       tags: [rover]
       operationId: appendRunEvent
       summary: Append an event to a run's timeline
-      description: Nested exception — append-only telemetry; not listed as a standalone collection.
+      description: Nested exception - append-only telemetry; not listed as a standalone collection.
       security: [{ roverConnectionToken: [] }]
       parameters:
         - { $ref: "#/components/parameters/Id" }
@@ -1863,7 +1977,7 @@ paths:
       tags: [rover]
       operationId: appendArtifact
       summary: Attach an artifact (e.g. a git diff) to a run
-      description: Nested exception — append-only under the owning run.
+      description: Nested exception - append-only under the owning run.
       security: [{ roverConnectionToken: [] }]
       parameters:
         - { $ref: "#/components/parameters/Id" }
@@ -1887,7 +2001,7 @@ paths:
       tags: [rover]
       operationId: appendRunMessage
       summary: Append a typed transcript message (pilot telemetry) to a run
-      description: Nested exception — append-only pilot telemetry under the owning run.
+      description: Nested exception - append-only pilot telemetry under the owning run.
       security: [{ roverConnectionToken: [] }]
       parameters:
         - { $ref: "#/components/parameters/Id" }
@@ -1971,7 +2085,7 @@ components:
       description: Required when authenticating with an enrollment code or rover connection token; ignored for user-authenticated requests.
       schema:
         type: string
-        example: "0.6.2"
+        example: "0.7.0"
 
   responses:
     BadRequest:
@@ -2326,7 +2440,7 @@ components:
 
     OperationReference:
       type: object
-      description: Compact operation reference (relations, link pickers) — enough to render a code and status.
+      description: Compact operation reference (relations, link pickers) - enough to render a code and status.
       properties:
         id: { type: string, format: uuid }
         title: { type: string }
@@ -2479,6 +2593,10 @@ components:
         id: { type: string, format: uuid }
         name: { type: string }
         key: { type: string, description: Operation prefix (e.g. MSJ -> MSJ-123); unique within the fleet }
+        forge_ids:
+          type: array
+          items: { type: string, format: uuid }
+          description: Forges this mission can use (public ids). Empty means none. Which forge to ship with is set on the routine or operation (forge_key).
         metadata: { type: object, additionalProperties: true, readOnly: true }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
@@ -2490,6 +2608,10 @@ components:
         fleet_id: { type: string, format: uuid }
         name: { type: string }
         key: { type: string, description: Operation prefix (alphanumeric; unique within the fleet) }
+        forge_ids:
+          type: array
+          items: { type: string, format: uuid }
+          description: Optional forges this mission can use (owner/admin).
         metadata: { type: object, additionalProperties: true }
 
     UpdateMissionRequest:
@@ -2498,6 +2620,45 @@ components:
       properties:
         name: { type: string }
         key: { type: string, description: Operation prefix (alphanumeric; unique within the fleet) }
+        forge_ids:
+          type: array
+          items: { type: string, format: uuid }
+          description: Replace the forges this mission can use (owner/admin). Omitted leaves the set unchanged.
+        metadata: { type: object, additionalProperties: true }
+
+    Forge:
+      type: object
+      description: Named forge connection for a fleet (GitHub/GitLab). Secrets are rover-side only.
+      properties:
+        id: { type: string, format: uuid }
+        key: { type: string, description: Stable handle within the fleet (e.g. ufo-core) }
+        name: { type: string }
+        provider: { type: string, enum: [github, gitlab] }
+        base_url: { type: string }
+        repo: { type: string }
+        default_base_branch: { type: string }
+        credential_kind: { type: string, enum: [rover_env, github_app, gitlab_app, secret_ref] }
+        credential:
+          type: object
+          additionalProperties: true
+          description: Non-secret credential config (env names, app/installation ids, refs).
+        metadata: { type: object, additionalProperties: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ForgeRequest:
+      type: object
+      required: [key, provider, repo]
+      properties:
+        fleet_id: { type: string, format: uuid }
+        key: { type: string }
+        name: { type: string }
+        provider: { type: string, enum: [github, gitlab] }
+        base_url: { type: string }
+        repo: { type: string }
+        default_base_branch: { type: string }
+        credential_kind: { type: string, enum: [rover_env, github_app, gitlab_app, secret_ref] }
+        credential: { type: object, additionalProperties: true }
         metadata: { type: object, additionalProperties: true }
 
     RunUsage:
@@ -2657,6 +2818,7 @@ components:
         source_action_available: { type: boolean }
         source_rover_id: { type: string, format: uuid, nullable: true }
         source_actions: { type: array, items: { $ref: "#/components/schemas/SourceAction" } }
+        forge_actions: { type: array, items: { $ref: "#/components/schemas/ForgeAction" } }
         pull_requests: { type: array, items: { $ref: "#/components/schemas/PullRequest" } }
 
     CommentsPage:
@@ -2705,13 +2867,31 @@ components:
         operation_created_at: { type: string, format: date-time }
         operation_worktree_name: { type: string }
         worktree_enabled: { type: boolean }
-        worktree_base_ref: { type: string, description: "Preferred git ref for new operation worktrees (e.g. auto_commit_branch for self-development loops)" }
+        worktree_base_ref: { type: string, description: Preferred git start ref for a new operation worktree }
+        worktree_fallback_ref:
+          type: string
+          description: >
+            Ship/PR base (pull_request_base_branch / orbit) when it differs from
+            worktree_base_ref. Rover tries preferred then this then HEAD.
+        worktree_refresh_ref: { type: string }
+        worktree_base_sync: { type: string }
+        auto_commit_branch: { type: string }
         status: { type: string }
         pilot: { type: string, pattern: "^[a-z][a-z0-9_-]{0,31}$" }
         command: { type: string, description: "Resume prompt carried to the pilot, if any" }
         prompt: { type: string, description: First run = operation conversation; resume run = the human reply }
         session_id: { type: string, description: Non-empty → resume this pilot session }
         can_propose_sub_operations: { type: boolean, description: captain may propose sub-operations (top-level crew operation only) }
+        reconcile: { type: boolean, description: Captain reconvene; reset worktree and apply reconcile_imports }
+        reconcile_imports:
+          type: array
+          description: Sub-operation git.diff patches for captain reconcile
+          items:
+            type: object
+            properties:
+              operation_id: { type: string, format: uuid }
+              title: { type: string }
+              diff: { type: string }
         assets:
           type: array
           items: { $ref: "#/components/schemas/AcceptedAsset" }
@@ -2730,9 +2910,16 @@ components:
         drop_worktree_on_success:
           type: boolean
           description: >
-            From routine metadata.operation.drop_worktree_on_commit on auto-commit
+            From routine metadata.operation.auto_commit.drop_worktree on auto-commit
             source actions. When true and the action succeeds, the rover deletes
             the operation worktree. Absent or false keeps the worktree.
+        checks_commands:
+          type: array
+          items: { type: string }
+          description: Pre-commit check commands stamped from operation/routine checks.
+        checks_timeout_seconds:
+          type: integer
+          description: Optional per-action timeout for checks_commands (seconds).
 
     CompleteSourceActionRequest:
       type: object
@@ -2745,6 +2932,78 @@ components:
         source_head_sha: { type: string }
         message: { type: string }
         metadata: { type: object, additionalProperties: true }
+
+    AcceptedForgeAction:
+      type: object
+      description: Rover-facing view of an accepted forge action (push/PR/merge/ship).
+      properties:
+        id: { type: string, format: uuid }
+        kind:
+          type: string
+          enum:
+            - push_branch
+            - open_pull_request
+            - sync_pull_request
+            - merge_pull_request
+            - ensure_base_branch
+            - integrate_into_base
+        provider: { type: string, enum: [github, gitlab] }
+        base_url: { type: string }
+        repo: { type: string }
+        head_branch: { type: string }
+        base_branch: { type: string }
+        commit_sha: { type: string }
+        title: { type: string }
+        body: { type: string }
+        credential_kind: { type: string }
+        credential_name: { type: string, description: Rover env var holding the token }
+        credential: { type: object, additionalProperties: true, description: Non-secret credential refs only }
+        forge_key: { type: string }
+        checks_commands: { type: array, items: { type: string } }
+        checks_timeout_seconds: { type: integer }
+        ship_base_sync: { type: string }
+        operation_id: { type: string, format: uuid }
+        operation_worktree_name: { type: string }
+        operation_created_at: { type: string, format: date-time }
+
+    CompleteForgeActionRequest:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [succeeded, failed, conflicted] }
+        remote_url: { type: string }
+        remote_number: { type: integer }
+        result_sha: { type: string }
+        commit_sha: { type: string }
+        message: { type: string }
+        metadata: { type: object, additionalProperties: true }
+        pr_status: { type: string }
+        head_sha: { type: string }
+        mergeable: { type: boolean }
+        ci_status: { type: string, enum: [pending, success, failure, unknown, ""] }
+        pr_title: { type: string }
+
+    ForgeAction:
+      type: object
+      description: Persisted forge action row (also embedded on operation detail).
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string }
+        status: { type: string, enum: [queued, accepted, succeeded, failed, conflicted] }
+        provider: { type: string }
+        base_url: { type: string }
+        repo: { type: string }
+        head_branch: { type: string }
+        base_branch: { type: string }
+        commit_sha: { type: string }
+        title: { type: string }
+        body: { type: string }
+        remote_url: { type: string }
+        remote_number: { type: integer, nullable: true }
+        result_sha: { type: string }
+        message: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
 
     AcceptedAsset:
       type: object
@@ -2778,7 +3037,7 @@ components:
         fleet_id: { type: string, format: uuid }
         title: { type: string }
         body: { type: string, description: The operation's prompt for the assigned pilot }
-        mission_id: { type: string, format: uuid, description: Required — every operation belongs to a mission }
+        mission_id: { type: string, format: uuid, description: Required - every operation belongs to a mission }
         assignee_type: { type: string, enum: [pilot, user, crew], nullable: true }
         assignee_id: { type: string, nullable: true, description: "user/crew public id, or pilot kind when assignee_type=pilot" }
         required_tags: { type: array, items: { type: string } }

@@ -58,7 +58,7 @@ export function UserProfileView() {
               <CardContent className="space-y-3 text-sm">
                 <div>
                   <p className="text-xs font-medium uppercase text-muted-foreground">{t("profile.name")}</p>
-                  <p className="mt-0.5">{profile.name || "—"}</p>
+                  <p className="mt-0.5">{profile.name || "-"}</p>
                 </div>
                 {member && (
                   <div>

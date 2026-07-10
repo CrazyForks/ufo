@@ -20,11 +20,11 @@ export default function Page() {
   const [signingOut, setSigningOut] = useState(false);
 
   useEffect(() => {
-    let cancelled = false;
+    let canceled = false;
     (async () => {
       try {
         const me = await apiFetch("/api/v1/users/me", { cache: "no-store", credentials: "same-origin" });
-        if (cancelled) return;
+        if (canceled) return;
         if (me.status === 401) {
           const next = `${window.location.pathname}${window.location.search}${window.location.hash}`;
           storeAuthNextPath(next);
@@ -37,7 +37,7 @@ export default function Page() {
         }
         const user = (await me.json()) as User;
         const fleets = (await getJSON<Fleet[]>("/api/v1/fleets")) ?? [];
-        if (cancelled) return;
+        if (canceled) return;
         if (fleets.length === 0) {
           setBoot({ status: "error", message: t("auth.noFleet"), canSignOut: true });
           return;
@@ -58,11 +58,11 @@ export default function Page() {
         }
         setBoot({ status: "ready", user, fleets, fleet });
       } catch {
-        if (!cancelled) setBoot({ status: "error", message: t("auth.bootFailed"), canSignOut: true });
+        if (!canceled) setBoot({ status: "error", message: t("auth.bootFailed"), canSignOut: true });
       }
     })();
     return () => {
-      cancelled = true;
+      canceled = true;
     };
   }, []);
 

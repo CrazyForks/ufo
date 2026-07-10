@@ -100,7 +100,6 @@ func (s *Server) websocketConnect(w http.ResponseWriter, r *http.Request) {
 	for _, fleet := range fleets {
 		byFleet[fleet.ID] = uuidStr(fleet.PublicID)
 	}
-	// SameSite=Lax doesn't cover the WebSocket upgrade, so check Origin ourselves.
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool { return s.originAllowed(r, r.Header.Get("Origin")) },
 	}

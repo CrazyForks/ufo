@@ -73,7 +73,6 @@ func TestHubTestURLNoFallback(t *testing.T) {
 func TestSameDatabase(t *testing.T) {
 	a := "postgres://ufo:secret@localhost:5432/ufo?sslmode=disable"
 	b := "postgres://ufo:other@127.0.0.1:5432/ufo?sslmode=require"
-	// host strings differ; SameDatabase uses Hostname() so 127.0.0.1 != localhost
 	if SameDatabase(a, a) != true {
 		t.Fatal("identical URLs should match")
 	}

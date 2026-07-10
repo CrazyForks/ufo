@@ -1,6 +1,6 @@
 # Contributing to UFO
 
-Thanks for your interest! UFO is a monorepo with three apps — a Go API
+Thanks for your interest! UFO is a monorepo with three apps: a Go API
 (`apps/api`), a Next.js web UI (`apps/web`), and a Rust CLI (`apps/rover`).
 The Go Hub owns its SQL (`apps/api/internal/{migrate/migrations,db/queries}`)
 and the OpenAPI contract (`apps/api/internal/spec`), both embedded in the
@@ -20,16 +20,22 @@ See [README.md](README.md) for the run guide and configuration.
 Toolchain for host-side work: Go ≥ 1.26, Node ≥ 20.9, Rust/Cargo, and `sqlc`
 (only if you change SQL).
 
-## Beta development
-
-During the public beta, schema changes are folded into
-`apps/api/internal/migrate/migrations/0001_init.sql`; development database
-state must be migrated or backed up. Use `scripts/dev.sh down -v` only when
-you intentionally want to discard the local Docker database volume.
-
 ## Before you open a pull request
 
-Run the checks for whatever you touched:
+One call (recommended):
+
+```bash
+scripts/verify.sh
+```
+
+Suites: `diff`, `api`, `web`, `rover`, `openapi` (default all of
+those). Optional: `sqlc` (regenerate and fail if dirty). Examples:
+`scripts/verify.sh api web`, `scripts/verify.sh rover`.
+
+Skip the web production build with `UFO_CHECK_SKIP_WEB_BUILD=1` when you
+only need typecheck.
+
+Equivalent manual commands:
 
 ```bash
 # api
@@ -45,13 +51,15 @@ Run the checks for whatever you touched:
 npx --yes @redocly/cli@2.36.0 lint apps/api/internal/spec/openapi.yaml
 ```
 
-CI runs these on every pull request.
+CI runs the same class of checks on protected branches.
 
 Keep related generated and documentation changes in the same pull request:
 
-- SQL changes: edit `apps/api/internal/db/queries/*.sql` or
-  `apps/api/internal/migrate/migrations/*.sql`, run `sqlc generate`, and
-  commit the generated `apps/api/internal/db` files.
+- SQL changes: add a migration under
+  `apps/api/internal/migrate/migrations/`, run
+  `go generate ./internal/migrate` (updates `migrations.sum`), edit
+  `apps/api/internal/db/queries/*.sql`, run `sqlc generate`, and commit the
+  generated `apps/api/internal/db` files and `migrations.sum`.
 - API changes: update `apps/api/internal/spec/openapi.yaml` and lint it.
 - CLI or setup changes: update [README.md](README.md) or
   [apps/rover/README.md](apps/rover/README.md) when commands or behavior
@@ -71,12 +79,14 @@ Keep related generated and documentation changes in the same pull request:
 
 - **Commits:** use [Gitmoji](https://gitmoji.dev) followed by a concise,
   imperative summary, for example `✨ Add operation labels`.
-- **Database:** edit `apps/api/internal/db/queries/*.sql`, run `sqlc
-  generate`, and commit the generated `apps/api/internal/db` changes.
+- **Database:** add migrations under
+  `apps/api/internal/migrate/migrations/`; `go generate ./internal/migrate`;
+  edit queries; `sqlc generate`; commit SQL, `migrations.sum`, and generated
+  `apps/api/internal/db` changes.
 - **API contract:** if you add or change an endpoint, update
   [`apps/api/internal/spec/openapi.yaml`](apps/api/internal/spec/openapi.yaml)
   in the same pull request.
-- **Comments:** keep them terse — explain *why*, not *what*.
+- **Comments:** keep them terse. Explain *why*, not *what*.
 - **Documentation:** wrap Markdown prose greedily at 78 columns. Code blocks,
   tables, and long URLs/paths are exempt; third-party notices stay verbatim.
 - **Security:** never weaken fleet scoping or the rover/credential

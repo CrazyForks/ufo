@@ -87,6 +87,11 @@ type LoopNotice = {
   routineId: string;
   pulseId: string;
   previousOperationId?: string;
+  iteration?: number;
+  emptyStreak?: number;
+  lastCommitSha?: string;
+  lastCommitBranch?: string;
+  lastChangedFiles?: string[];
 };
 
 function loopNoticeFromMetadata(metadata: Record<string, unknown> | undefined): LoopNotice | null {
@@ -96,15 +101,33 @@ function loopNoticeFromMetadata(metadata: Record<string, unknown> | undefined): 
   const routineId = typeof loop.routine_id === "string" ? loop.routine_id : "";
   const pulseId = typeof loop.pulse_id === "string" ? loop.pulse_id : "";
   if (!routineId || !pulseId) return null;
+  const iteration = typeof loop.iteration === "number" && Number.isFinite(loop.iteration)
+    ? loop.iteration
+    : undefined;
+  const emptyStreak = typeof loop.empty_streak === "number" && Number.isFinite(loop.empty_streak)
+    ? loop.empty_streak
+    : undefined;
+  const lastChangedFiles = Array.isArray(loop.last_changed_files)
+    ? loop.last_changed_files.filter((f): f is string => typeof f === "string" && f.trim() !== "").slice(0, 12)
+    : undefined;
   return {
     routineId,
     pulseId,
     previousOperationId: typeof loop.previous_operation_id === "string" ? loop.previous_operation_id : undefined,
+    iteration,
+    emptyStreak: emptyStreak && emptyStreak > 0 ? emptyStreak : undefined,
+    lastCommitSha: typeof loop.last_commit_sha === "string" ? loop.last_commit_sha : undefined,
+    lastCommitBranch: typeof loop.last_commit_branch === "string" ? loop.last_commit_branch : undefined,
+    lastChangedFiles: lastChangedFiles && lastChangedFiles.length > 0 ? lastChangedFiles : undefined,
   };
 }
 
 function shortPublicId(value: string) {
   return value.length > 8 ? value.slice(0, 8) : value;
+}
+
+function shortSha(value: string) {
+  return value.length > 12 ? value.slice(0, 12) : value;
 }
 
 function operationEditDraftKey(operationId: string) {
@@ -465,6 +488,11 @@ export function OperationDetail() {
   const sourceRepo = sourceRepoInfo(sourceActions, sourceRover?.metadata);
   const operationWorktreeName = d?.operation ? metadataStringValue(d.operation.metadata, "worktree_name") : "";
   const operationWorktreePath = operationWorktreePathInfo(runs, sourceActions);
+  const autoCommitMeta = d.operation.metadata?.auto_commit;
+  const autoCommitBranch =
+    typeof autoCommitMeta === "object" && autoCommitMeta && !Array.isArray(autoCommitMeta)
+      ? metadataStringValue(autoCommitMeta as Record<string, unknown>, "branch")
+      : "";
   const pullRequests = d.pull_requests ?? [];
   const showSource = d.source_action_available || sourceActions.length > 0;
   const showPullRequests = showSource || pullRequests.length > 0;
@@ -941,7 +969,7 @@ export function OperationDetail() {
                   </PropRow>
                   <PropRow label={t("common.mission")}>
                     {d.operation.main_operation_id ? (
-                      <span className="truncate font-mono text-xs" title={operationMission?.name}>{operationMission?.key ?? "—"}</span>
+                      <span className="truncate font-mono text-xs" title={operationMission?.name}>{operationMission?.key ?? "-"}</span>
                     ) : (
                       <RailSelect
                         value={d.operation.mission_id}
@@ -980,14 +1008,56 @@ export function OperationDetail() {
                 {loopNotice && (
                   <div className="border-t border-border p-4">
                     <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium uppercase text-muted-foreground"><RefreshCw className="size-3.5" /> {t("op.loop")}</p>
-                    <div className="space-y-1 text-sm">
-                      {loopNotice.previousOperationId && (
-                        <button type="button" className="text-left text-brand hover:underline" onClick={() => app.openOperation(loopNotice.previousOperationId!)}>
-                          {t("op.loopPrevious", { id: shortPublicId(loopNotice.previousOperationId) })}
-                          {previousLoopOperation?.title ? ` · ${previousLoopOperation.title}` : ""}
-                        </button>
+                    <div className="space-y-1">
+                      {typeof loopNotice.iteration === "number" && (
+                        <PropRow label={t("op.loopIteration")}>
+                          <span className="font-mono text-xs">{loopNotice.iteration}</span>
+                        </PropRow>
                       )}
-                      <p className="text-xs text-muted-foreground">{t("op.loopPulse", { id: shortPublicId(loopNotice.pulseId) })}</p>
+                      {(autoCommitBranch || loopNotice.lastCommitBranch) && (
+                        <PropRow label={t("op.loopBranch")}>
+                          <span className="min-w-0 truncate font-mono text-xs" title={autoCommitBranch || loopNotice.lastCommitBranch}>
+                            {autoCommitBranch || loopNotice.lastCommitBranch}
+                          </span>
+                        </PropRow>
+                      )}
+                      {loopNotice.lastCommitSha && (
+                        <PropRow label={t("op.loopTip")}>
+                          <span className="font-mono text-xs" title={loopNotice.lastCommitSha}>{shortSha(loopNotice.lastCommitSha)}</span>
+                        </PropRow>
+                      )}
+                      {typeof loopNotice.emptyStreak === "number" && (
+                        <PropRow label={t("op.loopEmptyStreak")}>
+                          <span className="font-mono text-xs text-warning">{loopNotice.emptyStreak}</span>
+                        </PropRow>
+                      )}
+                      {loopNotice.previousOperationId && (
+                        <PropRow label={t("op.previousOperation")}>
+                          {previousLoopOperation ? (
+                            <button type="button" onClick={() => app.openOperation(previousLoopOperation.id)} className="flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-xs ring-inset hover:bg-brand/10 hover:text-foreground hover:ring-1 hover:ring-brand/40">
+                              <StatusIcon status={previousLoopOperation.status} className="size-3.5 shrink-0" />
+                              <span className="font-mono text-[10px] text-muted-foreground">{operationCode(previousLoopOperation as Operation, app.missions)}</span>
+                              <span className="truncate">{previousLoopOperation.title}</span>
+                            </button>
+                          ) : (
+                            <span className="min-w-0 truncate font-mono text-xs" title={loopNotice.previousOperationId}>{shortPublicId(loopNotice.previousOperationId)}</span>
+                          )}
+                        </PropRow>
+                      )}
+                      {loopNotice.lastChangedFiles && (
+                        <div className="pt-0.5">
+                          <p className="mb-0.5 text-[10px] text-muted-foreground">{t("op.loopChangedFiles")}</p>
+                          <p className="break-all font-mono text-[10px] leading-snug text-muted-foreground" title={loopNotice.lastChangedFiles.join("\n")}>
+                            {loopNotice.lastChangedFiles.join(", ")}
+                          </p>
+                        </div>
+                      )}
+                      <PropRow label={t("op.routine")}>
+                        <span className="min-w-0 truncate font-mono text-xs" title={loopNotice.routineId}>{shortPublicId(loopNotice.routineId)}</span>
+                      </PropRow>
+                      <PropRow label={t("op.pulse")}>
+                        <span className="min-w-0 truncate font-mono text-xs" title={loopNotice.pulseId}>{shortPublicId(loopNotice.pulseId)}</span>
+                      </PropRow>
                     </div>
                   </div>
                 )}
@@ -1053,10 +1123,10 @@ export function OperationDetail() {
                     <span>{t("op.createdBy")}</span>
                     {d.operation.created_by ? (
                       <button type="button" className="truncate text-foreground hover:underline" onClick={() => app.openUser(d.operation.created_by!)}>
-                        {memberLabel(d.operation.created_by, app.user, app.members, "—")}
+                        {memberLabel(d.operation.created_by, app.user, app.members, "-")}
                       </button>
                     ) : (
-                      <span className="text-foreground">—</span>
+                      <span className="text-foreground">-</span>
                     )}
                   </div>
                   <div className="flex items-center justify-between"><span>{t("common.created")}</span><span>{timestamp(d.operation.created_at)}</span></div>
@@ -1102,10 +1172,10 @@ export function OperationDetail() {
           </DialogHeader>
           <div className="space-y-3 text-sm">
             <div className="rounded-md border border-border bg-muted/30 px-3 py-2 font-mono text-xs">
-              {operationMission?.key ?? "—"}
+              {operationMission?.key ?? "-"}
               {operationMission?.name ? ` (${operationMission.name})` : ""}
               {" → "}
-              {pendingMission?.key ?? "—"}
+              {pendingMission?.key ?? "-"}
               {pendingMission?.name ? ` (${pendingMission.name})` : ""}
             </div>
             <div className="space-y-1.5">
@@ -1673,7 +1743,7 @@ function isSettledProblemRun(run: Run) {
 function oneLinePreview(text: string, max = 120) {
   const value = hideFlowControlFlags(text).replace(/\s+/g, " ").trim();
   if (value.length <= max) return value;
-  return `${value.slice(0, max - 1).trimEnd()}…`;
+  return `${value.slice(0, max - 1).trimEnd()}...`;
 }
 
 function activeRunInputPreview(comments: Comment[], runs: Run[], run: Run, operation: Operation) {
@@ -1730,7 +1800,7 @@ function SplitIcon() {
 function quotedReplyBody(author: string, source: string) {
   const text = hideFlowControlFlags(source).trim();
   if (!text) return "";
-  const clipped = text.length > 1200 ? `${text.slice(0, 1200).trimEnd()}…` : text;
+  const clipped = text.length > 1200 ? `${text.slice(0, 1200).trimEnd()}...` : text;
   return `> ${author}:\n${clipped.split(/\r?\n/).map((line) => `> ${line}`).join("\n")}\n\n`;
 }
 
@@ -2196,7 +2266,7 @@ function Relationships({ op, relations }: { op: Operation; relations: Relation[]
             <Button variant="ghost" size="sm" className="text-xs text-muted-foreground"><Plus className="size-3" /> {t("op.addRelationship")}</Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start">
-            {REL_ORDER.map((k) => <DropdownMenuItem key={k} onClick={() => { setAddKind(k); setQ(""); setResults([]); }}>{t(REL_LABEL_KEY[k])}…</DropdownMenuItem>)}
+            {REL_ORDER.map((k) => <DropdownMenuItem key={k} onClick={() => { setAddKind(k); setQ(""); setResults([]); }}>{t(REL_LABEL_KEY[k])}...</DropdownMenuItem>)}
           </DropdownMenuContent>
         </DropdownMenu>
       ) : (
@@ -2337,6 +2407,19 @@ function SourceActions({ operationId, worktreeEnabled, actionAvailable, actions,
   );
 }
 
+function safeHttpHref(href?: string): string | null {
+  if (!href) return null;
+  const trimmed = href.trim();
+  if (!trimmed || trimmed.startsWith("//")) return null;
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol === "http:" || url.protocol === "https:") return trimmed;
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 function PullRequests({ operationId }: { operationId: string }) {
   const app = useApp();
   const t = useT();
@@ -2346,12 +2429,31 @@ function PullRequests({ operationId }: { operationId: string }) {
   const close = () => { setUrl(""); setAdding(false); };
   return (
     <div className="space-y-1.5">
-      {pullRequests.map((p) => (
-        <div key={p.id} className="flex items-center gap-1.5 text-xs">
-          <a href={p.url} target="_blank" rel="noreferrer" className="min-w-0 flex-1 truncate text-info hover:underline">{p.title || p.url}</a>
-          <button onClick={() => app.deletePullRequest(p.id, operationId)} className="text-muted-foreground hover:text-destructive"><X className="size-3" /></button>
-        </div>
-      ))}
+      {pullRequests.map((p) => {
+        const href = safeHttpHref(p.url);
+        const label = p.title || (p.number != null ? `#${p.number}` : p.url);
+        const meta = [
+          p.provider,
+          p.number != null ? `#${p.number}` : null,
+          p.head_branch && p.base_branch ? `${p.head_branch}→${p.base_branch}` : p.head_branch || p.base_branch,
+          p.ci_status || null,
+          p.status || null,
+          p.created_by_ufo ? t("op.prByUfo") : null,
+        ].filter(Boolean).join(" · ");
+        return (
+          <div key={p.id} className="flex items-start gap-1.5 text-xs">
+            <div className="min-w-0 flex-1">
+              {href ? (
+                <a href={href} target="_blank" rel="noreferrer" className="block truncate text-info hover:underline">{label}</a>
+              ) : (
+                <span className="block truncate text-muted-foreground">{label}</span>
+              )}
+              {meta && <div className="truncate text-[10px] text-muted-foreground">{meta}</div>}
+            </div>
+            <button onClick={() => app.deletePullRequest(p.id, operationId)} className="shrink-0 text-muted-foreground hover:text-destructive"><X className="size-3" /></button>
+          </div>
+        );
+      })}
       {adding ? (
         <form
           className="flex items-center gap-1"

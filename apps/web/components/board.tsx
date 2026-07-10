@@ -27,7 +27,6 @@ const TAB_KIND: Record<string, string> = { all: "", members: "user", pilots: "pi
 const TAB_LABEL_KEY = { all: "board.tabAll", members: "board.tabMembers", pilots: "board.tabPilots" } as const;
 
 const LIMIT = 50;
-// Column tints match each status's icon hue (STATUS_TEXT).
 const TINT: Record<string, string> = {
   backlog: "bg-muted/30", todo: "bg-muted/30", in_progress: "bg-info/5",
   in_review: "bg-warning/5", done: "bg-success/5", blocked: "bg-destructive/5", canceled: "bg-muted/20",
@@ -53,7 +52,6 @@ export function Board() {
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
   const missionParam = mission === "all" ? "" : mission;
 
-  // Shared filter query string for column fetch + counts.
   const filterQS = useMemo(() => {
     let qs = `&assignee_kind=${TAB_KIND[filters.tab] ?? ""}`;
     if (filters.priority != null) qs += `&priority=${filters.priority}`;
@@ -71,7 +69,6 @@ export function Board() {
     [app.fleet, missionParam, filterQS],
   );
 
-  // (Re)load visible columns' first pages + counts + working pill on changes.
   useEffect(() => {
     let canceled = false;
     (async () => {
@@ -128,7 +125,6 @@ export function Board() {
 
   const dragging = dragId != null ? Object.values(cols).flatMap((c) => c.items).find((o) => o.id === dragId) ?? null : null;
 
-  // Display order (drag/pagination still operate on the raw `cols` by id).
   const view = useMemo(() => {
     const out: Record<string, ColState> = {};
     for (const s of Object.keys(cols)) out[s] = { ...cols[s], items: sortOperations(cols[s].items, sort) };
@@ -308,7 +304,6 @@ function DisplayMenu({ cardProps, toggleProp, mode, setMode, sort, setSort }: { 
 function Swimlane({ visible, cols, cardProps }: { visible: string[]; cols: Record<string, ColState>; cardProps: Set<CardProp> }) {
   const app = useApp();
   const t = useT();
-  // Missions present in the fetched data, in board order.
   const missionIds = useMemo(() => {
     const seen = new Set<string>();
     for (const s of visible) for (const op of cols[s]?.items ?? []) if (op.mission_id) seen.add(op.mission_id);
@@ -339,7 +334,7 @@ function Swimlane({ visible, cols, cardProps }: { visible: string[]; cols: Recor
                           <CardBody op={op} cardProps={cardProps} />
                         </div>
                       ))}
-                      {items.length === 0 && <p className="py-3 text-center text-[11px] text-muted-foreground/60">—</p>}
+                      {items.length === 0 && <p className="py-3 text-center text-[11px] text-muted-foreground/60">-</p>}
                     </div>
                   </div>
                 );

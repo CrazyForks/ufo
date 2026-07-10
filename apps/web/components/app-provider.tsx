@@ -8,7 +8,7 @@ import { t } from "@/lib/i18n";
 import { WebSocketClient } from "@/lib/websocket";
 import { parseAppPath } from "@/lib/routes";
 import type {
-  EnrollmentCode, Pilot, Comment, Crew, Fleet, Invitation, Label, Member, MyInvite, OperationReference, Signal, Mission, Operation,
+  EnrollmentCode, Pilot, Comment, Crew, Fleet, Forge, ForgeInput, Invitation, Label, Member, MyInvite, OperationReference, Signal, Mission, Operation,
   Asset, AssetUploadIntent, OperationDetail, Routine, RoutineMetadata, RoutineOperationMetadata, Rover, Run, RunDetail, User, UserProfile,
   Pulse,
 } from "@/lib/types";
@@ -82,6 +82,11 @@ type Ctx = {
   setFleetBudget: (budget: SpendBudgetInput) => Promise<boolean>;
   setMissionBudget: (missionId: string, budget: SpendBudgetInput) => Promise<boolean>;
   setRoverBudget: (roverId: string, budget: SpendBudgetInput) => Promise<boolean>;
+  forges: Forge[];
+  createForge: (input: ForgeInput) => Promise<Forge | null>;
+  updateForge: (id: string, input: ForgeInput) => Promise<boolean>;
+  deleteForge: (id: string) => Promise<boolean>;
+  setMissionForges: (missionId: string, forgeIds: string[]) => Promise<boolean>;
   signOut: () => void;
   missions: Mission[];
   missionCounts: Record<string, number>;
@@ -97,9 +102,7 @@ type Ctx = {
   myRole: string;
   fleetInvites: Invitation[];
   myInvites: MyInvite[];
-  // boardTick increments whenever operations change → the board refetches.
   boardTick: number;
-  // selection
   selectedOperation: string | null;
   openOperation: (id: string | null) => void;
   backOperation: () => void;
@@ -110,7 +113,6 @@ type Ctx = {
   selectedUserId: string | null;
   userProfile: UserProfile | null;
   openUser: (id: string | null) => void;
-  // actions
   createOperation: (i: { title: string; body: string; mission_id: string | null; assignee_type: string | null; assignee_id: string | null; start_immediately?: boolean; sub_operations_enabled?: boolean; required_tags?: string[]; excluded_tags?: string[]; asset_ids?: string[]; priority?: number; main_operation_id?: string | null; start_date?: string | null; due_date?: string | null }) => Promise<Operation | null>;
   setOperationTags: (operationId: string, required_tags: string[], excluded_tags: string[]) => Promise<void>;
   setOperationWorktree: (operationId: string, enabled: boolean | null) => Promise<void>;
@@ -184,6 +186,7 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
   const [fleet, setFleet] = useState(initialFleet);
   const [missions, setMissions] = useState<Mission[]>([]);
   const [missionCounts, setMissionCounts] = useState<Record<string, number>>({});
+  const [forges, setForges] = useState<Forge[]>([]);
   const [pilots, setPilots] = useState<Pilot[]>([]);
   const [crews, setCrews] = useState<Crew[]>([]);
   const [labels, setLabels] = useState<Label[]>([]);
@@ -230,7 +233,7 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
   }, []);
   const loadMyInvites = useCallback(async () => { const d = await getJSON<MyInvite[]>(`/api/v1/invitations/mine`); setMyInvites(d ?? []); }, []);
   const loadMeta = useCallback(async (f: string) => {
-    const [m, a, c, rv, t, lb, rt] = await Promise.all([
+    const [m, a, c, rv, t, lb, rt, fg] = await Promise.all([
       getJSON<Mission[]>(withFleet("/api/v1/missions", f)),
       getJSON<Pilot[]>(withFleet("/api/v1/pilots", f)),
       getJSON<Crew[]>(withFleet("/api/v1/crews", f)),
@@ -238,11 +241,13 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
       getJSON<EnrollmentCode[]>("/api/v1/enrollment-codes"),
       getJSON<Label[]>(withFleet("/api/v1/labels", f)),
       getJSON<Routine[]>(withFleet("/api/v1/routines", f)),
+      getJSON<Forge[]>(withFleet("/api/v1/forges", f)),
     ]);
     if (m) setMissions(m);
     if (a) setPilots(a);
     if (c) setCrews(c);
     if (lb) setLabels(lb);
+    if (fg) setForges(fg);
     if (rt) setRoutines(rt);
     if (rv) setRovers(rv);
     if (t) {
@@ -407,6 +412,67 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
     toast.success(t("toast.fleetBudgetSaved"));
     return true;
   }, [fleet, fleets]);
+  const createForge: Ctx["createForge"] = useCallback(async (input) => {
+    const kind = input.credential_kind ?? "rover_env";
+    const credential = input.credential ?? (kind === "rover_env" ? { name: "UFO_ROVER_FORGE_TOKEN" } : {});
+    const res = await postJSON(`/api/v1/forges`, {
+      fleet_id: fleet,
+      key: input.key,
+      name: input.name ?? "",
+      provider: input.provider,
+      base_url: input.base_url ?? "",
+      repo: input.repo,
+      default_base_branch: input.default_base_branch ?? "main",
+      credential_kind: kind,
+      credential,
+    });
+    if (!res.ok) { await fail(res, t("error.createForge")); return null; }
+    const row = (await res.json()) as Forge;
+    setForges((prev) => [...prev, row].sort((a, b) => a.key.localeCompare(b.key)));
+    toast.success(t("toast.forgeSaved"));
+    return row;
+  }, [fleet]);
+  const updateForge: Ctx["updateForge"] = useCallback(async (id, input) => {
+    const kind = input.credential_kind ?? "rover_env";
+    const credential = input.credential ?? (kind === "rover_env" ? { name: "UFO_ROVER_FORGE_TOKEN" } : {});
+    const res = await patchJSON(`/api/v1/forges/${id}`, {
+      fleet_id: fleet,
+      key: input.key,
+      name: input.name ?? "",
+      provider: input.provider,
+      base_url: input.base_url ?? "",
+      repo: input.repo,
+      default_base_branch: input.default_base_branch ?? "main",
+      credential_kind: kind,
+      credential,
+    });
+    if (!res.ok) { await fail(res, t("error.updateForge")); return false; }
+    const row = (await res.json()) as Forge;
+    setForges((prev) => prev.map((it) => it.id === row.id ? row : it).sort((a, b) => a.key.localeCompare(b.key)));
+    toast.success(t("toast.forgeSaved"));
+    return true;
+  }, [fleet]);
+  const deleteForge: Ctx["deleteForge"] = useCallback(async (id) => {
+    const res = await del(withFleet(`/api/v1/forges/${id}`, fleet));
+    if (!res.ok) { await fail(res, t("error.deleteForge")); return false; }
+    setForges((prev) => prev.filter((it) => it.id !== id));
+    loadMeta(fleet);
+    toast.success(t("toast.forgeDeleted"));
+    return true;
+  }, [fleet, loadMeta]);
+  const setMissionForges: Ctx["setMissionForges"] = useCallback(async (missionId, forgeIds) => {
+    const mission = missions.find((it) => it.id === missionId);
+    if (!mission) return false;
+    const res = await patchJSON(`/api/v1/missions/${missionId}`, {
+      name: mission.name,
+      key: mission.key,
+      forge_ids: forgeIds,
+    });
+    if (!res.ok) { await fail(res, t("error.bindMissionForge")); return false; }
+    loadMeta(fleet);
+    toast.success(t("toast.missionForgeSaved"));
+    return true;
+  }, [fleet, missions, loadMeta]);
   const setMissionBudget: Ctx["setMissionBudget"] = useCallback(async (missionId, budget) => {
     const mission = missions.find((it) => it.id === missionId);
     if (!mission) return false;
@@ -812,6 +878,7 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
 
   const value: Ctx = useMemo(() => ({
     user, updateUserName, fleets, fleet, switchFleet, createFleet, updateFleet, setFleetContext, setFleetWorktree, setFleetBudget, setMissionBudget, setRoverBudget, signOut,
+    forges, createForge, updateForge, deleteForge, setMissionForges,
     missions, missionCounts, pilots, crews, labels, routines, rovers, enrollmentCodes, signals, newEnrollmentCode, boardTick,
     members, myRole, fleetInvites, myInvites,
     selectedOperation, openOperation, backOperation, operationDetail, selectedRun, setSelectedRun, runDetail,
@@ -823,10 +890,10 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
     createEnrollmentCode, revokeRover, renameRover, setRoverTags, setRoverUnits, revokeEnrollmentCode, savePendingRover, approvePendingRover, denyPendingRover, openSignal, archiveSignal,
     invite, revokeInvite, acceptInvite, declineInvite, setMemberRole, removeFleetMember,
   }), [
-    user, fleets, fleet, missions, missionCounts, pilots, crews, labels, routines, rovers, enrollmentCodes, signals, newEnrollmentCode, boardTick,
+    user, fleets, fleet, forges, missions, missionCounts, pilots, crews, labels, routines, rovers, enrollmentCodes, signals, newEnrollmentCode, boardTick,
     members, myRole, fleetInvites, myInvites,
     selectedOperation, operationDetail, selectedRun, runDetail, selectedUserId, userProfile,
-    updateUserName, switchFleet, createFleet, updateFleet, setFleetContext, setFleetWorktree, setFleetBudget, setMissionBudget, setRoverBudget, signOut,
+    updateUserName, switchFleet, createFleet, updateFleet, setFleetContext, setFleetWorktree, setFleetBudget, createForge, updateForge, deleteForge, setMissionForges, setMissionBudget, setRoverBudget, signOut,
     openOperation, backOperation, setSelectedRun, openUser,
     createOperation, setOperationTags, setOperationWorktree, updateOperation, setOperationMission, setPriority, setDates, setMainOperation, setArchived,
     createLabel, updateLabel, deleteLabel, createRoutine, updateRoutine, deleteRoutine, pulseRoutine, listRoutinePulses, attachLabel, detachLabel, addRelation, removeRelation, createSourceAction, addPullRequest, deletePullRequest, uploadAsset, searchOperations, react,

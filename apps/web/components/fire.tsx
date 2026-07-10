@@ -5,7 +5,6 @@ export function onFire(op: Operation) {
   return op.priority >= 4 && op.status !== "done" && op.status !== "canceled";
 }
 
-// Deterministic PRNG from a string seed.
 function seededRng(seed: string) {
   let h = 2166136261;
   for (let i = 0; i < seed.length; i++) {
@@ -20,7 +19,6 @@ function seededRng(seed: string) {
   };
 }
 
-// Left-edge flames; per-operation tongue shapes + timing (seeded by id).
 export function Flames({ detail, seed }: { detail?: boolean; seed?: string }) {
   const r = seededRng(seed ?? "ufo");
   const tongues = Array.from({ length: 5 }, () => {

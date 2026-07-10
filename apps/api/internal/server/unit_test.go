@@ -321,7 +321,6 @@ func TestEffectiveContextFromMetadata(t *testing.T) {
 	if !strings.Contains(gotMission, "Mission (cross-operation)") || !strings.Contains(gotMission, "mission root") {
 		t.Fatalf("fleet+mission missing mission: %q", gotMission)
 	}
-	// Broader layer appears before more specific.
 	if iFleet, iMission := strings.Index(gotMission, "Fleet (global)"), strings.Index(gotMission, "Mission (cross-operation)"); iFleet < 0 || iMission < 0 || iFleet > iMission {
 		t.Fatalf("expected fleet before mission in stack: %q", gotMission)
 	}

@@ -110,7 +110,7 @@ func periodWindowUTC(period string, now time.Time) (budgetPeriodWindow, bool) {
 func isoWeekStartUTC(t time.Time) time.Time {
 	t = t.UTC()
 	day := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
-	offset := (int(day.Weekday()) + 6) % 7 // Mon=0 … Sun=6
+	offset := (int(day.Weekday()) + 6) % 7 // Mon=0 ... Sun=6
 	return day.AddDate(0, 0, -offset)
 }
 

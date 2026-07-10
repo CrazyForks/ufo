@@ -36,7 +36,6 @@ func (s *Server) resolveUserForRequest(r *http.Request) (db.User, bool) {
 		}
 		return db.User{}, false
 	}
-	// No response writer here — skip clearing a bad access cookie.
 	return s.userFromCookies(nil, r, false)
 }
 

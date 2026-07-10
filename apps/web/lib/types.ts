@@ -4,7 +4,40 @@ export type Fleet = { id: string; name: string; kind: string; metadata: Record<s
 export type Member = { id: string; email: string; name: string; role: string; created_at: string; updated_at: string };
 export type Invitation = { id: string; invitee_email: string; role: string; status: string; created_at: string; updated_at: string; expires_at: string };
 export type MyInvite = { id: string; fleet_id: string; fleet_name: string; role: string; invitee_email: string };
-export type Mission = { id: string; name: string; key: string; metadata: Record<string, unknown>; created_at: string; updated_at: string };
+export type Mission = {
+  id: string;
+  name: string;
+  key: string;
+  forge_ids: string[];
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+export type ForgeCredentialKind = "rover_env" | "github_app" | "gitlab_app" | "secret_ref";
+export type Forge = {
+  id: string;
+  key: string;
+  name: string;
+  provider: "github" | "gitlab" | string;
+  base_url: string;
+  repo: string;
+  default_base_branch: string;
+  credential_kind: ForgeCredentialKind | string;
+  credential: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+export type ForgeInput = {
+  key: string;
+  name?: string;
+  provider: "github" | "gitlab";
+  base_url?: string;
+  repo: string;
+  default_base_branch?: string;
+  credential_kind?: ForgeCredentialKind;
+  credential?: Record<string, unknown>;
+};
 export type Pilot = { kind: string; rovers: number; online_rovers: number };
 export type CrewMember = { member_type: string; member_id: string; role: string; created_at: string; updated_at: string };
 export type Crew = { id: string; name: string; created_at: string; updated_at: string; members?: CrewMember[] };
@@ -16,11 +49,29 @@ export type RoutineTriggerType = "manual" | "schedule";
 export type RoutineMetadata = {
   trigger?: { kind?: RoutineTriggerType; cron?: string; enabled?: boolean };
   operation?: {
-    start_immediately?: boolean;
-    skip_if_active?: boolean;
-    re_pulse_on_close?: boolean;
-    auto_commit_branch?: string;
-    drop_worktree_on_commit?: boolean;
+    pulse?: {
+      start_immediately?: boolean;
+      skip_if_active?: boolean;
+      re_pulse_on_close?: boolean;
+    };
+    auto_commit?: {
+      branch?: string;
+      drop_worktree?: boolean;
+    };
+    ship_base?: {
+      branch?: string;
+      reference?: string;
+      sync?: "rebase" | "merge" | "reset" | string;
+    };
+    forge?: {
+      key?: string;
+    };
+    pull_request?: {
+      create?: boolean;
+      labels?: string[];
+      ci_wait_timeout_seconds?: number | null;
+    };
+    checks?: { commands?: string[]; timeout_seconds?: number };
     priority?: number;
     assignee?: { type?: AssigneeType; id?: string };
     required_tags?: string[];
@@ -77,7 +128,23 @@ export type SourceAction = {
   accepted_at: string | null;
   finished_at: string | null;
 };
-export type PullRequest = { id: string; url: string; title: string; status: string; number?: number | null; metadata: Record<string, unknown>; created_by: string | null; created_at: string; updated_at: string };
+export type PullRequest = {
+  id: string;
+  url: string;
+  title: string;
+  status: string;
+  number?: number | null;
+  provider?: string;
+  created_by_ufo?: boolean;
+  head_sha?: string;
+  ci_status?: string;
+  head_branch?: string;
+  base_branch?: string;
+  metadata: Record<string, unknown>;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+};
 export type SubOperationProgress = { total: number; done: number; in_progress: number; in_review: number; blocked: number; pilot_kinds: string[] };
 export type Operation = {
   id: string;
@@ -237,7 +304,38 @@ export type Signal = {
   updated_at: string;
 };
 
-export type OperationDetail = { operation: Operation; comments: Comment[]; comments_more: boolean; runs: Run[]; sub_operations: Operation[]; relations: Relation[]; source_action_available: boolean; source_rover_id: string | null; source_actions: SourceAction[]; pull_requests: PullRequest[] };
+export type ForgeAction = {
+  id: string;
+  kind: string;
+  status: string;
+  provider?: string;
+  base_url?: string;
+  repo?: string;
+  head_branch?: string;
+  base_branch?: string;
+  commit_sha?: string;
+  title?: string;
+  body?: string;
+  remote_url?: string;
+  remote_number?: number | null;
+  result_sha?: string;
+  message?: string;
+  created_at: string;
+  updated_at: string;
+};
+export type OperationDetail = {
+  operation: Operation;
+  comments: Comment[];
+  comments_more: boolean;
+  runs: Run[];
+  sub_operations: Operation[];
+  relations: Relation[];
+  source_action_available: boolean;
+  source_rover_id: string | null;
+  source_actions: SourceAction[];
+  forge_actions?: ForgeAction[];
+  pull_requests: PullRequest[];
+};
 export type RunDetail = { run: Run; events: RunEvent[]; artifacts: Artifact[]; messages: RunMessage[] };
 
 export const BOARD_COLUMNS: { key: string; label: string }[] = [

@@ -1,4 +1,3 @@
-// Command api is the UFO Hub server.
 package main
 
 import (
@@ -37,7 +36,6 @@ func main() {
 	}
 	log.Printf("migrations applied (db %s)", database.Redacted(databaseURL))
 
-	// Long-poll notifier: LISTEN for run-queued notifications.
 	longPoll := time.Duration(envFloat("UFO_HUB_LONGPOLL_SECONDS", 25) * float64(time.Second))
 	notifier := server.NewNotifier(databaseURL, "ufo_run_queued", "ufo_changed")
 	notifier.Start(ctx)
@@ -46,7 +44,6 @@ func main() {
 	srv.StartWebsocketBroadcasts(ctx) // WebSocket broadcasts of typed change events
 	log.Printf("accept long-poll: %s", longPoll)
 
-	// Start the lease sweeper (requeues runs whose rover went silent).
 	leaseSeconds := envFloat("UFO_HUB_RUN_LEASE_SECONDS", 30)
 	sweepInterval := time.Duration(leaseSeconds / 3 * float64(time.Second))
 	if sweepInterval < 5*time.Second {

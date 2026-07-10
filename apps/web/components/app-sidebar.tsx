@@ -22,6 +22,7 @@ const NAV: NavItem[] = [
   { key: "crews", labelKey: "nav.crews", icon: SECTION_ICONS.crews },
   { key: "rovers", labelKey: "nav.rovers", icon: SECTION_ICONS.rovers },
   { key: "members", labelKey: "nav.members", icon: SECTION_ICONS.members },
+  { key: "integrations", labelKey: "nav.integrations", icon: SECTION_ICONS.integrations },
   { key: "settings", labelKey: "nav.settings", icon: SECTION_ICONS.settings },
 ];
 

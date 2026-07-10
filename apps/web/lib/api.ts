@@ -1,4 +1,3 @@
-// Thin fetch helpers over the same-origin /api/v1 facade.
 
 export function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
   return fetch(path, { ...init, credentials: "same-origin" });

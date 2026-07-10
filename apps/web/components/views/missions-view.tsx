@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, ChevronRight, GitBranch, Pencil, Plus, Wallet } from "lucide-react";
+import { ChevronDown, ChevronRight, GitBranch, GitPullRequest, Pencil, Plus, Wallet } from "lucide-react";
 import { useApp } from "@/components/app-provider";
 import { BudgetEditor, budgetFromMetadata } from "@/components/budget-editor";
 import { MissionUsagePanel } from "@/components/usage-summary";
@@ -72,8 +72,11 @@ function MissionRow({ mission, count }: { mission: Mission; count: number }) {
   const [context, setContext] = useState(metadataContextValue(mission.metadata));
   const [saving, setSaving] = useState(false);
   const canEditBudget = app.myRole === "owner" || app.myRole === "admin";
+  const canEditForge = canEditBudget;
   const worktree = worktreeValue(mission.metadata);
   const hasBudget = budgetFromMetadata(mission.metadata) != null;
+  const forgeIds = mission.forge_ids ?? [];
+  const boundForges = app.forges.filter((f) => forgeIds.includes(f.id));
 
   function openEditor() {
     setName(mission.name);
@@ -102,6 +105,12 @@ function MissionRow({ mission, count }: { mission: Mission; count: number }) {
           <span className="min-w-0 truncate font-medium">{mission.name}</span>
           {hasBudget && <Wallet className="size-3 shrink-0 text-muted-foreground" aria-label={t("missions.budget")} />}
           {worktree !== undefined && <GitBranch className="size-3 shrink-0 text-muted-foreground" aria-label={t("missions.worktree")} />}
+          {boundForges.length > 0 && (
+            <GitPullRequest
+              className="size-3 shrink-0 text-muted-foreground"
+              aria-label={boundForges.map((f) => f.key).join(", ")}
+            />
+          )}
         </button>
         <span className="flex shrink-0 items-center gap-2">
           <span className="text-xs text-muted-foreground">{t("missions.operationsCount", { count })}</span>
@@ -121,6 +130,42 @@ function MissionRow({ mission, count }: { mission: Mission; count: number }) {
             </div>
             <Textarea value={context} onChange={(e) => setContext(e.target.value)} placeholder={t("missions.contextEditPlaceholder")} className="min-h-16 resize-y text-sm" />
           </form>
+
+          <div className="space-y-1.5 border-t border-border pt-2">
+            <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              <GitPullRequest className="size-3.5" /> {t("missions.forge")}
+            </div>
+            {app.forges.length === 0 ? (
+              <p className="text-[11px] text-muted-foreground">{t("missions.forgeCatalogEmpty")}</p>
+            ) : (
+              <div className="space-y-1">
+                {app.forges.map((f) => {
+                  const checked = forgeIds.includes(f.id);
+                  return (
+                    <label key={f.id} className="flex items-center gap-2 text-xs">
+                      <input
+                        type="checkbox"
+                        className="size-3.5 accent-[var(--brand)]"
+                        checked={checked}
+                        disabled={!canEditForge}
+                        onChange={(e) => {
+                          const next = e.target.checked
+                            ? [...forgeIds, f.id]
+                            : forgeIds.filter((id) => id !== f.id);
+                          void app.setMissionForges(mission.id, next);
+                        }}
+                      />
+                      <span className="min-w-0 truncate">
+                        <span className="font-mono font-medium">{f.key}</span>
+                        <span className="text-muted-foreground"> · {f.repo}</span>
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+            <p className="text-[11px] text-muted-foreground">{t("missions.forgeHint")}</p>
+          </div>
 
           <div className="space-y-1.5 border-t border-border pt-2">
             <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">

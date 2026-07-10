@@ -2,6 +2,43 @@
 
 Project conventions, not suggestions. Read before changing code.
 
+This file is the durable source of agent rules. Do not claim memory or
+enforcement beyond what is written here and what is verified in-session.
+
+## Hard gates
+
+Violate any of these and the task is not done:
+
+1. **Comments:** default is zero new comments. No narration, no essays, no
+   JSDoc restating types. Add a comment only when the next reader would
+   mis-operate without it, and keep it one short line. Strip comments you
+   added while coding before finishing.
+2. **Verify before done:** run the real commands for every surface you
+   touched, then report outcomes. Do not claim success without running
+   them. Prefer one call when several surfaces changed:
+   `scripts/verify.sh` (or `scripts/verify.sh api web rover` ...).
+   - API Go: `GOCACHE="${TMPDIR:-/tmp}/ufo-gocache" go test` on packages
+     you changed (widen to `./...` when shared).
+   - Rover: `cargo fmt --check`, `cargo clippy -- -D warnings`, and
+     `cargo test` for relevant tests (full suite when forge/main/tests
+     change).
+   - Web: `npm run lint` (tsc) from `apps/web`.
+   - Also `git diff --check` when you edited files.
+3. **Finish the shape:** nested config and multi-field designs are
+   implemented end-to-end in one change (API parse, stamp, readers, UI,
+   i18n, tests). No one-field stubs unless the user cut scope.
+4. **No legacy theater for unshipped work:** no dual-read, no migrate-on-
+   write of removed keys, no error text that documents deleted fields.
+   Pre-release: only the current shape exists.
+5. **Tests and fixtures use product vocabulary only.** No private
+   nicknames, ad-hoc branch names from chat, or non-product labels in
+   tests, sample metadata, or committed prompts.
+6. **Do not start Hub or rover, and do not invent credentials,** unless
+   the user asks. The user owns runtime enrollment and secrets.
+7. **Do not second-guess the user's runtime** (binary version, token
+   state, process uptime) after they already stated it. Fix code or act
+   on the stated state.
+
 ## Operating Posture
 
 - Don't guess. Inspect the code, schema, generated files, tests, and git state
@@ -10,15 +47,10 @@ Project conventions, not suggestions. Read before changing code.
   rather than preserving it.
 - No compatibility shims for old data, APIs, storage paths, or generated
   artifacts unless asked.
-- Prefer the simplest design that fully solves the problem — no speculative
+- Prefer the simplest design that fully solves the problem. No speculative
   abstractions, unused config, or extra layers.
-- Don't over-comment. Prefer self-explanatory code. Skip comments that restate
-  the next line, narrate obvious control flow, or restate rules already in the
-  user-facing string/prompt. One short line only when non-obvious intent or a
-  non-local constraint would otherwise be missed. No multi-line essay
-  comments.
 - Reuse existing patterns; introduce new ones deliberately and small.
-- Never revert unrelated worktree changes — treat them as other agents' work.
+- Never revert unrelated worktree changes. Treat them as other agents' work.
 - If a response references a generated report or attachment, create the real
   file first and link its actual repo/workspace path or asset URL.
 - Keep experimental product settings in JSON `metadata`; promote to typed
@@ -30,10 +62,16 @@ Project conventions, not suggestions. Read before changing code.
 
 ## Database & Migrations
 
-- Edit `apps/api/internal/migrate/migrations/0001_init.sql` directly; no new
-  migration unless asked.
-- Run `sqlc generate` after schema or query changes; never hand-edit generated
-  DB files under `apps/api/internal/db/` (except `queries/`).
+- Schema changes: add a new file under
+  `apps/api/internal/migrate/migrations/` (e.g.
+  `9527_issue_lifetime_peon_badge.sql`).
+  Do not rewrite applied migrations (DB `schema_migrations` checksums) or
+  edit SQL without regenerating `migrations/migrations.sum`
+  (`go generate ./internal/migrate` from `apps/api`).
+- After any edit to `apps/api/internal/db/queries/` or schema SQL sqlc
+  loads, run `sqlc generate` from the repo root and commit the generated
+  files under `apps/api/internal/db/` (except `queries/`) in the same
+  change. Never hand-edit those generated files.
 - Timestamps are `timestamptz`, stored UTC; the UI handles local display.
 - Timestamp column order: `created_at`, `updated_at`, then domain `*_at`
   (`started_at`, `finished_at`, `heartbeat_at`).
@@ -42,7 +80,7 @@ Project conventions, not suggestions. Read before changing code.
 - Keep `-- name: QueryName :one|:many|:exec` immediately above the SQL it
   names. Put explanatory comments *above* the `-- name:` line, never between
   `-- name:` and the statement.
-- No `SELECT *`, `table.*`, or `RETURNING *` — list columns in table order.
+- No `SELECT *`, `table.*`, or `RETURNING *`. List columns in table order.
 - Prefer one clear JOIN over multiple round trips when data is needed
   together.
 - Name result aliases meaningfully (`count`, not `n`).
@@ -51,7 +89,7 @@ Project conventions, not suggestions. Read before changing code.
 
 - Follow REST: resource paths for identity, bodies for create/update, query
   params for GET list filters.
-- No `fleet_id` query param on mutating APIs — use a body field or resource
+- No `fleet_id` query param on mutating APIs. Use a body field or resource
   path.
 - Don't force long-lived connections (WebSocket) into per-fleet REST nesting.
 - Use full words where abbreviations are ambiguous (`websocket` over `ws`);
@@ -75,8 +113,8 @@ Project conventions, not suggestions. Read before changing code.
 
 ## Assets & Artifacts
 
-- `assets` holds real files/blobs only. Text — comms, operation bodies,
-  comments, pilot final messages, telemetry, logs — stays in the database.
+- `assets` holds real files/blobs only. Text (comms, operation bodies,
+  comments, pilot final messages, telemetry, logs) stays in the database.
 - Text artifacts like `git.diff` stay in the database. List/detail APIs return
   metadata + preview; full content comes from a dedicated content endpoint.
 - Uploads and paste/drop files are global fleet intake, not per-`operation`/
@@ -87,9 +125,9 @@ Project conventions, not suggestions. Read before changing code.
 - For a pilot-referenced rover-local file: validate the path is inside the
   operation directory, enforce size/type/count limits, upload it as an asset,
   and rewrite the message to the asset URL before posting.
-- Don't inline attached bytes into pilot prompts — pass asset URLs/metadata
+- Don't inline attached bytes into pilot prompts. Pass asset URLs/metadata
   and let the rover fetch.
-- Object-store keys use public UUIDs, UTC dates, and shards — no filenames
+- Object-store keys use public UUIDs, UTC dates, and shards. No filenames
   (those live in DB metadata/columns):
   - `v1/fleets/{fleet_id}/uploads/{YYYY}/{MM}/{DD}/{asset_shard}/{asset_id}`
   - `v1/fleets/{fleet_id}/runs/{YYYY}/{MM}/{DD}/{run_shard}/{run_id}/artifacts/{asset_shard}/{asset_id}`
@@ -107,7 +145,7 @@ Project conventions, not suggestions. Read before changing code.
 - Show uploaded assets as tiles/chips, not raw download links.
 - Operation pages accept pasted clipboard files even with no editor focused;
   keep uploaded assets visible for later linking.
-- Keep operational UI dense, aligned, and predictable — no marketing sections,
+- Keep operational UI dense, aligned, and predictable. No marketing sections,
   decorative cards, or one-off palettes.
 - Text must fit its controls on desktop and mobile; use stable dimensions for
   counters, pills, tiles, boards, and toolbars.
@@ -117,21 +155,20 @@ Project conventions, not suggestions. Read before changing code.
 
 ## Rover & CI
 
-- All cross-platform rover builds are Rover tests — no "default platform" vs
+- All cross-platform rover builds are Rover tests. No "default platform" vs
   "cross" split.
 - Platform doc order: macOS, FreeBSD, Linux, Windows. Use product OS names in
   user-facing text.
-- No unsafe temp paths like `/tmp/ufo` — use the configured local root, user
+- No unsafe temp paths like `/tmp/ufo`. Use the configured local root, user
   data dir, or OS temp.
 - Rover operation directories are sharded and date-partitioned.
 
 ## Documentation
 
-- Wrap Markdown prose greedily at 78 columns: keep filling the current source
-  line until the next word, CJK phrase, inline code/link, or punctuation group
-  would exceed 78. Do not wrap Chinese early just because rendered glyphs are
-  wide. This applies to text only; code blocks, tables, diagrams, badges, and
-  unbreakable tokens (URLs, paths) are exempt.
+- Wrap Markdown prose greedily at 78 source columns (not display width). Keep
+  filling the line until the next break unit (word, wide character, inline
+  code/link, or punctuation group) would exceed 78. Text only; code blocks,
+  tables, diagrams, badges, and unbreakable tokens (URLs, paths) are exempt.
 - `THIRD_PARTY_NOTICES.md` reproduces third-party license texts and must stay
   verbatim.
 - Document new or changed user-facing env vars and workflows in README (and
@@ -139,18 +176,22 @@ Project conventions, not suggestions. Read before changing code.
 
 ## Verification
 
-Run the narrowest meaningful tests, broaden when touching shared behavior:
+Same as Hard gate #2. Prefer:
 
-- `sqlc generate` (after schema or query changes)
-- `GOCACHE="${TMPDIR:-/tmp}/ufo-gocache" go test ./...` (from `apps/api`)
-- `npm run lint` (from `apps/web`)
-- relevant `cargo` checks/tests (from `apps/rover`)
-- OpenAPI lint when endpoints change (see CONTRIBUTING.md)
-- `git diff --check`
+```bash
+scripts/verify.sh                 # full local gate
+scripts/verify.sh api web rover   # subset
+scripts/verify.sh sqlc            # after query/schema edits
+```
+
+Narrowest meaningful tests first; broaden when touching shared behavior.
+`scripts/verify.sh` sets `GOCACHE` to `${TMPDIR:-/tmp}/ufo-gocache` by
+default. Details: CONTRIBUTING.md.
 
 Integration-style API tests (e.g. `authz_test.go`) need
 `UFO_HUB_TEST_DATABASE_URL` (must not be the runtime Hub DB); if unset they
-skip — say so rather than claiming full coverage.
+skip. Say so rather than claiming full coverage.
 
-If a sandbox blocks the default Go cache, point `GOCACHE` at a writable temp
-dir (`${TMPDIR:-/tmp}`) rather than skipping tests.
+Before the final assistant message on a code change: actually run the
+commands, fix failures, then report what ran and the outcome. No credit for
+intent.

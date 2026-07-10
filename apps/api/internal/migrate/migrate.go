@@ -3,25 +3,27 @@ package migrate
 import (
 	"context"
 	"embed"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
 	"log"
-	"sort"
-	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/zeebo/blake3"
 )
 
-//go:embed migrations/*.sql
+//go:embed migrations/*.sql migrations/migrations.sum
 var migrationsFS embed.FS
+
+//go:generate go run genhash.go
 
 const migrationLockKey int64 = 8675309
 
 func Run(ctx context.Context, pool *pgxpool.Pool) error {
+	if err := verifyEmbeddedChecksums(); err != nil {
+		return err
+	}
+
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire conn for migration lock: %w", err)
@@ -35,18 +37,10 @@ func Run(ctx context.Context, pool *pgxpool.Pool) error {
 		_, _ = conn.Exec(ctx, "select pg_advisory_unlock($1)", migrationLockKey)
 	}()
 
-	entries, err := fs.ReadDir(migrationsFS, "migrations")
+	files, err := listSQLMigrations(migrationsFS, "migrations")
 	if err != nil {
 		return fmt.Errorf("read embedded migrations: %w", err)
 	}
-
-	var files []string
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") {
-			files = append(files, e.Name())
-		}
-	}
-	sort.Strings(files)
 
 	if _, err := conn.Exec(ctx,
 		`create table if not exists schema_migrations (
@@ -62,8 +56,7 @@ func Run(ctx context.Context, pool *pgxpool.Pool) error {
 		if err != nil {
 			return fmt.Errorf("read migration %q: %w", name, err)
 		}
-		sum := blake3.Sum256(sql)
-		checksum := "blake3:" + hex.EncodeToString(sum[:])
+		checksum := migrationChecksum(sql)
 
 		var appliedChecksum string
 		if err := conn.QueryRow(ctx,

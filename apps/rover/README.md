@@ -7,7 +7,7 @@
 [![Status](https://img.shields.io/badge/status-beta-blue?style=flat-square)](https://github.com/fengsi/ufo/blob/main/CHANGELOG.md)
 [![Rust](https://img.shields.io/badge/Rust-2024-B7410E?logo=rust&style=flat-square)](https://github.com/fengsi/ufo/blob/main/apps/rover/Cargo.toml)
 
-![UFO coordinating a fleet of local rovers from orbit](https://raw.githubusercontent.com/fengsi/ufo/main/.github/assets/banner.png)
+![UFO orchestrating a unified fleet](https://raw.githubusercontent.com/fengsi/ufo/main/.github/assets/banner.png)
 
 `ufo-cli` is the host-side rover for UFO. It enrolls a local machine into a
 UFO fleet, accepts queued operations, lets the assigned pilot drive
@@ -33,7 +33,7 @@ The installer puts `ufo` in `~/.local/bin` by default. Override with
 `UFO_ROVER_INSTALL_DIR=/usr/local/bin`, or pin a release with:
 
 ```bash
-curl -fsSL https://getufo.dev/install.sh | UFO_ROVER_VERSION=v0.6.2 sh
+curl -fsSL https://getufo.dev/install.sh | UFO_ROVER_VERSION=v0.7.0 sh
 ```
 
 Homebrew (macOS, Linux):
@@ -94,7 +94,7 @@ Rovers panel and pass it with `UFO_ROVER_ENROLLMENT_CODE=<code> ufo rover
 enroll`.
 
 `ufo rover enroll` and `ufo rover start` open the live rover TUI when stdout
-is an interactive terminal. They still run the rover daemon loop: each
+is an interactive terminal. They still run the rover loop: each
 enrollment stays ready for operation. Use `ufo rover enroll --headless` on
 first run, or `ufo rover start --headless` later, for CI, launchd/systemd, or
 old log-oriented output.
@@ -169,13 +169,21 @@ with `ufo rover enroll --units N` or `UFO_ROVER_UNITS=N`. `ufo rover start
 --units N` and `UFO_ROVER_UNITS` on start are only startup overrides until hub
 config is available.
 
-### Spend budget (optional enforcement)
+### Spend budget (optional)
 
 Cost/usage is always recorded when the pilot reports it. Optional accept caps
 use Hub `metadata.budget` on fleet, mission, operation, and/or rover
 (`period`, `max_runs`, `max_tokens`, `max_usd_micros`). Every set layer is
-enforced. Caps are per Hub resource — not process-wide env on multi-fleet
+enforced. Caps are per Hub resource. Not process-wide env on multi-fleet
 hosts.
+
+### Forge ship (optional)
+
+When a fleet forge is configured (Hub **Integrations**), the rover can push
+branches and open, sync, or merge pull requests. Export the token env named
+on that forge connection (default **`UFO_ROVER_FORGE_TOKEN`**) in the process
+that runs `ufo rover start`. The Hub stores only the env name; the secret
+stays on this host.
 
 ## Trust boundary
 

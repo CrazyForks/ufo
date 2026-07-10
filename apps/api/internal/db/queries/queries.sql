@@ -24,7 +24,6 @@ UPDATE users SET password_hash = sqlc.arg(password_hash) WHERE id = sqlc.arg(id)
 INSERT INTO sessions (token_hash, user_id, expires_at)
 VALUES (sqlc.arg(token_hash), sqlc.arg(user_id), sqlc.arg(expires_at));
 
--- Resolve a session cookie to its user (only if unexpired).
 -- name: GetSessionUser :one
 SELECT u.id, u.public_id, u.email, u.password_hash, u.name, u.created_at, u.updated_at FROM sessions s
 JOIN users u ON u.id = s.user_id
@@ -40,7 +39,6 @@ INSERT INTO fleets (name, kind, metadata)
 VALUES (sqlc.arg(name), sqlc.arg(kind), sqlc.arg(metadata))
 RETURNING id, public_id, name, kind, metadata, created_at, updated_at;
 
--- Resolve a fleet's public id to its internal id, asserting membership.
 -- name: ResolveFleetForMember :one
 SELECT f.id FROM fleets f
 JOIN memberships m ON m.fleet_id = f.id
@@ -139,7 +137,6 @@ RETURNING id, public_id, fleet_id, inviter_id, invitee_email, role, status, crea
 SELECT id, public_id, fleet_id, inviter_id, invitee_email, role, status, created_at, updated_at, expires_at
 FROM invitations WHERE fleet_id = sqlc.arg(fleet_id) AND status = 'pending' ORDER BY id DESC;
 
--- Pending invitations addressed to an email (across fleets), with fleet name.
 -- name: InvitationsForEmail :many
 SELECT i.public_id, i.role, i.invitee_email, f.name AS fleet_name, f.public_id AS fleet_public_id
 FROM invitations i JOIN fleets f ON f.id = i.fleet_id
@@ -157,8 +154,6 @@ FROM invitations WHERE public_id = sqlc.arg(public_id);
 -- name: SetInvitationStatus :exec
 UPDATE invitations SET status = sqlc.arg(status) WHERE id = sqlc.arg(id);
 
--- Fleets whose rovers just crossed the offline threshold (so the sweeper can push
--- a presence update — absence of heartbeat isn't itself an event).
 -- name: FleetsWithNewlyOfflineRovers :many
 SELECT DISTINCT fleet_id FROM rovers
 WHERE last_seen_at IS NOT NULL
@@ -168,7 +163,7 @@ WHERE last_seen_at IS NOT NULL
 -- name: NotifyFleetChanged :exec
 SELECT pg_notify('ufo_changed', json_build_object('t', 'rover', 'fleet', sqlc.arg(fleet_id)::bigint)::text);
 
--- ---- enrollment codes (enrollment) ----
+-- ---- enrollment codes ----
 
 -- name: CreateEnrollmentCode :one
 INSERT INTO enrollment_codes (fleet_id, code_hash, kind, name, remaining_uses, metadata, created_by, expires_at)
@@ -222,7 +217,7 @@ DELETE FROM enrollment_codes WHERE id = sqlc.arg(id);
 -- name: DecrementEnrollmentCodeUses :exec
 UPDATE enrollment_codes SET remaining_uses = remaining_uses - 1 WHERE id = sqlc.arg(id);
 
--- ---- rovers (per-rover identity + connection token) ----
+-- ---- rovers ----
 
 -- name: CreateRover :one
 INSERT INTO rovers (fleet_id, name, enrollment_code_id, token_hash, auto_tags, tags)
@@ -254,7 +249,6 @@ UPDATE rovers SET last_seen_at = now() WHERE id = sqlc.arg(id);
 -- name: DeleteRover :exec
 DELETE FROM rovers WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id);
 
--- List rovers with active run count.
 -- name: ListRoversWithStatus :many
 SELECT r.id, r.public_id, r.fleet_id, r.name, r.enrollment_code_id, r.token_hash, r.units, r.auto_tags, r.tags, r.metadata, r.created_at, r.updated_at, r.last_seen_at,
        (
@@ -290,7 +284,6 @@ UPDATE operations SET required_tags = sqlc.arg(required_tags), excluded_tags = s
 -- name: SetOperationTitle :exec
 UPDATE operations SET title = sqlc.arg(title) WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id);
 
--- Move an operation to another mission in the same fleet (new sequence required).
 -- name: SetOperationMission :one
 UPDATE operations
 SET mission_id = sqlc.arg(mission_id), sequence = sqlc.arg(sequence)
@@ -343,18 +336,15 @@ WHERE r.operation_id = sqlc.arg(operation_id) AND a.kind = 'diff' ORDER BY a.id 
 -- name: OperationHasActiveRun :one
 SELECT EXISTS(SELECT 1 FROM runs WHERE operation_id = sqlc.arg(operation_id) AND status IN ('queued','accepted','starting','running'));
 
--- Active run status per operation, batched for board/detail DTOs.
 -- name: ActiveRunStatusesForOperations :many
 SELECT operation_id, status FROM runs
 WHERE operation_id = ANY(sqlc.arg(operation_ids)::bigint[]) AND status IN ('queued','accepted','starting','running');
 
--- Active run counts split by queue/work status.
 -- name: CountActiveRunsByStatus :many
 SELECT status, COUNT(DISTINCT operation_id)::bigint AS count FROM runs
 WHERE fleet_id = sqlc.arg(fleet_id) AND status IN ('queued','accepted','starting','running')
 GROUP BY status;
 
--- Sub-operation progress per main operation, batched for the board.
 -- name: SubOperationProgress :many
 SELECT
   main_operation_id,
@@ -389,9 +379,6 @@ WHERE fleet_id = sqlc.arg(fleet_id)
 ORDER BY id DESC
 LIMIT sqlc.arg('limit');
 
--- Board: one status column, keyset-paginated. mission = 0 → all missions;
--- before = 0 → first page (newest). Index: operations_board_idx.
--- Board column, keyset-paginated, with optional filters (0/'' = unset).
 -- name: ListOperationsByStatus :many
 SELECT id, public_id, fleet_id, mission_id, sequence, main_operation_id, title, body, status, priority, assignee_type, assignee_id, assignee_pilot_kind, required_tags, excluded_tags, start_date, due_date, pilot_session_id, pilot_session_kind, pilot_session_rover_id, orchestrating, archived, metadata, created_by, created_at, updated_at, started_at, finished_at FROM operations
 WHERE fleet_id = sqlc.arg(fleet_id) AND status = sqlc.arg(status)
@@ -408,7 +395,6 @@ WHERE fleet_id = sqlc.arg(fleet_id) AND status = sqlc.arg(status)
 ORDER BY id DESC
 LIMIT sqlc.arg('limit');
 
--- Board column counts (optionally scoped to one mission). mission = 0 → all.
 -- name: CountOperationsByStatus :many
 SELECT status, COUNT(*)::bigint AS count FROM operations
 WHERE fleet_id = sqlc.arg(fleet_id) AND main_operation_id IS NULL AND (sqlc.arg(mission_id)::bigint = 0 OR mission_id = sqlc.arg(mission_id))
@@ -421,7 +407,6 @@ WHERE fleet_id = sqlc.arg(fleet_id) AND main_operation_id IS NULL AND (sqlc.arg(
   AND (sqlc.arg(assignee_pilot_kind)::text = '' OR assignee_pilot_kind = sqlc.arg(assignee_pilot_kind))
 GROUP BY status;
 
--- Per-mission operation counts (for the Missions view), keyed by mission public id.
 -- name: CountOperationsByMission :many
 SELECT m.public_id AS mission_id, COUNT(*)::bigint AS count
 FROM operations o JOIN missions m ON m.id = o.mission_id
@@ -446,7 +431,6 @@ WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id);
 
 -- ========================= pilots ============================
 
--- Pilot kinds and the fleet rovers each can drive, split by online window.
 -- name: FleetPilotCapabilities :many
 WITH pilot_rovers AS (
   SELECT DISTINCT r.id,
@@ -469,8 +453,6 @@ FROM pilot_counts
 ORDER BY kind;
 
 -- name: FleetPilotKindFree :many
--- Per pilot kind in the fleet, whether any capable online rover has an open unit.
--- Only kinds with >=1 capable rover appear (presence => hasRover).
 SELECT substr(t, 7)::text AS kind,
        coalesce(bool_or(
          now() - r.last_seen_at < make_interval(secs => sqlc.arg(online_window_seconds)::float8)
@@ -687,15 +669,11 @@ WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id) AND recipient_user_id 
 UPDATE signals SET archived = TRUE, read = TRUE
 WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id) AND recipient_user_id = sqlc.arg(recipient_user_id);
 
--- Self-heal: archive open action-required signals once an operation leaves that status.
 -- name: ArchiveActionRequiredForOperation :exec
 UPDATE signals SET archived = TRUE
 WHERE operation_id = sqlc.arg(operation_id) AND severity = 'action_required' AND archived = FALSE;
 
 -- ========================= missions ==========================
--- A mission is a user-created objective: a grouping of operations within a
--- fleet. Its key prefixes operation codes; runs execute in per-operation
--- isolated directories managed by the rover.
 
 -- name: CreateMission :one
 INSERT INTO missions (fleet_id, name, key, metadata)
@@ -710,7 +688,6 @@ RETURNING id, public_id, fleet_id, name, key, next_sequence, metadata, created_a
 -- name: MergeMissionMetadata :exec
 UPDATE missions SET metadata = metadata || sqlc.arg(metadata)::jsonb WHERE id = sqlc.arg(id);
 
--- Atomically allocate the next per-mission operation number.
 -- name: BumpMissionSequence :one
 UPDATE missions SET next_sequence = next_sequence + 1
 WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id)
@@ -721,6 +698,89 @@ SELECT id, public_id, fleet_id, name, key, next_sequence, metadata, created_at, 
 
 -- name: GetMission :one
 SELECT id, public_id, fleet_id, name, key, next_sequence, metadata, created_at, updated_at FROM missions WHERE id = sqlc.arg(id);
+
+-- ========================= forges =========================
+
+-- name: CreateForge :one
+INSERT INTO forges (
+    fleet_id, key, name, provider, base_url, repo, default_base_branch,
+    credential_kind, credential, metadata
+) VALUES (
+    sqlc.arg(fleet_id), sqlc.arg(key), sqlc.arg(name), sqlc.arg(provider),
+    sqlc.arg(base_url), sqlc.arg(repo), sqlc.arg(default_base_branch),
+    sqlc.arg(credential_kind), sqlc.arg(credential), sqlc.arg(metadata)
+)
+RETURNING id, public_id, fleet_id, key, name, provider, base_url, repo, default_base_branch,
+    credential_kind, credential, metadata, created_at, updated_at;
+
+-- name: UpdateForge :one
+UPDATE forges
+SET key = sqlc.arg(key),
+    name = sqlc.arg(name),
+    provider = sqlc.arg(provider),
+    base_url = sqlc.arg(base_url),
+    repo = sqlc.arg(repo),
+    default_base_branch = sqlc.arg(default_base_branch),
+    credential_kind = sqlc.arg(credential_kind),
+    credential = sqlc.arg(credential),
+    metadata = sqlc.arg(metadata)
+WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id)
+RETURNING id, public_id, fleet_id, key, name, provider, base_url, repo, default_base_branch,
+    credential_kind, credential, metadata, created_at, updated_at;
+
+-- name: DeleteForge :execrows
+DELETE FROM forges WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id);
+
+-- name: ListForges :many
+SELECT id, public_id, fleet_id, key, name, provider, base_url, repo, default_base_branch,
+    credential_kind, credential, metadata, created_at, updated_at
+FROM forges
+WHERE fleet_id = sqlc.arg(fleet_id)
+ORDER BY key;
+
+-- name: GetForge :one
+SELECT id, public_id, fleet_id, key, name, provider, base_url, repo, default_base_branch,
+    credential_kind, credential, metadata, created_at, updated_at
+FROM forges
+WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id);
+
+-- name: GetForgeByPublicID :one
+SELECT id, public_id, fleet_id, key, name, provider, base_url, repo, default_base_branch,
+    credential_kind, credential, metadata, created_at, updated_at
+FROM forges
+WHERE public_id = sqlc.arg(public_id) AND fleet_id = sqlc.arg(fleet_id);
+
+-- name: PublicIDsForForges :many
+SELECT id, public_id FROM forges WHERE id = ANY(sqlc.arg(ids)::bigint[]);
+
+-- name: ListMissionForges :many
+SELECT mission_id, forge_id, created_at, updated_at
+FROM mission_forges
+WHERE mission_id = sqlc.arg(mission_id)
+ORDER BY forge_id;
+
+-- name: ListMissionForgesForFleet :many
+SELECT mf.mission_id, mf.forge_id, mf.created_at, mf.updated_at
+FROM mission_forges mf
+INNER JOIN missions m ON m.id = mf.mission_id
+WHERE m.fleet_id = sqlc.arg(fleet_id)
+ORDER BY mf.mission_id, mf.forge_id;
+
+-- name: ClearMissionForges :exec
+DELETE FROM mission_forges WHERE mission_id = sqlc.arg(mission_id);
+
+-- name: InsertMissionForge :exec
+INSERT INTO mission_forges (mission_id, forge_id)
+VALUES (sqlc.arg(mission_id), sqlc.arg(forge_id));
+
+-- name: ListGrantedForgesForMission :many
+SELECT f.id, f.public_id, f.fleet_id, f.key, f.name, f.provider, f.base_url, f.repo, f.default_base_branch,
+    f.credential_kind, f.credential, f.metadata, f.created_at, f.updated_at
+FROM mission_forges mf
+INNER JOIN forges f ON f.id = mf.forge_id
+WHERE mf.mission_id = sqlc.arg(mission_id)
+  AND f.fleet_id = sqlc.arg(fleet_id)
+ORDER BY f.key;
 
 -- =========================== runs ============================
 
@@ -760,12 +820,6 @@ FROM runs WHERE fleet_id = sqlc.arg(fleet_id) ORDER BY id DESC;
 SELECT id, public_id, fleet_id, operation_id, mission_id, rover_id, required_rover_id, pilot, command, status, session_id, needs_input, requested_status, metadata, created_at, updated_at, heartbeat_at, finalized_at
 FROM runs WHERE operation_id = sqlc.arg(operation_id) ORDER BY id DESC;
 
--- Atomically grab the oldest queued run in a fleet and attribute it to the
--- accepting rover.
--- Accept the oldest queued run the rover is allowed and able to run: the rover
--- must advertise the run's pilot kind, the operation deny list must not overlap
--- its tags (checked first), and its allow list must be a subset. Hub enforces
--- rover.units: the accepting rover must have fewer active runs than units.
 -- name: AcceptNextRun :one
 UPDATE runs
 SET status = 'accepted', heartbeat_at = now(), rover_id = sqlc.arg(rover_id)
@@ -968,7 +1022,6 @@ UPDATE runs SET heartbeat_at = now()
 WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id) AND status IN ('accepted', 'starting', 'running') AND finalized_at IS NULL
 RETURNING id;
 
--- Requeue runs whose rover went silent (heartbeat older than the lease).
 -- name: RequeueExpiredRuns :many
 UPDATE runs
 SET status = 'queued', heartbeat_at = NULL, rover_id = NULL
@@ -1096,8 +1149,6 @@ RETURNING id, run_id, sequence, type, tool, content, input, output, created_at;
 SELECT id, run_id, sequence, type, tool, content, input, output, created_at FROM run_messages WHERE run_id = sqlc.arg(run_id) ORDER BY sequence, id;
 
 -- ================ public-id resolvers (public id -> internal id) ================
--- Each resolves a public id (from a URL path or request body) to the internal
--- bigint, scoped to the fleet so cross-tenant ids can't be addressed.
 
 -- name: GetOperationIDByPublicID :one
 SELECT id FROM operations WHERE public_id = sqlc.arg(public_id) AND fleet_id = sqlc.arg(fleet_id);
@@ -1127,8 +1178,6 @@ WHERE rover_id = sqlc.arg(rover_id) AND fleet_id = sqlc.arg(fleet_id)
   AND status IN ('accepted','starting','running');
 
 -- name: GetRunIDForRover :one
--- Resolve a run owned by the calling rover (accepted by it), so one rover can't
--- mutate another rover's run.
 SELECT id FROM runs WHERE public_id = sqlc.arg(public_id) AND fleet_id = sqlc.arg(fleet_id) AND rover_id = sqlc.arg(rover_id);
 
 -- name: GetCrewIDByPublicID :one
@@ -1169,7 +1218,6 @@ SELECT id, public_id, fleet_id, recipient_user_id, operation_id, type, severity,
 FROM signals WHERE public_id = sqlc.arg(public_id);
 
 -- ============ batch id -> public_id maps (API response reference expansion) ==========
--- Batch-resolve internal ids for API response reference expansion.
 
 -- name: PublicIDsForUsers :many
 SELECT id, public_id FROM users WHERE id = ANY(sqlc.arg(ids)::bigint[]);
@@ -1223,7 +1271,6 @@ INSERT INTO operation_labels (operation_id, label_id) VALUES (sqlc.arg(operation
 -- name: RemoveOperationLabel :exec
 DELETE FROM operation_labels WHERE operation_id = sqlc.arg(operation_id) AND label_id = sqlc.arg(label_id);
 
--- Labels for a set of operations.
 -- name: LabelsForOperations :many
 SELECT ol.operation_id, l.public_id, l.name, l.color, l.created_at, l.updated_at
 FROM operation_labels ol JOIN labels l ON l.id = ol.label_id
@@ -1350,6 +1397,13 @@ WHERE o.fleet_id = sqlc.arg(fleet_id)
         AND sa.kind IN ('commit_to_branch', 'create_source_branch')
         AND COALESCE(sa.metadata ->> 're_pulse_on_success', 'false') = 'true'
     )
+    OR EXISTS (
+      SELECT 1
+      FROM forge_actions fa
+      WHERE fa.operation_id = o.id
+        AND fa.fleet_id = o.fleet_id
+        AND fa.status NOT IN ('succeeded', 'failed', 'conflicted')
+    )
   );
 
 -- name: ClaimLoopRePulse :one
@@ -1375,8 +1429,6 @@ DELETE FROM operation_relations WHERE public_id = sqlc.arg(public_id) AND fleet_
 -- name: GetRelationTarget :one
 SELECT id, fleet_id FROM operation_relations WHERE public_id = sqlc.arg(public_id);
 
--- Both directions for one operation, joined to the *other* operation. `outgoing`
--- = the queried operation is the source (so the row's kind applies as-is; otherwise inverse).
 -- name: ListRelationsForOperation :many
 SELECT r.public_id AS relation_id, r.kind, (r.source_id = sqlc.arg(operation_id)) AS outgoing,
        r.created_by, r.created_at, o.public_id AS operation_public_id, o.title, o.status, o.sequence, m.public_id AS mission_id
@@ -1386,7 +1438,6 @@ JOIN missions m ON m.id = o.mission_id
 WHERE r.source_id = sqlc.arg(operation_id) OR r.target_id = sqlc.arg(operation_id)
 ORDER BY r.id;
 
--- List filter `q`: match title, numeric sequence, or KEY-123 code (shared list query).
 -- name: ListOperationsByQuery :many
 SELECT o.id, o.public_id, o.fleet_id, o.mission_id, o.sequence, o.main_operation_id, o.title, o.body, o.status, o.priority, o.assignee_type, o.assignee_id, o.assignee_pilot_kind, o.required_tags, o.excluded_tags, o.start_date, o.due_date, o.pilot_session_id, o.pilot_session_kind, o.pilot_session_rover_id, o.orchestrating, o.archived, o.metadata, o.created_by, o.created_at, o.updated_at, o.started_at, o.finished_at
 FROM operations o JOIN missions m ON m.id = o.mission_id
@@ -1414,6 +1465,16 @@ WHERE r.operation_id = sqlc.arg(operation_id)
       AND btrim(a.content) <> ''
       AND btrim(a.content) <> '(no changes)'
   )
+ORDER BY r.id DESC
+LIMIT 1;
+
+-- name: LatestSucceededRunWithRoverForOperation :one
+SELECT id, public_id, fleet_id, operation_id, mission_id, rover_id, required_rover_id, pilot, command, status, session_id, needs_input, requested_status, metadata, created_at, updated_at, heartbeat_at, finalized_at
+FROM runs r
+WHERE r.operation_id = sqlc.arg(operation_id)
+  AND r.fleet_id = sqlc.arg(fleet_id)
+  AND r.rover_id IS NOT NULL
+  AND r.status = 'succeeded'
 ORDER BY r.id DESC
 LIMIT 1;
 
@@ -1462,24 +1523,115 @@ WHERE public_id = sqlc.arg(public_id)
   AND status = 'accepted'
 RETURNING id, public_id, fleet_id, operation_id, run_id, rover_id, kind, status, branch_name, commit_sha, base_sha, source_head_sha, message, metadata, created_by, created_at, updated_at, accepted_at, finished_at;
 
+-- ========================= forge actions =========================
+
+-- name: CreateForgeAction :one
+INSERT INTO forge_actions (
+    fleet_id, operation_id, routine_id, pull_request_id, rover_id, kind,
+    provider, base_url, repo, head_branch, base_branch, commit_sha, title, body, metadata, created_by
+) VALUES (
+    sqlc.arg(fleet_id), sqlc.arg(operation_id), sqlc.arg(routine_id), sqlc.arg(pull_request_id),
+    sqlc.arg(rover_id), sqlc.arg(kind), sqlc.arg(provider), sqlc.arg(base_url), sqlc.arg(repo),
+    sqlc.arg(head_branch), sqlc.arg(base_branch), sqlc.arg(commit_sha), sqlc.arg(title),
+    sqlc.arg(body), sqlc.arg(metadata), sqlc.arg(created_by)
+)
+RETURNING id, public_id, fleet_id, operation_id, routine_id, pull_request_id, rover_id, kind, status,
+    provider, base_url, repo, head_branch, base_branch, commit_sha, title, body, remote_url,
+    remote_number, result_sha, message, metadata, created_by, created_at, updated_at, accepted_at, finished_at;
+
+-- name: AcceptNextForgeAction :one
+UPDATE forge_actions
+SET status = 'accepted', accepted_at = now(), rover_id = sqlc.arg(rover_id)
+WHERE id = (
+    SELECT pending.id FROM forge_actions pending
+    WHERE pending.fleet_id = sqlc.arg(fleet_id)
+      AND (
+        pending.status = 'queued'
+        OR (pending.status = 'accepted' AND pending.accepted_at < now() - make_interval(secs => sqlc.arg(stale_seconds)::float8))
+      )
+      AND (
+        pending.metadata->>'not_before' IS NULL
+        OR NULLIF(pending.metadata->>'not_before', '') IS NULL
+        OR (pending.metadata->>'not_before')::timestamptz <= now()
+      )
+    ORDER BY pending.id
+    FOR UPDATE OF pending SKIP LOCKED
+    LIMIT 1
+)
+RETURNING id, public_id, fleet_id, operation_id, routine_id, pull_request_id, rover_id, kind, status,
+    provider, base_url, repo, head_branch, base_branch, commit_sha, title, body, remote_url,
+    remote_number, result_sha, message, metadata, created_by, created_at, updated_at, accepted_at, finished_at;
+
+-- name: CompleteForgeAction :one
+UPDATE forge_actions
+SET status = sqlc.arg(status),
+    remote_url = sqlc.arg(remote_url),
+    remote_number = sqlc.arg(remote_number),
+    result_sha = sqlc.arg(result_sha),
+    message = sqlc.arg(message),
+    commit_sha = CASE WHEN sqlc.arg(commit_sha) = '' THEN commit_sha ELSE sqlc.arg(commit_sha) END,
+    metadata = metadata || sqlc.arg(metadata)::jsonb,
+    finished_at = now()
+WHERE public_id = sqlc.arg(public_id)
+  AND fleet_id = sqlc.arg(fleet_id)
+  AND rover_id = sqlc.arg(rover_id)
+  AND status = 'accepted'
+RETURNING id, public_id, fleet_id, operation_id, routine_id, pull_request_id, rover_id, kind, status,
+    provider, base_url, repo, head_branch, base_branch, commit_sha, title, body, remote_url,
+    remote_number, result_sha, message, metadata, created_by, created_at, updated_at, accepted_at, finished_at;
+
+-- name: ListForgeActionsForOperation :many
+SELECT id, public_id, fleet_id, operation_id, routine_id, pull_request_id, rover_id, kind, status,
+    provider, base_url, repo, head_branch, base_branch, commit_sha, title, body, remote_url,
+    remote_number, result_sha, message, metadata, created_by, created_at, updated_at, accepted_at, finished_at
+FROM forge_actions
+WHERE operation_id = sqlc.arg(operation_id)
+ORDER BY id DESC;
+
 -- ========================= pull requests =========================
 
 -- name: CreatePullRequest :one
-INSERT INTO pull_requests (operation_id, url, title, number, metadata, created_by)
-VALUES (sqlc.arg(operation_id), sqlc.arg(url), sqlc.arg(title), sqlc.arg(number), sqlc.arg(metadata), sqlc.arg(created_by))
-RETURNING id, public_id, operation_id, url, title, status, number, metadata, created_by, created_at, updated_at;
+INSERT INTO pull_requests (
+    fleet_id, operation_id, routine_id, provider, base_url, repo, head_branch, base_branch,
+    url, title, status, number, created_by_ufo, head_sha, mergeable, ci_status, metadata, created_by
+) VALUES (
+    sqlc.arg(fleet_id), sqlc.arg(operation_id), sqlc.arg(routine_id), sqlc.arg(provider),
+    sqlc.arg(base_url), sqlc.arg(repo), sqlc.arg(head_branch), sqlc.arg(base_branch),
+    sqlc.arg(url), sqlc.arg(title), sqlc.arg(status), sqlc.arg(number), sqlc.arg(created_by_ufo),
+    sqlc.arg(head_sha), sqlc.arg(mergeable), sqlc.arg(ci_status), sqlc.arg(metadata), sqlc.arg(created_by)
+)
+RETURNING id, public_id, fleet_id, operation_id, routine_id, provider, base_url, repo, head_branch,
+    base_branch, url, title, status, number, created_by_ufo, head_sha, mergeable, ci_status,
+    metadata, created_by, created_at, updated_at, last_synced_at;
+
+-- name: UpdatePullRequestSync :one
+UPDATE pull_requests
+SET status = sqlc.arg(status),
+    head_sha = sqlc.arg(head_sha),
+    mergeable = sqlc.arg(mergeable),
+    ci_status = sqlc.arg(ci_status),
+    url = CASE WHEN sqlc.arg(url) = '' THEN url ELSE sqlc.arg(url) END,
+    title = CASE WHEN sqlc.arg(title) = '' THEN title ELSE sqlc.arg(title) END,
+    last_synced_at = now()
+WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id)
+RETURNING id, public_id, fleet_id, operation_id, routine_id, provider, base_url, repo, head_branch,
+    base_branch, url, title, status, number, created_by_ufo, head_sha, mergeable, ci_status,
+    metadata, created_by, created_at, updated_at, last_synced_at;
 
 -- name: ListPullRequestsForOperation :many
-SELECT id, public_id, operation_id, url, title, status, number, metadata, created_by, created_at, updated_at FROM pull_requests WHERE operation_id = sqlc.arg(operation_id) ORDER BY id;
+SELECT id, public_id, fleet_id, operation_id, routine_id, provider, base_url, repo, head_branch,
+    base_branch, url, title, status, number, created_by_ufo, head_sha, mergeable, ci_status,
+    metadata, created_by, created_at, updated_at, last_synced_at
+FROM pull_requests WHERE operation_id = sqlc.arg(operation_id) ORDER BY id;
 
 -- name: DeletePullRequest :exec
-DELETE FROM pull_requests p USING operations o
-WHERE p.public_id = sqlc.arg(public_id) AND p.operation_id = o.id AND o.fleet_id = sqlc.arg(fleet_id);
+DELETE FROM pull_requests
+WHERE public_id = sqlc.arg(public_id) AND fleet_id = sqlc.arg(fleet_id);
 
 -- name: GetPullRequestTarget :one
-SELECT p.id, p.operation_id, o.fleet_id
-FROM pull_requests p JOIN operations o ON o.id = p.operation_id
-WHERE p.public_id = sqlc.arg(public_id);
+SELECT id, operation_id, fleet_id
+FROM pull_requests
+WHERE public_id = sqlc.arg(public_id);
 
 -- name: SetOperationArchived :exec
 UPDATE operations SET archived = sqlc.arg(archived) WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id);
@@ -1493,7 +1645,6 @@ WHERE c.public_id = sqlc.arg(public_id) AND o.fleet_id = sqlc.arg(fleet_id);
 -- name: GetCommentByPublicIDAnyFleet :one
 SELECT c.id, c.public_id, c.operation_id, c.author_type, c.author_id, c.author_pilot_kind, c.body, c.created_at, c.updated_at FROM comments c WHERE c.public_id = sqlc.arg(public_id);
 
--- One generic reaction API over (target_type, target_id) — serves operations + comments.
 
 -- name: ReactionExists :one
 SELECT EXISTS(SELECT 1 FROM reactions WHERE target_type = sqlc.arg(target_type) AND target_id = sqlc.arg(target_id) AND user_id = sqlc.arg(user_id) AND emoji = sqlc.arg(emoji));
@@ -1504,8 +1655,6 @@ INSERT INTO reactions (target_type, target_id, user_id, emoji) VALUES (sqlc.arg(
 -- name: RemoveReaction :exec
 DELETE FROM reactions WHERE target_type = sqlc.arg(target_type) AND target_id = sqlc.arg(target_id) AND user_id = sqlc.arg(user_id) AND emoji = sqlc.arg(emoji);
 
--- Reactions for a set of targets of one type: count, whether the caller reacted, and
--- reactors (oldest first, for the hover tooltip). Emoji groups ordered by first use.
 -- name: ReactionsForTargets :many
 SELECT r.target_id, r.emoji, COUNT(*)::bigint AS count, bool_or(r.user_id = sqlc.arg(user_id)) AS mine,
        array_agg(coalesce(nullif(u.name, ''), u.email) ORDER BY r.created_at)::text[] AS users

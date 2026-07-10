@@ -31,7 +31,6 @@ function logTime(value: string, timeFormat: TimeFormat) {
   });
 }
 
-// "Telemetry" = the rover-streamed, step-by-step record of what the pilot did.
 export function TelemetryDialog({ run, open, onOpenChange }: { run: Run | null; open: boolean; onOpenChange: (o: boolean) => void }) {
   const app = useApp();
   const t = useT();
@@ -203,8 +202,6 @@ function ArtifactBlock({ artifact }: { artifact: Artifact }) {
   );
 }
 
-// A horizontal bar of segments (consecutive same-type runs coalesced), width by
-// share of the timeline — click to jump to that part.
 function TimelineBar({ msgs, rowRefs }: { msgs: RunMessage[]; rowRefs: React.MutableRefObject<Map<number, HTMLDivElement>> }) {
   const t = useT();
   const segs: { sequence: number; type: RunMessage["type"]; count: number }[] = [];

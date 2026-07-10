@@ -1,11 +1,3 @@
--- UFO schema.
---
--- Conventions: every externally-referenced row has a `public_id` exposed on
--- the wire as `id`; internal bigint ids and FKs never cross the API boundary. Real-time is
--- driven by PostgreSQL LISTEN/NOTIFY triggers (see the functions at the bottom).
--- Column order is intentional: id → public_id → fleet/owner FKs → core fields →
--- attributes → flags → timestamps.
-
 -- ============================ identity & tenancy ============================
 
 CREATE TABLE users (
@@ -177,6 +169,34 @@ CREATE TABLE crew_skill_bindings (
 
 -- ============================ missions & operations ============================
 
+CREATE TABLE forges (
+    id                  bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    public_id           uuid NOT NULL DEFAULT gen_random_uuid(),
+    fleet_id            bigint NOT NULL,
+    key                 text NOT NULL,
+    name                text NOT NULL DEFAULT '',
+    provider            text NOT NULL
+                        CHECK (provider IN ('github', 'gitlab')),
+    base_url            text NOT NULL DEFAULT '',
+    repo                text NOT NULL,
+    default_base_branch text NOT NULL DEFAULT 'main',
+    credential_kind     text NOT NULL DEFAULT 'rover_env'
+                        CHECK (credential_kind IN (
+                            'rover_env',
+                            'github_app',
+                            'gitlab_app',
+                            'secret_ref'
+                        )),
+    credential          jsonb NOT NULL DEFAULT '{}'::jsonb
+                        CHECK (jsonb_typeof(credential) = 'object'),
+    metadata            jsonb NOT NULL DEFAULT '{}'::jsonb
+                        CHECK (jsonb_typeof(metadata) = 'object'),
+    created_at          timestamptz NOT NULL DEFAULT now(),
+    updated_at          timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT forges_fleet_id_key_key UNIQUE (fleet_id, key),
+    CONSTRAINT forges_key_format CHECK (key ~ '^[a-z][a-z0-9_-]{0,63}$')
+);
+
 -- A mission is a fleet-scoped objective that groups operations. Its key prefixes
 -- operation codes (e.g. MSJ-123), and next_sequence allocates the per-mission number.
 CREATE TABLE missions (
@@ -190,6 +210,14 @@ CREATE TABLE missions (
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT missions_fleet_id_name_key UNIQUE (fleet_id, name)
+);
+
+CREATE TABLE mission_forges (
+    mission_id  bigint NOT NULL,
+    forge_id    bigint NOT NULL,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    updated_at  timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (mission_id, forge_id)
 );
 
 CREATE TABLE labels (
@@ -320,18 +348,73 @@ CREATE TABLE source_actions (
     finished_at     timestamptz
 );
 
+CREATE TABLE forge_actions (
+    id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    public_id       uuid NOT NULL DEFAULT gen_random_uuid(),
+    fleet_id        bigint NOT NULL,
+    operation_id    bigint,
+    routine_id      bigint,
+    pull_request_id bigint,
+    rover_id        bigint,
+    kind            text NOT NULL
+                    CHECK (kind IN (
+                        'push_branch',
+                        'open_pull_request',
+                        'sync_pull_request',
+                        'merge_pull_request',
+                        'ensure_base_branch',
+                        'integrate_into_base'
+                    )),
+    status          text NOT NULL DEFAULT 'queued'
+                    CHECK (status IN ('queued', 'accepted', 'succeeded', 'failed', 'conflicted')),
+    provider        text NOT NULL DEFAULT ''
+                    CHECK (provider = '' OR provider IN ('github', 'gitlab')),
+    base_url        text NOT NULL DEFAULT '',
+    repo            text NOT NULL DEFAULT '',
+    head_branch     text NOT NULL DEFAULT '',
+    base_branch     text NOT NULL DEFAULT '',
+    commit_sha      text NOT NULL DEFAULT '',
+    title           text NOT NULL DEFAULT '',
+    body            text NOT NULL DEFAULT '',
+    remote_url      text NOT NULL DEFAULT '',
+    remote_number   integer,
+    result_sha      text NOT NULL DEFAULT '',
+    message         text NOT NULL DEFAULT '',
+    metadata        jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(metadata) = 'object'),
+    created_by      bigint,
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    updated_at      timestamptz NOT NULL DEFAULT now(),
+    accepted_at     timestamptz,
+    finished_at     timestamptz
+);
+
 CREATE TABLE pull_requests (
-    id           bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    public_id    uuid NOT NULL DEFAULT gen_random_uuid(),
-    operation_id bigint NOT NULL,
-    url          text NOT NULL,
-    title        text NOT NULL DEFAULT '',
-    status        text NOT NULL DEFAULT 'open',
-    number       integer,
-    metadata     jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(metadata) = 'object'),
-    created_by   bigint,
-    created_at   timestamptz NOT NULL DEFAULT now(),
-    updated_at   timestamptz NOT NULL DEFAULT now()
+    id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    public_id       uuid NOT NULL DEFAULT gen_random_uuid(),
+    fleet_id        bigint NOT NULL,
+    operation_id    bigint,
+    routine_id      bigint,
+    provider        text NOT NULL DEFAULT ''
+                    CHECK (provider = '' OR provider IN ('github', 'gitlab')),
+    base_url        text NOT NULL DEFAULT '',
+    repo            text NOT NULL DEFAULT '',
+    head_branch     text NOT NULL DEFAULT '',
+    base_branch     text NOT NULL DEFAULT '',
+    url             text NOT NULL DEFAULT '',
+    title           text NOT NULL DEFAULT '',
+    status          text NOT NULL DEFAULT 'open'
+                    CHECK (status IN ('open', 'merged', 'closed', 'draft', 'unknown')),
+    number          integer,
+    created_by_ufo  boolean NOT NULL DEFAULT FALSE,
+    head_sha        text NOT NULL DEFAULT '',
+    mergeable       boolean,
+    ci_status       text NOT NULL DEFAULT ''
+                    CHECK (ci_status = '' OR ci_status IN ('pending', 'success', 'failure', 'unknown')),
+    metadata        jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(metadata) = 'object'),
+    created_by      bigint,
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    updated_at      timestamptz NOT NULL DEFAULT now(),
+    last_synced_at  timestamptz
 );
 
 CREATE TABLE comments (
@@ -540,8 +623,23 @@ CREATE INDEX source_actions_operation_idx ON source_actions (operation_id, id DE
 CREATE UNIQUE INDEX source_actions_public_id_idx ON source_actions (public_id);
 CREATE UNIQUE INDEX source_actions_one_active_idx ON source_actions (operation_id)
     WHERE status IN ('queued', 'accepted');
-CREATE INDEX pull_requests_operation_idx ON pull_requests (operation_id);
+CREATE UNIQUE INDEX forges_public_id_idx ON forges (public_id);
+CREATE INDEX forges_fleet_idx ON forges (fleet_id, id);
+CREATE INDEX mission_forges_forge_idx ON mission_forges (forge_id);
+CREATE INDEX forge_actions_queue_idx ON forge_actions (fleet_id, status, id)
+    WHERE status IN ('queued', 'accepted');
+CREATE INDEX forge_actions_operation_idx ON forge_actions (operation_id, id DESC)
+    WHERE operation_id IS NOT NULL;
+CREATE UNIQUE INDEX forge_actions_public_id_idx ON forge_actions (public_id);
+CREATE UNIQUE INDEX forge_actions_one_active_per_operation_idx ON forge_actions (operation_id)
+    WHERE operation_id IS NOT NULL AND status IN ('queued', 'accepted');
+CREATE INDEX pull_requests_operation_idx ON pull_requests (operation_id)
+    WHERE operation_id IS NOT NULL;
+CREATE INDEX pull_requests_fleet_status_idx ON pull_requests (fleet_id, status, id);
 CREATE UNIQUE INDEX pull_requests_public_id_idx ON pull_requests (public_id);
+CREATE UNIQUE INDEX pull_requests_forge_identity_idx
+    ON pull_requests (fleet_id, provider, base_url, repo, number)
+    WHERE number IS NOT NULL AND provider <> '';
 CREATE INDEX comments_operation_idx ON comments (operation_id, id);
 CREATE UNIQUE INDEX comments_public_id_idx ON comments (public_id);
 CREATE INDEX reactions_target_idx ON reactions (target_type, target_id);
@@ -600,7 +698,10 @@ ALTER TABLE crew_skill_bindings ADD CONSTRAINT crew_skill_bindings_crew_id_fkey 
 ALTER TABLE crew_skill_bindings ADD CONSTRAINT crew_skill_bindings_skill_id_fkey FOREIGN KEY (skill_id) REFERENCES skills (id) ON DELETE CASCADE;
 ALTER TABLE crew_skill_bindings ADD CONSTRAINT crew_skill_bindings_created_by_fkey FOREIGN KEY (created_by) REFERENCES users (id) ON DELETE SET NULL;
 
+ALTER TABLE forges ADD CONSTRAINT forges_fleet_id_fkey FOREIGN KEY (fleet_id) REFERENCES fleets (id) ON DELETE CASCADE;
 ALTER TABLE missions ADD CONSTRAINT missions_fleet_id_fkey FOREIGN KEY (fleet_id) REFERENCES fleets (id) ON DELETE CASCADE;
+ALTER TABLE mission_forges ADD CONSTRAINT mission_forges_mission_id_fkey FOREIGN KEY (mission_id) REFERENCES missions (id) ON DELETE CASCADE;
+ALTER TABLE mission_forges ADD CONSTRAINT mission_forges_forge_id_fkey FOREIGN KEY (forge_id) REFERENCES forges (id) ON DELETE CASCADE;
 ALTER TABLE labels ADD CONSTRAINT labels_fleet_id_fkey FOREIGN KEY (fleet_id) REFERENCES fleets (id) ON DELETE CASCADE;
 ALTER TABLE routines ADD CONSTRAINT routines_fleet_id_fkey FOREIGN KEY (fleet_id) REFERENCES fleets (id) ON DELETE CASCADE;
 ALTER TABLE routines ADD CONSTRAINT routines_mission_id_fkey FOREIGN KEY (mission_id) REFERENCES missions (id) ON DELETE RESTRICT;
@@ -627,7 +728,15 @@ ALTER TABLE source_actions ADD CONSTRAINT source_actions_operation_id_fkey FOREI
 ALTER TABLE source_actions ADD CONSTRAINT source_actions_run_id_fkey FOREIGN KEY (run_id) REFERENCES runs (id) ON DELETE SET NULL;
 ALTER TABLE source_actions ADD CONSTRAINT source_actions_rover_id_fkey FOREIGN KEY (rover_id) REFERENCES rovers (id) ON DELETE SET NULL;
 ALTER TABLE source_actions ADD CONSTRAINT source_actions_created_by_fkey FOREIGN KEY (created_by) REFERENCES users (id) ON DELETE SET NULL;
-ALTER TABLE pull_requests ADD CONSTRAINT pull_requests_operation_id_fkey FOREIGN KEY (operation_id) REFERENCES operations (id) ON DELETE CASCADE;
+ALTER TABLE forge_actions ADD CONSTRAINT forge_actions_fleet_id_fkey FOREIGN KEY (fleet_id) REFERENCES fleets (id) ON DELETE CASCADE;
+ALTER TABLE forge_actions ADD CONSTRAINT forge_actions_operation_id_fkey FOREIGN KEY (operation_id) REFERENCES operations (id) ON DELETE SET NULL;
+ALTER TABLE forge_actions ADD CONSTRAINT forge_actions_routine_id_fkey FOREIGN KEY (routine_id) REFERENCES routines (id) ON DELETE SET NULL;
+ALTER TABLE forge_actions ADD CONSTRAINT forge_actions_pull_request_id_fkey FOREIGN KEY (pull_request_id) REFERENCES pull_requests (id) ON DELETE SET NULL;
+ALTER TABLE forge_actions ADD CONSTRAINT forge_actions_rover_id_fkey FOREIGN KEY (rover_id) REFERENCES rovers (id) ON DELETE SET NULL;
+ALTER TABLE forge_actions ADD CONSTRAINT forge_actions_created_by_fkey FOREIGN KEY (created_by) REFERENCES users (id) ON DELETE SET NULL;
+ALTER TABLE pull_requests ADD CONSTRAINT pull_requests_fleet_id_fkey FOREIGN KEY (fleet_id) REFERENCES fleets (id) ON DELETE CASCADE;
+ALTER TABLE pull_requests ADD CONSTRAINT pull_requests_operation_id_fkey FOREIGN KEY (operation_id) REFERENCES operations (id) ON DELETE SET NULL;
+ALTER TABLE pull_requests ADD CONSTRAINT pull_requests_routine_id_fkey FOREIGN KEY (routine_id) REFERENCES routines (id) ON DELETE SET NULL;
 ALTER TABLE pull_requests ADD CONSTRAINT pull_requests_created_by_fkey FOREIGN KEY (created_by) REFERENCES users (id) ON DELETE SET NULL;
 ALTER TABLE comments ADD CONSTRAINT comments_operation_id_fkey FOREIGN KEY (operation_id) REFERENCES operations (id) ON DELETE CASCADE;
 ALTER TABLE comments ADD CONSTRAINT comments_author_id_fkey FOREIGN KEY (author_id) REFERENCES users (id) ON DELETE SET NULL;
@@ -675,6 +784,8 @@ BEGIN
 		operation_id_value := coalesce(new.operation_id, old.operation_id);
 	ELSIF tg_table_name = 'pull_requests' THEN
 		operation_id_value := coalesce(new.operation_id, old.operation_id);
+	ELSIF tg_table_name = 'forge_actions' THEN
+		operation_id_value := coalesce(new.operation_id, old.operation_id);
 	ELSIF tg_table_name = 'reactions' THEN
 		IF coalesce(new.target_type, old.target_type) <> 'operation' THEN
 			RETURN coalesce(new, old);
@@ -684,6 +795,9 @@ BEGIN
         RETURN coalesce(new, old);
     END IF;
 
+    IF operation_id_value IS NULL THEN
+        RETURN coalesce(new, old);
+    END IF;
     UPDATE operations SET updated_at = now() WHERE id = operation_id_value;
     RETURN coalesce(new, old);
 END;
@@ -855,8 +969,18 @@ CREATE TRIGGER source_actions_updated_at_trigger
     ON source_actions
     FOR EACH ROW EXECUTE FUNCTION ufo_set_updated_at();
 
+CREATE TRIGGER forges_updated_at_trigger
+    BEFORE UPDATE OF key, name, provider, base_url, repo, default_base_branch, credential_kind, credential, metadata
+    ON forges
+    FOR EACH ROW EXECUTE FUNCTION ufo_set_updated_at();
+
+CREATE TRIGGER forge_actions_updated_at_trigger
+    BEFORE UPDATE OF status, remote_url, remote_number, result_sha, message, metadata, accepted_at, finished_at, commit_sha
+    ON forge_actions
+    FOR EACH ROW EXECUTE FUNCTION ufo_set_updated_at();
+
 CREATE TRIGGER pull_requests_updated_at_trigger
-    BEFORE UPDATE OF title, status, number, metadata
+    BEFORE UPDATE OF title, status, number, metadata, head_sha, mergeable, ci_status, url, last_synced_at
     ON pull_requests
     FOR EACH ROW EXECUTE FUNCTION ufo_set_updated_at();
 
@@ -878,6 +1002,11 @@ CREATE TRIGGER operation_labels_touch_operation_trigger
 CREATE TRIGGER source_actions_touch_operation_trigger
     AFTER INSERT OR UPDATE OR DELETE
     ON source_actions
+    FOR EACH ROW EXECUTE FUNCTION ufo_touch_operation_updated_at();
+
+CREATE TRIGGER forge_actions_touch_operation_trigger
+    AFTER INSERT OR UPDATE OR DELETE
+    ON forge_actions
     FOR EACH ROW EXECUTE FUNCTION ufo_touch_operation_updated_at();
 
 CREATE TRIGGER pull_requests_touch_operation_trigger

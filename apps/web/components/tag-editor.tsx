@@ -5,8 +5,7 @@ import { X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 
-// Editable set of tags (lowercased, deduped). Add on Enter/comma; click × to remove.
-export function TagEditor({ tags, onChange, placeholder = "add tag…" }: { tags: string[]; onChange: (t: string[]) => void; placeholder?: string }) {
+export function TagEditor({ tags, onChange, placeholder = "add tag..." }: { tags: string[]; onChange: (t: string[]) => void; placeholder?: string }) {
   const [draft, setDraft] = useState("");
 
   function commit() {
@@ -35,7 +34,6 @@ export function TagEditor({ tags, onChange, placeholder = "add tag…" }: { tags
   );
 }
 
-// Read-only tag chips (e.g. a rover's auto-detected tags).
 export function TagList({ tags, muted = true }: { tags: string[]; muted?: boolean }) {
   return (
     <div className="flex flex-wrap gap-1.5">

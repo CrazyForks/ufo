@@ -11,6 +11,71 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const acceptNextForgeAction = `-- name: AcceptNextForgeAction :one
+UPDATE forge_actions
+SET status = 'accepted', accepted_at = now(), rover_id = $1
+WHERE id = (
+    SELECT pending.id FROM forge_actions pending
+    WHERE pending.fleet_id = $2
+      AND (
+        pending.status = 'queued'
+        OR (pending.status = 'accepted' AND pending.accepted_at < now() - make_interval(secs => $3::float8))
+      )
+      AND (
+        pending.metadata->>'not_before' IS NULL
+        OR NULLIF(pending.metadata->>'not_before', '') IS NULL
+        OR (pending.metadata->>'not_before')::timestamptz <= now()
+      )
+    ORDER BY pending.id
+    FOR UPDATE OF pending SKIP LOCKED
+    LIMIT 1
+)
+RETURNING id, public_id, fleet_id, operation_id, routine_id, pull_request_id, rover_id, kind, status,
+    provider, base_url, repo, head_branch, base_branch, commit_sha, title, body, remote_url,
+    remote_number, result_sha, message, metadata, created_by, created_at, updated_at, accepted_at, finished_at
+`
+
+type AcceptNextForgeActionParams struct {
+	RoverID      pgtype.Int8 `json:"rover_id"`
+	FleetID      int64       `json:"fleet_id"`
+	StaleSeconds float64     `json:"stale_seconds"`
+}
+
+func (q *Queries) AcceptNextForgeAction(ctx context.Context, arg AcceptNextForgeActionParams) (ForgeAction, error) {
+	row := q.db.QueryRow(ctx, acceptNextForgeAction, arg.RoverID, arg.FleetID, arg.StaleSeconds)
+	var i ForgeAction
+	err := row.Scan(
+		&i.ID,
+		&i.PublicID,
+		&i.FleetID,
+		&i.OperationID,
+		&i.RoutineID,
+		&i.PullRequestID,
+		&i.RoverID,
+		&i.Kind,
+		&i.Status,
+		&i.Provider,
+		&i.BaseUrl,
+		&i.Repo,
+		&i.HeadBranch,
+		&i.BaseBranch,
+		&i.CommitSha,
+		&i.Title,
+		&i.Body,
+		&i.RemoteUrl,
+		&i.RemoteNumber,
+		&i.ResultSha,
+		&i.Message,
+		&i.Metadata,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AcceptedAt,
+		&i.FinishedAt,
+	)
+	return i, err
+}
+
 const acceptNextRun = `-- name: AcceptNextRun :one
 UPDATE runs
 SET status = 'accepted', heartbeat_at = now(), rover_id = $1
@@ -43,12 +108,6 @@ type AcceptNextRunParams struct {
 	RoverTags     []string    `json:"rover_tags"`
 }
 
-// Atomically grab the oldest queued run in a fleet and attribute it to the
-// accepting rover.
-// Accept the oldest queued run the rover is allowed and able to run: the rover
-// must advertise the run's pilot kind, the operation deny list must not overlap
-// its tags (checked first), and its allow list must be a subset. Hub enforces
-// rover.units: the accepting rover must have fewer active runs than units.
 func (q *Queries) AcceptNextRun(ctx context.Context, arg AcceptNextRunParams) (Run, error) {
 	row := q.db.QueryRow(ctx, acceptNextRun,
 		arg.RoverID,
@@ -141,7 +200,6 @@ type ActiveRunStatusesForOperationsRow struct {
 	Status      string `json:"status"`
 }
 
-// Active run status per operation, batched for board/detail DTOs.
 func (q *Queries) ActiveRunStatusesForOperations(ctx context.Context, operationIds []int64) ([]ActiveRunStatusesForOperationsRow, error) {
 	rows, err := q.db.Query(ctx, activeRunStatusesForOperations, operationIds)
 	if err != nil {
@@ -400,7 +458,6 @@ UPDATE signals SET archived = TRUE
 WHERE operation_id = $1 AND severity = 'action_required' AND archived = FALSE
 `
 
-// Self-heal: archive open action-required signals once an operation leaves that status.
 func (q *Queries) ArchiveActionRequiredForOperation(ctx context.Context, operationID pgtype.Int8) error {
 	_, err := q.db.Exec(ctx, archiveActionRequiredForOperation, operationID)
 	return err
@@ -562,7 +619,6 @@ type BumpMissionSequenceParams struct {
 	FleetID int64 `json:"fleet_id"`
 }
 
-// Atomically allocate the next per-mission operation number.
 func (q *Queries) BumpMissionSequence(ctx context.Context, arg BumpMissionSequenceParams) (int32, error) {
 	row := q.db.QueryRow(ctx, bumpMissionSequence, arg.ID, arg.FleetID)
 	var next_sequence int32
@@ -628,6 +684,93 @@ func (q *Queries) ClaimLoopRePulse(ctx context.Context, arg ClaimLoopRePulsePara
 	var id int64
 	err := row.Scan(&id)
 	return id, err
+}
+
+const clearMissionForges = `-- name: ClearMissionForges :exec
+DELETE FROM mission_forges WHERE mission_id = $1
+`
+
+func (q *Queries) ClearMissionForges(ctx context.Context, missionID int64) error {
+	_, err := q.db.Exec(ctx, clearMissionForges, missionID)
+	return err
+}
+
+const completeForgeAction = `-- name: CompleteForgeAction :one
+UPDATE forge_actions
+SET status = $1,
+    remote_url = $2,
+    remote_number = $3,
+    result_sha = $4,
+    message = $5,
+    commit_sha = CASE WHEN $6 = '' THEN commit_sha ELSE $6 END,
+    metadata = metadata || $7::jsonb,
+    finished_at = now()
+WHERE public_id = $8
+  AND fleet_id = $9
+  AND rover_id = $10
+  AND status = 'accepted'
+RETURNING id, public_id, fleet_id, operation_id, routine_id, pull_request_id, rover_id, kind, status,
+    provider, base_url, repo, head_branch, base_branch, commit_sha, title, body, remote_url,
+    remote_number, result_sha, message, metadata, created_by, created_at, updated_at, accepted_at, finished_at
+`
+
+type CompleteForgeActionParams struct {
+	Status       string      `json:"status"`
+	RemoteUrl    string      `json:"remote_url"`
+	RemoteNumber pgtype.Int4 `json:"remote_number"`
+	ResultSha    string      `json:"result_sha"`
+	Message      string      `json:"message"`
+	CommitSha    interface{} `json:"commit_sha"`
+	Metadata     []byte      `json:"metadata"`
+	PublicID     pgtype.UUID `json:"public_id"`
+	FleetID      int64       `json:"fleet_id"`
+	RoverID      pgtype.Int8 `json:"rover_id"`
+}
+
+func (q *Queries) CompleteForgeAction(ctx context.Context, arg CompleteForgeActionParams) (ForgeAction, error) {
+	row := q.db.QueryRow(ctx, completeForgeAction,
+		arg.Status,
+		arg.RemoteUrl,
+		arg.RemoteNumber,
+		arg.ResultSha,
+		arg.Message,
+		arg.CommitSha,
+		arg.Metadata,
+		arg.PublicID,
+		arg.FleetID,
+		arg.RoverID,
+	)
+	var i ForgeAction
+	err := row.Scan(
+		&i.ID,
+		&i.PublicID,
+		&i.FleetID,
+		&i.OperationID,
+		&i.RoutineID,
+		&i.PullRequestID,
+		&i.RoverID,
+		&i.Kind,
+		&i.Status,
+		&i.Provider,
+		&i.BaseUrl,
+		&i.Repo,
+		&i.HeadBranch,
+		&i.BaseBranch,
+		&i.CommitSha,
+		&i.Title,
+		&i.Body,
+		&i.RemoteUrl,
+		&i.RemoteNumber,
+		&i.ResultSha,
+		&i.Message,
+		&i.Metadata,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AcceptedAt,
+		&i.FinishedAt,
+	)
+	return i, err
 }
 
 const completeSourceAction = `-- name: CompleteSourceAction :one
@@ -723,7 +866,6 @@ type CountActiveRunsByStatusRow struct {
 	Count  int64  `json:"count"`
 }
 
-// Active run counts split by queue/work status.
 func (q *Queries) CountActiveRunsByStatus(ctx context.Context, fleetID int64) ([]CountActiveRunsByStatusRow, error) {
 	rows, err := q.db.Query(ctx, countActiveRunsByStatus, fleetID)
 	if err != nil {
@@ -815,6 +957,13 @@ WHERE o.fleet_id = $1
         AND sa.kind IN ('commit_to_branch', 'create_source_branch')
         AND COALESCE(sa.metadata ->> 're_pulse_on_success', 'false') = 'true'
     )
+    OR EXISTS (
+      SELECT 1
+      FROM forge_actions fa
+      WHERE fa.operation_id = o.id
+        AND fa.fleet_id = o.fleet_id
+        AND fa.status NOT IN ('succeeded', 'failed', 'conflicted')
+    )
   )
 `
 
@@ -864,7 +1013,6 @@ type CountOperationsByMissionRow struct {
 	Count     int64       `json:"count"`
 }
 
-// Per-mission operation counts (for the Missions view), keyed by mission public id.
 func (q *Queries) CountOperationsByMission(ctx context.Context, fleetID int64) ([]CountOperationsByMissionRow, error) {
 	rows, err := q.db.Query(ctx, countOperationsByMission, fleetID)
 	if err != nil {
@@ -915,7 +1063,6 @@ type CountOperationsByStatusRow struct {
 	Count  int64  `json:"count"`
 }
 
-// Board column counts (optionally scoped to one mission). mission = 0 → all.
 func (q *Queries) CountOperationsByStatus(ctx context.Context, arg CountOperationsByStatusParams) ([]CountOperationsByStatusRow, error) {
 	rows, err := q.db.Query(ctx, countOperationsByStatus,
 		arg.FleetID,
@@ -1112,7 +1259,7 @@ type CreateEnrollmentCodeParams struct {
 	ExpiresAt     pgtype.Timestamptz `json:"expires_at"`
 }
 
-// ---- enrollment codes (enrollment) ----
+// ---- enrollment codes ----
 func (q *Queries) CreateEnrollmentCode(ctx context.Context, arg CreateEnrollmentCodeParams) (EnrollmentCode, error) {
 	row := q.db.QueryRow(ctx, createEnrollmentCode,
 		arg.FleetID,
@@ -1167,6 +1314,155 @@ func (q *Queries) CreateFleet(ctx context.Context, arg CreateFleetParams) (Fleet
 		&i.Metadata,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const createForge = `-- name: CreateForge :one
+
+INSERT INTO forges (
+    fleet_id, key, name, provider, base_url, repo, default_base_branch,
+    credential_kind, credential, metadata
+) VALUES (
+    $1, $2, $3, $4,
+    $5, $6, $7,
+    $8, $9, $10
+)
+RETURNING id, public_id, fleet_id, key, name, provider, base_url, repo, default_base_branch,
+    credential_kind, credential, metadata, created_at, updated_at
+`
+
+type CreateForgeParams struct {
+	FleetID           int64  `json:"fleet_id"`
+	Key               string `json:"key"`
+	Name              string `json:"name"`
+	Provider          string `json:"provider"`
+	BaseUrl           string `json:"base_url"`
+	Repo              string `json:"repo"`
+	DefaultBaseBranch string `json:"default_base_branch"`
+	CredentialKind    string `json:"credential_kind"`
+	Credential        []byte `json:"credential"`
+	Metadata          []byte `json:"metadata"`
+}
+
+// ========================= forges =========================
+func (q *Queries) CreateForge(ctx context.Context, arg CreateForgeParams) (Forge, error) {
+	row := q.db.QueryRow(ctx, createForge,
+		arg.FleetID,
+		arg.Key,
+		arg.Name,
+		arg.Provider,
+		arg.BaseUrl,
+		arg.Repo,
+		arg.DefaultBaseBranch,
+		arg.CredentialKind,
+		arg.Credential,
+		arg.Metadata,
+	)
+	var i Forge
+	err := row.Scan(
+		&i.ID,
+		&i.PublicID,
+		&i.FleetID,
+		&i.Key,
+		&i.Name,
+		&i.Provider,
+		&i.BaseUrl,
+		&i.Repo,
+		&i.DefaultBaseBranch,
+		&i.CredentialKind,
+		&i.Credential,
+		&i.Metadata,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const createForgeAction = `-- name: CreateForgeAction :one
+
+INSERT INTO forge_actions (
+    fleet_id, operation_id, routine_id, pull_request_id, rover_id, kind,
+    provider, base_url, repo, head_branch, base_branch, commit_sha, title, body, metadata, created_by
+) VALUES (
+    $1, $2, $3, $4,
+    $5, $6, $7, $8, $9,
+    $10, $11, $12, $13,
+    $14, $15, $16
+)
+RETURNING id, public_id, fleet_id, operation_id, routine_id, pull_request_id, rover_id, kind, status,
+    provider, base_url, repo, head_branch, base_branch, commit_sha, title, body, remote_url,
+    remote_number, result_sha, message, metadata, created_by, created_at, updated_at, accepted_at, finished_at
+`
+
+type CreateForgeActionParams struct {
+	FleetID       int64       `json:"fleet_id"`
+	OperationID   pgtype.Int8 `json:"operation_id"`
+	RoutineID     pgtype.Int8 `json:"routine_id"`
+	PullRequestID pgtype.Int8 `json:"pull_request_id"`
+	RoverID       pgtype.Int8 `json:"rover_id"`
+	Kind          string      `json:"kind"`
+	Provider      string      `json:"provider"`
+	BaseUrl       string      `json:"base_url"`
+	Repo          string      `json:"repo"`
+	HeadBranch    string      `json:"head_branch"`
+	BaseBranch    string      `json:"base_branch"`
+	CommitSha     string      `json:"commit_sha"`
+	Title         string      `json:"title"`
+	Body          string      `json:"body"`
+	Metadata      []byte      `json:"metadata"`
+	CreatedBy     pgtype.Int8 `json:"created_by"`
+}
+
+// ========================= forge actions =========================
+func (q *Queries) CreateForgeAction(ctx context.Context, arg CreateForgeActionParams) (ForgeAction, error) {
+	row := q.db.QueryRow(ctx, createForgeAction,
+		arg.FleetID,
+		arg.OperationID,
+		arg.RoutineID,
+		arg.PullRequestID,
+		arg.RoverID,
+		arg.Kind,
+		arg.Provider,
+		arg.BaseUrl,
+		arg.Repo,
+		arg.HeadBranch,
+		arg.BaseBranch,
+		arg.CommitSha,
+		arg.Title,
+		arg.Body,
+		arg.Metadata,
+		arg.CreatedBy,
+	)
+	var i ForgeAction
+	err := row.Scan(
+		&i.ID,
+		&i.PublicID,
+		&i.FleetID,
+		&i.OperationID,
+		&i.RoutineID,
+		&i.PullRequestID,
+		&i.RoverID,
+		&i.Kind,
+		&i.Status,
+		&i.Provider,
+		&i.BaseUrl,
+		&i.Repo,
+		&i.HeadBranch,
+		&i.BaseBranch,
+		&i.CommitSha,
+		&i.Title,
+		&i.Body,
+		&i.RemoteUrl,
+		&i.RemoteNumber,
+		&i.ResultSha,
+		&i.Message,
+		&i.Metadata,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AcceptedAt,
+		&i.FinishedAt,
 	)
 	return i, err
 }
@@ -1270,9 +1566,6 @@ type CreateMissionParams struct {
 }
 
 // ========================= missions ==========================
-// A mission is a user-created objective: a grouping of operations within a
-// fleet. Its key prefixes operation codes; runs execute in per-operation
-// isolated directories managed by the rover.
 func (q *Queries) CreateMission(ctx context.Context, arg CreateMissionParams) (Mission, error) {
 	row := q.db.QueryRow(ctx, createMission,
 		arg.FleetID,
@@ -1391,27 +1684,60 @@ func (q *Queries) CreateOperation(ctx context.Context, arg CreateOperationParams
 
 const createPullRequest = `-- name: CreatePullRequest :one
 
-INSERT INTO pull_requests (operation_id, url, title, number, metadata, created_by)
-VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, public_id, operation_id, url, title, status, number, metadata, created_by, created_at, updated_at
+INSERT INTO pull_requests (
+    fleet_id, operation_id, routine_id, provider, base_url, repo, head_branch, base_branch,
+    url, title, status, number, created_by_ufo, head_sha, mergeable, ci_status, metadata, created_by
+) VALUES (
+    $1, $2, $3, $4,
+    $5, $6, $7, $8,
+    $9, $10, $11, $12, $13,
+    $14, $15, $16, $17, $18
+)
+RETURNING id, public_id, fleet_id, operation_id, routine_id, provider, base_url, repo, head_branch,
+    base_branch, url, title, status, number, created_by_ufo, head_sha, mergeable, ci_status,
+    metadata, created_by, created_at, updated_at, last_synced_at
 `
 
 type CreatePullRequestParams struct {
-	OperationID int64       `json:"operation_id"`
-	Url         string      `json:"url"`
-	Title       string      `json:"title"`
-	Number      pgtype.Int4 `json:"number"`
-	Metadata    []byte      `json:"metadata"`
-	CreatedBy   pgtype.Int8 `json:"created_by"`
+	FleetID      int64       `json:"fleet_id"`
+	OperationID  pgtype.Int8 `json:"operation_id"`
+	RoutineID    pgtype.Int8 `json:"routine_id"`
+	Provider     string      `json:"provider"`
+	BaseUrl      string      `json:"base_url"`
+	Repo         string      `json:"repo"`
+	HeadBranch   string      `json:"head_branch"`
+	BaseBranch   string      `json:"base_branch"`
+	Url          string      `json:"url"`
+	Title        string      `json:"title"`
+	Status       string      `json:"status"`
+	Number       pgtype.Int4 `json:"number"`
+	CreatedByUfo bool        `json:"created_by_ufo"`
+	HeadSha      string      `json:"head_sha"`
+	Mergeable    pgtype.Bool `json:"mergeable"`
+	CiStatus     string      `json:"ci_status"`
+	Metadata     []byte      `json:"metadata"`
+	CreatedBy    pgtype.Int8 `json:"created_by"`
 }
 
 // ========================= pull requests =========================
 func (q *Queries) CreatePullRequest(ctx context.Context, arg CreatePullRequestParams) (PullRequest, error) {
 	row := q.db.QueryRow(ctx, createPullRequest,
+		arg.FleetID,
 		arg.OperationID,
+		arg.RoutineID,
+		arg.Provider,
+		arg.BaseUrl,
+		arg.Repo,
+		arg.HeadBranch,
+		arg.BaseBranch,
 		arg.Url,
 		arg.Title,
+		arg.Status,
 		arg.Number,
+		arg.CreatedByUfo,
+		arg.HeadSha,
+		arg.Mergeable,
+		arg.CiStatus,
 		arg.Metadata,
 		arg.CreatedBy,
 	)
@@ -1419,15 +1745,27 @@ func (q *Queries) CreatePullRequest(ctx context.Context, arg CreatePullRequestPa
 	err := row.Scan(
 		&i.ID,
 		&i.PublicID,
+		&i.FleetID,
 		&i.OperationID,
+		&i.RoutineID,
+		&i.Provider,
+		&i.BaseUrl,
+		&i.Repo,
+		&i.HeadBranch,
+		&i.BaseBranch,
 		&i.Url,
 		&i.Title,
 		&i.Status,
 		&i.Number,
+		&i.CreatedByUfo,
+		&i.HeadSha,
+		&i.Mergeable,
+		&i.CiStatus,
 		&i.Metadata,
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.LastSyncedAt,
 	)
 	return i, err
 }
@@ -1583,7 +1921,7 @@ type CreateRoverParams struct {
 	Tags             []string    `json:"tags"`
 }
 
-// ---- rovers (per-rover identity + connection token) ----
+// ---- rovers ----
 func (q *Queries) CreateRover(ctx context.Context, arg CreateRoverParams) (Rover, error) {
 	row := q.db.QueryRow(ctx, createRover,
 		arg.FleetID,
@@ -1943,6 +2281,23 @@ func (q *Queries) DeleteFleet(ctx context.Context, id int64) error {
 	return err
 }
 
+const deleteForge = `-- name: DeleteForge :execrows
+DELETE FROM forges WHERE id = $1 AND fleet_id = $2
+`
+
+type DeleteForgeParams struct {
+	ID      int64 `json:"id"`
+	FleetID int64 `json:"fleet_id"`
+}
+
+func (q *Queries) DeleteForge(ctx context.Context, arg DeleteForgeParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteForge, arg.ID, arg.FleetID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteLabel = `-- name: DeleteLabel :exec
 DELETE FROM labels WHERE id = $1 AND fleet_id = $2
 `
@@ -1968,8 +2323,8 @@ func (q *Queries) DeletePendingAsset(ctx context.Context, id int64) error {
 }
 
 const deletePullRequest = `-- name: DeletePullRequest :exec
-DELETE FROM pull_requests p USING operations o
-WHERE p.public_id = $1 AND p.operation_id = o.id AND o.fleet_id = $2
+DELETE FROM pull_requests
+WHERE public_id = $1 AND fleet_id = $2
 `
 
 type DeletePullRequestParams struct {
@@ -2154,7 +2509,6 @@ type FleetPilotCapabilitiesRow struct {
 }
 
 // ========================= pilots ============================
-// Pilot kinds and the fleet rovers each can drive, split by online window.
 func (q *Queries) FleetPilotCapabilities(ctx context.Context, arg FleetPilotCapabilitiesParams) ([]FleetPilotCapabilitiesRow, error) {
 	rows, err := q.db.Query(ctx, fleetPilotCapabilities, arg.OnlineWindowSeconds, arg.FleetID)
 	if err != nil {
@@ -2197,8 +2551,6 @@ type FleetPilotKindFreeRow struct {
 	HasFree bool   `json:"has_free"`
 }
 
-// Per pilot kind in the fleet, whether any capable online rover has an open unit.
-// Only kinds with >=1 capable rover appear (presence => hasRover).
 func (q *Queries) FleetPilotKindFree(ctx context.Context, arg FleetPilotKindFreeParams) ([]FleetPilotKindFreeRow, error) {
 	rows, err := q.db.Query(ctx, fleetPilotKindFree, arg.OnlineWindowSeconds, arg.FleetID)
 	if err != nil {
@@ -2231,8 +2583,6 @@ type FleetsWithNewlyOfflineRoversParams struct {
 	OfflineBeforeSeconds float64 `json:"offline_before_seconds"`
 }
 
-// Fleets whose rovers just crossed the offline threshold (so the sweeper can push
-// a presence update — absence of heartbeat isn't itself an event).
 func (q *Queries) FleetsWithNewlyOfflineRovers(ctx context.Context, arg FleetsWithNewlyOfflineRoversParams) ([]int64, error) {
 	rows, err := q.db.Query(ctx, fleetsWithNewlyOfflineRovers, arg.OfflineAfterSeconds, arg.OfflineBeforeSeconds)
 	if err != nil {
@@ -2629,6 +2979,74 @@ func (q *Queries) GetFleetKind(ctx context.Context, id int64) (string, error) {
 	return kind, err
 }
 
+const getForge = `-- name: GetForge :one
+SELECT id, public_id, fleet_id, key, name, provider, base_url, repo, default_base_branch,
+    credential_kind, credential, metadata, created_at, updated_at
+FROM forges
+WHERE id = $1 AND fleet_id = $2
+`
+
+type GetForgeParams struct {
+	ID      int64 `json:"id"`
+	FleetID int64 `json:"fleet_id"`
+}
+
+func (q *Queries) GetForge(ctx context.Context, arg GetForgeParams) (Forge, error) {
+	row := q.db.QueryRow(ctx, getForge, arg.ID, arg.FleetID)
+	var i Forge
+	err := row.Scan(
+		&i.ID,
+		&i.PublicID,
+		&i.FleetID,
+		&i.Key,
+		&i.Name,
+		&i.Provider,
+		&i.BaseUrl,
+		&i.Repo,
+		&i.DefaultBaseBranch,
+		&i.CredentialKind,
+		&i.Credential,
+		&i.Metadata,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getForgeByPublicID = `-- name: GetForgeByPublicID :one
+SELECT id, public_id, fleet_id, key, name, provider, base_url, repo, default_base_branch,
+    credential_kind, credential, metadata, created_at, updated_at
+FROM forges
+WHERE public_id = $1 AND fleet_id = $2
+`
+
+type GetForgeByPublicIDParams struct {
+	PublicID pgtype.UUID `json:"public_id"`
+	FleetID  int64       `json:"fleet_id"`
+}
+
+func (q *Queries) GetForgeByPublicID(ctx context.Context, arg GetForgeByPublicIDParams) (Forge, error) {
+	row := q.db.QueryRow(ctx, getForgeByPublicID, arg.PublicID, arg.FleetID)
+	var i Forge
+	err := row.Scan(
+		&i.ID,
+		&i.PublicID,
+		&i.FleetID,
+		&i.Key,
+		&i.Name,
+		&i.Provider,
+		&i.BaseUrl,
+		&i.Repo,
+		&i.DefaultBaseBranch,
+		&i.CredentialKind,
+		&i.Credential,
+		&i.Metadata,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getInvitation = `-- name: GetInvitation :one
 SELECT id, public_id, fleet_id, inviter_id, invitee_email, role, status, created_at, updated_at, expires_at
 FROM invitations WHERE id = $1
@@ -2941,8 +3359,6 @@ type GetOperationIDByPublicIDParams struct {
 }
 
 // ================ public-id resolvers (public id -> internal id) ================
-// Each resolves a public id (from a URL path or request body) to the internal
-// bigint, scoped to the fleet so cross-tenant ids can't be addressed.
 func (q *Queries) GetOperationIDByPublicID(ctx context.Context, arg GetOperationIDByPublicIDParams) (int64, error) {
 	row := q.db.QueryRow(ctx, getOperationIDByPublicID, arg.PublicID, arg.FleetID)
 	var id int64
@@ -2979,15 +3395,15 @@ func (q *Queries) GetPendingAssetByPublicID(ctx context.Context, publicID pgtype
 }
 
 const getPullRequestTarget = `-- name: GetPullRequestTarget :one
-SELECT p.id, p.operation_id, o.fleet_id
-FROM pull_requests p JOIN operations o ON o.id = p.operation_id
-WHERE p.public_id = $1
+SELECT id, operation_id, fleet_id
+FROM pull_requests
+WHERE public_id = $1
 `
 
 type GetPullRequestTargetRow struct {
-	ID          int64 `json:"id"`
-	OperationID int64 `json:"operation_id"`
-	FleetID     int64 `json:"fleet_id"`
+	ID          int64       `json:"id"`
+	OperationID pgtype.Int8 `json:"operation_id"`
+	FleetID     int64       `json:"fleet_id"`
 }
 
 func (q *Queries) GetPullRequestTarget(ctx context.Context, publicID pgtype.UUID) (GetPullRequestTargetRow, error) {
@@ -3351,8 +3767,6 @@ type GetRunIDForRoverParams struct {
 	RoverID  pgtype.Int8 `json:"rover_id"`
 }
 
-// Resolve a run owned by the calling rover (accepted by it), so one rover can't
-// mutate another rover's run.
 func (q *Queries) GetRunIDForRover(ctx context.Context, arg GetRunIDForRoverParams) (int64, error) {
 	row := q.db.QueryRow(ctx, getRunIDForRover, arg.PublicID, arg.FleetID, arg.RoverID)
 	var id int64
@@ -3400,7 +3814,6 @@ JOIN users u ON u.id = s.user_id
 WHERE s.token_hash = $1 AND s.expires_at > now()
 `
 
-// Resolve a session cookie to its user (only if unexpired).
 func (q *Queries) GetSessionUser(ctx context.Context, tokenHash string) (User, error) {
 	row := q.db.QueryRow(ctx, getSessionUser, tokenHash)
 	var i User
@@ -3568,6 +3981,21 @@ func (q *Queries) Heartbeat(ctx context.Context, arg HeartbeatParams) (int64, er
 	return id, err
 }
 
+const insertMissionForge = `-- name: InsertMissionForge :exec
+INSERT INTO mission_forges (mission_id, forge_id)
+VALUES ($1, $2)
+`
+
+type InsertMissionForgeParams struct {
+	MissionID int64 `json:"mission_id"`
+	ForgeID   int64 `json:"forge_id"`
+}
+
+func (q *Queries) InsertMissionForge(ctx context.Context, arg InsertMissionForgeParams) error {
+	_, err := q.db.Exec(ctx, insertMissionForge, arg.MissionID, arg.ForgeID)
+	return err
+}
+
 const invitationsForEmail = `-- name: InvitationsForEmail :many
 SELECT i.public_id, i.role, i.invitee_email, f.name AS fleet_name, f.public_id AS fleet_public_id
 FROM invitations i JOIN fleets f ON f.id = i.fleet_id
@@ -3583,7 +4011,6 @@ type InvitationsForEmailRow struct {
 	FleetPublicID pgtype.UUID `json:"fleet_public_id"`
 }
 
-// Pending invitations addressed to an email (across fleets), with fleet name.
 func (q *Queries) InvitationsForEmail(ctx context.Context, inviteeEmail string) ([]InvitationsForEmailRow, error) {
 	rows, err := q.db.Query(ctx, invitationsForEmail, inviteeEmail)
 	if err != nil {
@@ -3644,7 +4071,6 @@ type LabelsForOperationsRow struct {
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 }
 
-// Labels for a set of operations.
 func (q *Queries) LabelsForOperations(ctx context.Context, operationIds []int64) ([]LabelsForOperationsRow, error) {
 	rows, err := q.db.Query(ctx, labelsForOperations, operationIds)
 	if err != nil {
@@ -3723,6 +4149,48 @@ type LatestSourceRunForOperationParams struct {
 // ========================= source actions =========================
 func (q *Queries) LatestSourceRunForOperation(ctx context.Context, arg LatestSourceRunForOperationParams) (Run, error) {
 	row := q.db.QueryRow(ctx, latestSourceRunForOperation, arg.OperationID, arg.FleetID)
+	var i Run
+	err := row.Scan(
+		&i.ID,
+		&i.PublicID,
+		&i.FleetID,
+		&i.OperationID,
+		&i.MissionID,
+		&i.RoverID,
+		&i.RequiredRoverID,
+		&i.Pilot,
+		&i.Command,
+		&i.Status,
+		&i.SessionID,
+		&i.NeedsInput,
+		&i.RequestedStatus,
+		&i.Metadata,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.HeartbeatAt,
+		&i.FinalizedAt,
+	)
+	return i, err
+}
+
+const latestSucceededRunWithRoverForOperation = `-- name: LatestSucceededRunWithRoverForOperation :one
+SELECT id, public_id, fleet_id, operation_id, mission_id, rover_id, required_rover_id, pilot, command, status, session_id, needs_input, requested_status, metadata, created_at, updated_at, heartbeat_at, finalized_at
+FROM runs r
+WHERE r.operation_id = $1
+  AND r.fleet_id = $2
+  AND r.rover_id IS NOT NULL
+  AND r.status = 'succeeded'
+ORDER BY r.id DESC
+LIMIT 1
+`
+
+type LatestSucceededRunWithRoverForOperationParams struct {
+	OperationID int64 `json:"operation_id"`
+	FleetID     int64 `json:"fleet_id"`
+}
+
+func (q *Queries) LatestSucceededRunWithRoverForOperation(ctx context.Context, arg LatestSucceededRunWithRoverForOperationParams) (Run, error) {
+	row := q.db.QueryRow(ctx, latestSucceededRunWithRoverForOperation, arg.OperationID, arg.FleetID)
 	var i Run
 	err := row.Scan(
 		&i.ID,
@@ -4155,6 +4623,156 @@ func (q *Queries) ListFleetsForUser(ctx context.Context, userID int64) ([]Fleet,
 	return items, nil
 }
 
+const listForgeActionsForOperation = `-- name: ListForgeActionsForOperation :many
+SELECT id, public_id, fleet_id, operation_id, routine_id, pull_request_id, rover_id, kind, status,
+    provider, base_url, repo, head_branch, base_branch, commit_sha, title, body, remote_url,
+    remote_number, result_sha, message, metadata, created_by, created_at, updated_at, accepted_at, finished_at
+FROM forge_actions
+WHERE operation_id = $1
+ORDER BY id DESC
+`
+
+func (q *Queries) ListForgeActionsForOperation(ctx context.Context, operationID pgtype.Int8) ([]ForgeAction, error) {
+	rows, err := q.db.Query(ctx, listForgeActionsForOperation, operationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ForgeAction{}
+	for rows.Next() {
+		var i ForgeAction
+		if err := rows.Scan(
+			&i.ID,
+			&i.PublicID,
+			&i.FleetID,
+			&i.OperationID,
+			&i.RoutineID,
+			&i.PullRequestID,
+			&i.RoverID,
+			&i.Kind,
+			&i.Status,
+			&i.Provider,
+			&i.BaseUrl,
+			&i.Repo,
+			&i.HeadBranch,
+			&i.BaseBranch,
+			&i.CommitSha,
+			&i.Title,
+			&i.Body,
+			&i.RemoteUrl,
+			&i.RemoteNumber,
+			&i.ResultSha,
+			&i.Message,
+			&i.Metadata,
+			&i.CreatedBy,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.AcceptedAt,
+			&i.FinishedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listForges = `-- name: ListForges :many
+SELECT id, public_id, fleet_id, key, name, provider, base_url, repo, default_base_branch,
+    credential_kind, credential, metadata, created_at, updated_at
+FROM forges
+WHERE fleet_id = $1
+ORDER BY key
+`
+
+func (q *Queries) ListForges(ctx context.Context, fleetID int64) ([]Forge, error) {
+	rows, err := q.db.Query(ctx, listForges, fleetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Forge{}
+	for rows.Next() {
+		var i Forge
+		if err := rows.Scan(
+			&i.ID,
+			&i.PublicID,
+			&i.FleetID,
+			&i.Key,
+			&i.Name,
+			&i.Provider,
+			&i.BaseUrl,
+			&i.Repo,
+			&i.DefaultBaseBranch,
+			&i.CredentialKind,
+			&i.Credential,
+			&i.Metadata,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGrantedForgesForMission = `-- name: ListGrantedForgesForMission :many
+SELECT f.id, f.public_id, f.fleet_id, f.key, f.name, f.provider, f.base_url, f.repo, f.default_base_branch,
+    f.credential_kind, f.credential, f.metadata, f.created_at, f.updated_at
+FROM mission_forges mf
+INNER JOIN forges f ON f.id = mf.forge_id
+WHERE mf.mission_id = $1
+  AND f.fleet_id = $2
+ORDER BY f.key
+`
+
+type ListGrantedForgesForMissionParams struct {
+	MissionID int64 `json:"mission_id"`
+	FleetID   int64 `json:"fleet_id"`
+}
+
+func (q *Queries) ListGrantedForgesForMission(ctx context.Context, arg ListGrantedForgesForMissionParams) ([]Forge, error) {
+	rows, err := q.db.Query(ctx, listGrantedForgesForMission, arg.MissionID, arg.FleetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Forge{}
+	for rows.Next() {
+		var i Forge
+		if err := rows.Scan(
+			&i.ID,
+			&i.PublicID,
+			&i.FleetID,
+			&i.Key,
+			&i.Name,
+			&i.Provider,
+			&i.BaseUrl,
+			&i.Repo,
+			&i.DefaultBaseBranch,
+			&i.CredentialKind,
+			&i.Credential,
+			&i.Metadata,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listInvitations = `-- name: ListInvitations :many
 SELECT id, public_id, fleet_id, inviter_id, invitee_email, role, status, created_at, updated_at, expires_at
 FROM invitations WHERE fleet_id = $1 AND status = 'pending' ORDER BY id DESC
@@ -4253,6 +4871,71 @@ func (q *Queries) ListMembers(ctx context.Context, fleetID int64) ([]ListMembers
 			&i.Email,
 			&i.Name,
 			&i.Role,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMissionForges = `-- name: ListMissionForges :many
+SELECT mission_id, forge_id, created_at, updated_at
+FROM mission_forges
+WHERE mission_id = $1
+ORDER BY forge_id
+`
+
+func (q *Queries) ListMissionForges(ctx context.Context, missionID int64) ([]MissionForge, error) {
+	rows, err := q.db.Query(ctx, listMissionForges, missionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []MissionForge{}
+	for rows.Next() {
+		var i MissionForge
+		if err := rows.Scan(
+			&i.MissionID,
+			&i.ForgeID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMissionForgesForFleet = `-- name: ListMissionForgesForFleet :many
+SELECT mf.mission_id, mf.forge_id, mf.created_at, mf.updated_at
+FROM mission_forges mf
+INNER JOIN missions m ON m.id = mf.mission_id
+WHERE m.fleet_id = $1
+ORDER BY mf.mission_id, mf.forge_id
+`
+
+func (q *Queries) ListMissionForgesForFleet(ctx context.Context, fleetID int64) ([]MissionForge, error) {
+	rows, err := q.db.Query(ctx, listMissionForgesForFleet, fleetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []MissionForge{}
+	for rows.Next() {
+		var i MissionForge
+		if err := rows.Scan(
+			&i.MissionID,
+			&i.ForgeID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -4612,7 +5295,6 @@ type ListOperationsByQueryParams struct {
 	Limit     int32       `json:"limit"`
 }
 
-// List filter `q`: match title, numeric sequence, or KEY-123 code (shared list query).
 func (q *Queries) ListOperationsByQuery(ctx context.Context, arg ListOperationsByQueryParams) ([]Operation, error) {
 	rows, err := q.db.Query(ctx, listOperationsByQuery,
 		arg.FleetID,
@@ -4699,9 +5381,6 @@ type ListOperationsByStatusParams struct {
 	Limit             int32  `json:"limit"`
 }
 
-// Board: one status column, keyset-paginated. mission = 0 → all missions;
-// before = 0 → first page (newest). Index: operations_board_idx.
-// Board column, keyset-paginated, with optional filters (0/” = unset).
 func (q *Queries) ListOperationsByStatus(ctx context.Context, arg ListOperationsByStatusParams) ([]Operation, error) {
 	rows, err := q.db.Query(ctx, listOperationsByStatus,
 		arg.FleetID,
@@ -4765,10 +5444,13 @@ func (q *Queries) ListOperationsByStatus(ctx context.Context, arg ListOperations
 }
 
 const listPullRequestsForOperation = `-- name: ListPullRequestsForOperation :many
-SELECT id, public_id, operation_id, url, title, status, number, metadata, created_by, created_at, updated_at FROM pull_requests WHERE operation_id = $1 ORDER BY id
+SELECT id, public_id, fleet_id, operation_id, routine_id, provider, base_url, repo, head_branch,
+    base_branch, url, title, status, number, created_by_ufo, head_sha, mergeable, ci_status,
+    metadata, created_by, created_at, updated_at, last_synced_at
+FROM pull_requests WHERE operation_id = $1 ORDER BY id
 `
 
-func (q *Queries) ListPullRequestsForOperation(ctx context.Context, operationID int64) ([]PullRequest, error) {
+func (q *Queries) ListPullRequestsForOperation(ctx context.Context, operationID pgtype.Int8) ([]PullRequest, error) {
 	rows, err := q.db.Query(ctx, listPullRequestsForOperation, operationID)
 	if err != nil {
 		return nil, err
@@ -4780,15 +5462,27 @@ func (q *Queries) ListPullRequestsForOperation(ctx context.Context, operationID 
 		if err := rows.Scan(
 			&i.ID,
 			&i.PublicID,
+			&i.FleetID,
 			&i.OperationID,
+			&i.RoutineID,
+			&i.Provider,
+			&i.BaseUrl,
+			&i.Repo,
+			&i.HeadBranch,
+			&i.BaseBranch,
 			&i.Url,
 			&i.Title,
 			&i.Status,
 			&i.Number,
+			&i.CreatedByUfo,
+			&i.HeadSha,
+			&i.Mergeable,
+			&i.CiStatus,
 			&i.Metadata,
 			&i.CreatedBy,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.LastSyncedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -5087,8 +5781,6 @@ type ListRelationsForOperationRow struct {
 	MissionID         pgtype.UUID        `json:"mission_id"`
 }
 
-// Both directions for one operation, joined to the *other* operation. `outgoing`
-// = the queried operation is the source (so the row's kind applies as-is; otherwise inverse).
 func (q *Queries) ListRelationsForOperation(ctx context.Context, operationID int64) ([]ListRelationsForOperationRow, error) {
 	rows, err := q.db.Query(ctx, listRelationsForOperation, operationID)
 	if err != nil {
@@ -5254,7 +5946,6 @@ type ListRoversWithStatusRow struct {
 	RunningUnits     int64              `json:"running_units"`
 }
 
-// List rovers with active run count.
 func (q *Queries) ListRoversWithStatus(ctx context.Context, fleetID int64) ([]ListRoversWithStatusRow, error) {
 	rows, err := q.db.Query(ctx, listRoversWithStatus, fleetID)
 	if err != nil {
@@ -6084,6 +6775,35 @@ func (q *Queries) PublicIDsForCrews(ctx context.Context, ids []int64) ([]PublicI
 	return items, nil
 }
 
+const publicIDsForForges = `-- name: PublicIDsForForges :many
+SELECT id, public_id FROM forges WHERE id = ANY($1::bigint[])
+`
+
+type PublicIDsForForgesRow struct {
+	ID       int64       `json:"id"`
+	PublicID pgtype.UUID `json:"public_id"`
+}
+
+func (q *Queries) PublicIDsForForges(ctx context.Context, ids []int64) ([]PublicIDsForForgesRow, error) {
+	rows, err := q.db.Query(ctx, publicIDsForForges, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PublicIDsForForgesRow{}
+	for rows.Next() {
+		var i PublicIDsForForgesRow
+		if err := rows.Scan(&i.ID, &i.PublicID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const publicIDsForMissions = `-- name: PublicIDsForMissions :many
 SELECT id, public_id FROM missions WHERE id = ANY($1::bigint[])
 `
@@ -6240,7 +6960,6 @@ type PublicIDsForUsersRow struct {
 }
 
 // ============ batch id -> public_id maps (API response reference expansion) ==========
-// Batch-resolve internal ids for API response reference expansion.
 func (q *Queries) PublicIDsForUsers(ctx context.Context, ids []int64) ([]PublicIDsForUsersRow, error) {
 	rows, err := q.db.Query(ctx, publicIDsForUsers, ids)
 	if err != nil {
@@ -6262,7 +6981,6 @@ func (q *Queries) PublicIDsForUsers(ctx context.Context, ids []int64) ([]PublicI
 }
 
 const reactionExists = `-- name: ReactionExists :one
-
 SELECT EXISTS(SELECT 1 FROM reactions WHERE target_type = $1 AND target_id = $2 AND user_id = $3 AND emoji = $4)
 `
 
@@ -6273,7 +6991,6 @@ type ReactionExistsParams struct {
 	Emoji      string `json:"emoji"`
 }
 
-// One generic reaction API over (target_type, target_id) — serves operations + comments.
 func (q *Queries) ReactionExists(ctx context.Context, arg ReactionExistsParams) (bool, error) {
 	row := q.db.QueryRow(ctx, reactionExists,
 		arg.TargetType,
@@ -6309,8 +7026,6 @@ type ReactionsForTargetsRow struct {
 	Users    []string `json:"users"`
 }
 
-// Reactions for a set of targets of one type: count, whether the caller reacted, and
-// reactors (oldest first, for the hover tooltip). Emoji groups ordered by first use.
 func (q *Queries) ReactionsForTargets(ctx context.Context, arg ReactionsForTargetsParams) ([]ReactionsForTargetsRow, error) {
 	rows, err := q.db.Query(ctx, reactionsForTargets, arg.UserID, arg.TargetType, arg.TargetIds)
 	if err != nil {
@@ -6457,7 +7172,6 @@ WHERE status IN ('accepted', 'starting', 'running')
 RETURNING id
 `
 
-// Requeue runs whose rover went silent (heartbeat older than the lease).
 func (q *Queries) RequeueExpiredRuns(ctx context.Context, leaseSeconds float64) ([]int64, error) {
 	rows, err := q.db.Query(ctx, requeueExpiredRuns, leaseSeconds)
 	if err != nil {
@@ -6529,7 +7243,6 @@ type ResolveFleetForMemberParams struct {
 	UserID   int64       `json:"user_id"`
 }
 
-// Resolve a fleet's public id to its internal id, asserting membership.
 func (q *Queries) ResolveFleetForMember(ctx context.Context, arg ResolveFleetForMemberParams) (int64, error) {
 	row := q.db.QueryRow(ctx, resolveFleetForMember, arg.PublicID, arg.UserID)
 	var id int64
@@ -6838,7 +7551,6 @@ type SetOperationMissionParams struct {
 	FleetID   int64 `json:"fleet_id"`
 }
 
-// Move an operation to another mission in the same fleet (new sequence required).
 func (q *Queries) SetOperationMission(ctx context.Context, arg SetOperationMissionParams) (Operation, error) {
 	row := q.db.QueryRow(ctx, setOperationMission,
 		arg.MissionID,
@@ -7168,7 +7880,6 @@ type SubOperationProgressRow struct {
 	PilotKinds      []string    `json:"pilot_kinds"`
 }
 
-// Sub-operation progress per main operation, batched for the board.
 func (q *Queries) SubOperationProgress(ctx context.Context, mainOperationIds []int64) ([]SubOperationProgressRow, error) {
 	rows, err := q.db.Query(ctx, subOperationProgress, mainOperationIds)
 	if err != nil {
@@ -7398,6 +8109,70 @@ func (q *Queries) UpdateFleet(ctx context.Context, arg UpdateFleetParams) (Fleet
 	return i, err
 }
 
+const updateForge = `-- name: UpdateForge :one
+UPDATE forges
+SET key = $1,
+    name = $2,
+    provider = $3,
+    base_url = $4,
+    repo = $5,
+    default_base_branch = $6,
+    credential_kind = $7,
+    credential = $8,
+    metadata = $9
+WHERE id = $10 AND fleet_id = $11
+RETURNING id, public_id, fleet_id, key, name, provider, base_url, repo, default_base_branch,
+    credential_kind, credential, metadata, created_at, updated_at
+`
+
+type UpdateForgeParams struct {
+	Key               string `json:"key"`
+	Name              string `json:"name"`
+	Provider          string `json:"provider"`
+	BaseUrl           string `json:"base_url"`
+	Repo              string `json:"repo"`
+	DefaultBaseBranch string `json:"default_base_branch"`
+	CredentialKind    string `json:"credential_kind"`
+	Credential        []byte `json:"credential"`
+	Metadata          []byte `json:"metadata"`
+	ID                int64  `json:"id"`
+	FleetID           int64  `json:"fleet_id"`
+}
+
+func (q *Queries) UpdateForge(ctx context.Context, arg UpdateForgeParams) (Forge, error) {
+	row := q.db.QueryRow(ctx, updateForge,
+		arg.Key,
+		arg.Name,
+		arg.Provider,
+		arg.BaseUrl,
+		arg.Repo,
+		arg.DefaultBaseBranch,
+		arg.CredentialKind,
+		arg.Credential,
+		arg.Metadata,
+		arg.ID,
+		arg.FleetID,
+	)
+	var i Forge
+	err := row.Scan(
+		&i.ID,
+		&i.PublicID,
+		&i.FleetID,
+		&i.Key,
+		&i.Name,
+		&i.Provider,
+		&i.BaseUrl,
+		&i.Repo,
+		&i.DefaultBaseBranch,
+		&i.CredentialKind,
+		&i.Credential,
+		&i.Metadata,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const updateLabel = `-- name: UpdateLabel :one
 UPDATE labels
 SET name = $1, color = CASE WHEN $2::text = '' THEN color ELSE $2 END
@@ -7506,6 +8281,72 @@ func (q *Queries) UpdateOperationTags(ctx context.Context, arg UpdateOperationTa
 		arg.FleetID,
 	)
 	return err
+}
+
+const updatePullRequestSync = `-- name: UpdatePullRequestSync :one
+UPDATE pull_requests
+SET status = $1,
+    head_sha = $2,
+    mergeable = $3,
+    ci_status = $4,
+    url = CASE WHEN $5 = '' THEN url ELSE $5 END,
+    title = CASE WHEN $6 = '' THEN title ELSE $6 END,
+    last_synced_at = now()
+WHERE id = $7 AND fleet_id = $8
+RETURNING id, public_id, fleet_id, operation_id, routine_id, provider, base_url, repo, head_branch,
+    base_branch, url, title, status, number, created_by_ufo, head_sha, mergeable, ci_status,
+    metadata, created_by, created_at, updated_at, last_synced_at
+`
+
+type UpdatePullRequestSyncParams struct {
+	Status    string      `json:"status"`
+	HeadSha   string      `json:"head_sha"`
+	Mergeable pgtype.Bool `json:"mergeable"`
+	CiStatus  string      `json:"ci_status"`
+	Url       interface{} `json:"url"`
+	Title     interface{} `json:"title"`
+	ID        int64       `json:"id"`
+	FleetID   int64       `json:"fleet_id"`
+}
+
+func (q *Queries) UpdatePullRequestSync(ctx context.Context, arg UpdatePullRequestSyncParams) (PullRequest, error) {
+	row := q.db.QueryRow(ctx, updatePullRequestSync,
+		arg.Status,
+		arg.HeadSha,
+		arg.Mergeable,
+		arg.CiStatus,
+		arg.Url,
+		arg.Title,
+		arg.ID,
+		arg.FleetID,
+	)
+	var i PullRequest
+	err := row.Scan(
+		&i.ID,
+		&i.PublicID,
+		&i.FleetID,
+		&i.OperationID,
+		&i.RoutineID,
+		&i.Provider,
+		&i.BaseUrl,
+		&i.Repo,
+		&i.HeadBranch,
+		&i.BaseBranch,
+		&i.Url,
+		&i.Title,
+		&i.Status,
+		&i.Number,
+		&i.CreatedByUfo,
+		&i.HeadSha,
+		&i.Mergeable,
+		&i.CiStatus,
+		&i.Metadata,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.LastSyncedAt,
+	)
+	return i, err
 }
 
 const updateRoutine = `-- name: UpdateRoutine :one

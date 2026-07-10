@@ -10,10 +10,8 @@ import (
 )
 
 const (
-	// runQueuedChannel wakes long-poll accept requests (rover assignment).
 	runQueuedChannel = "ufo_run_queued"
-	// changedChannel wakes live UI streams on visible changes.
-	changedChannel = "ufo_changed"
+	changedChannel   = "ufo_changed"
 )
 
 type Notification struct {

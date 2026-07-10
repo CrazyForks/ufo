@@ -68,7 +68,6 @@ func newTestServer(t *testing.T) *httptest.Server {
 
 func newTestServerWithNotifier(t *testing.T) (*httptest.Server, *Server) {
 	t.Helper()
-	// Tests may run without a stable JWT key; allow ephemeral signing.
 	t.Setenv("UFO_HUB_JWT_ALLOW_EPHEMERAL", "1")
 	url := database.HubTestURL()
 	pool := newTestPool(t)
@@ -215,7 +214,6 @@ func assertAuthCookieAttrs(t *testing.T, setCookies []string) {
 	}
 }
 
-// Personal fleet + Launch Bay + cookies; also logout → login and session remint.
 func TestSignupReadyForOperations(t *testing.T) {
 	ts := newTestServer(t)
 	jar, _ := cookiejar.New(nil)
@@ -683,6 +681,57 @@ func TestSkillCatalogOwnerAdminOnlyAndValidatesFiles(t *testing.T) {
 	}
 }
 
+func TestForgeOwnerAdminOnlyAndStripsSecretFields(t *testing.T) {
+	ts := newTestServer(t)
+	owner := signup(t, ts, "forge-owner")
+	member := signup(t, ts, "forge-member")
+	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "ForgeFleet"})
+	fq := field(t, fb, "id")
+	joinFleet(t, ts, owner, member, fq, "member")
+
+	body := map[string]any{
+		"fleet_id":        fq,
+		"key":             "core",
+		"name":            "Core",
+		"provider":        "github",
+		"repo":            "org/core",
+		"credential_kind": "rover_env",
+		"credential":      map[string]any{"name": "UFO_ROVER_FORGE_TOKEN", "token": "ghp_should_not_store"},
+	}
+	if code, b := do(t, member, "POST", ts.URL+"/v1/forges", "", body); code != http.StatusForbidden {
+		t.Fatalf("member create forge = %d, want 403 (%s)", code, b)
+	}
+	code, created := do(t, owner, "POST", ts.URL+"/v1/forges", "", body)
+	if code != http.StatusCreated {
+		t.Fatalf("create forge: %d %s", code, created)
+	}
+	if strings.Contains(string(created), "ghp_should_not_store") || strings.Contains(string(created), `"token"`) {
+		t.Fatalf("forge response leaked secret field: %s", created)
+	}
+	if field(t, created, "key") != "core" || field(t, created, "provider") != "github" {
+		t.Fatalf("created forge: %s", created)
+	}
+	forgeID := field(t, created, "id")
+	if code, b := do(t, member, "PATCH", ts.URL+"/v1/forges/"+forgeID, "", map[string]any{
+		"key": "core", "provider": "github", "repo": "org/core", "name": "Nope",
+	}); code != http.StatusForbidden {
+		t.Fatalf("member update forge = %d, want 403 (%s)", code, b)
+	}
+	if code, b := do(t, member, "DELETE", testFleetFilteredURL(ts.URL, fq, "/forges/"+forgeID), "", nil); code != http.StatusForbidden {
+		t.Fatalf("member delete forge = %d, want 403 (%s)", code, b)
+	}
+	code, listed := do(t, member, "GET", testFleetFilteredURL(ts.URL, fq, "/forges"), "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("member list forges: %d %s", code, listed)
+	}
+	if strings.Contains(string(listed), "ghp_should_not_store") {
+		t.Fatalf("list leaked token: %s", listed)
+	}
+	if code, b := do(t, owner, "DELETE", testFleetFilteredURL(ts.URL, fq, "/forges/"+forgeID), "", nil); code != http.StatusNoContent {
+		t.Fatalf("owner delete forge: %d %s", code, b)
+	}
+}
+
 func TestUserCanRenameSelf(t *testing.T) {
 	ts := newTestServer(t)
 	client := signup(t, ts, "old-name")
@@ -953,7 +1002,6 @@ func TestConcurrentInvariants(t *testing.T) {
 	})
 
 	t.Run("one active run", func(t *testing.T) {
-		// A claude-capable rover so dispatch succeeds (else the operation blocks).
 		_, tb := do(t, owner, "POST", ts.URL+"/v1/enrollment-codes", "", map[string]any{"fleet_id": fq, "name": "r"})
 		_, _ = do(t, &http.Client{}, "POST", ts.URL+"/v1/rovers", field(t, tb, "code"), map[string]any{"name": "r", "auto_tags": []string{"pilot:claude"}})
 		_, mb := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fq, "name": "M", "key": "CONC"})
@@ -1026,7 +1074,6 @@ func TestOwnerOrAdminGatingAndTokenMasking(t *testing.T) {
 	fleet := field(t, b, "id")
 	fq := fleet
 
-	// A second user joins as a plain member via invite → accept.
 	member := signup(t, ts, "member")
 	var meEmail string
 	if _, mb := do(t, member, "GET", ts.URL+"/v1/users/me", "", nil); true {
@@ -1045,7 +1092,6 @@ func TestOwnerOrAdminGatingAndTokenMasking(t *testing.T) {
 		t.Fatalf("accept invite: %d %s", code, b)
 	}
 
-	// Owner can create an enrollment code (and sees the full value once).
 	code, b = do(t, owner, "POST", ts.URL+"/v1/enrollment-codes", "", map[string]any{"fleet_id": fq, "name": "rover"})
 	if code != http.StatusCreated {
 		t.Fatalf("owner create enrollment code: %d %s", code, b)
@@ -1081,7 +1127,6 @@ func TestOwnerOrAdminGatingAndTokenMasking(t *testing.T) {
 		}
 	}
 
-	// Owner listing must mask the code (no full secret on the wire).
 	_, lb := do(t, owner, "GET", testFleetFilteredURL(ts.URL, fq, "/enrollment-codes"), "", nil)
 	if strings.Contains(string(lb), fullCode) {
 		t.Errorf("enrollment code listing leaked the full code: %s", lb)
@@ -1163,7 +1208,6 @@ func TestRoverRunOwnership(t *testing.T) {
 		t.Fatalf("rover B accept = %d, want 204 (%s)", code, b)
 	}
 
-	// Rover A accepts the run.
 	code, cb := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", roverA, nil)
 	if code != http.StatusOK {
 		t.Fatalf("rover A accept: %d %s", code, cb)
@@ -1176,11 +1220,9 @@ func TestRoverRunOwnership(t *testing.T) {
 		t.Fatalf("operation_created_at missing or invalid: %v (%s)", err, cb)
 	}
 
-	// Rover B (did not accept) must not be able to change the run's state.
 	if code, b := do(t, &http.Client{}, "PATCH", ts.URL+"/v1/runs/"+runID, roverB, map[string]string{"status": "running"}); code != http.StatusNotFound {
 		t.Errorf("rover B set-state = %d, want 404 (%s)", code, b)
 	}
-	// Rover A (the owner of the run) can.
 	if code, b := do(t, &http.Client{}, "PATCH", ts.URL+"/v1/runs/"+runID, roverA, map[string]string{"status": "running"}); code != http.StatusOK && code != http.StatusNoContent {
 		t.Errorf("rover A set-state = %d, want ok (%s)", code, b)
 	}
@@ -1566,14 +1608,12 @@ func TestTenantIsolation(t *testing.T) {
 	_, mb := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fq, "name": "M", "key": "M"})
 	mission := field(t, mb, "id")
 
-	// Assigning an operation to a non-member must be rejected.
 	if code, b := do(t, owner, "POST", ts.URL+"/v1/operations", "", map[string]any{
 		"fleet_id": fq, "title": "t", "body": "", "mission_id": mission, "assignee_type": "user", "assignee_id": outsiderID,
 	}); code != http.StatusBadRequest {
 		t.Errorf("assign operation to outsider = %d, want 400 (%s)", code, b)
 	}
 
-	// Adding a non-member to a crew must be rejected.
 	_, cb := do(t, owner, "POST", ts.URL+"/v1/crews", "", map[string]string{"fleet_id": fq, "name": "C"})
 	crew := field(t, cb, "id")
 	if code, b := do(t, owner, "PUT", ts.URL+"/v1/crews/"+crew+"/members/user/"+outsiderID, "", map[string]string{}); code != http.StatusBadRequest {
@@ -2149,9 +2189,8 @@ func TestRoutinePulseSkipsWhenLoopOperationOpen(t *testing.T) {
 		"metadata": map[string]any{
 			"trigger": map[string]any{"kind": "manual"},
 			"operation": map[string]any{
-				"assignee":          map[string]any{"type": "pilot", "id": "claude"},
-				"start_immediately": true,
-				"skip_if_active":    true,
+				"assignee": map[string]any{"type": "pilot", "id": "claude"},
+				"pulse":    map[string]any{"start_immediately": true, "skip_if_active": true},
 			},
 		},
 	})
@@ -2194,10 +2233,8 @@ func TestRoutineRePulseOnOperationClose(t *testing.T) {
 		"metadata": map[string]any{
 			"trigger": map[string]any{"kind": "manual"},
 			"operation": map[string]any{
-				"assignee":          map[string]any{"type": "pilot", "id": "claude"},
-				"start_immediately": true,
-				"skip_if_active":    true,
-				"re_pulse_on_close": true,
+				"assignee": map[string]any{"type": "pilot", "id": "claude"},
+				"pulse":    map[string]any{"start_immediately": true, "skip_if_active": true, "re_pulse_on_close": true},
 			},
 		},
 	})
@@ -2215,7 +2252,6 @@ func TestRoutineRePulseOnOperationClose(t *testing.T) {
 		t.Fatalf("accept = %d %s", code, accept)
 	}
 	runID := field(t, accept, "id")
-	// Pilot finishes and closes the op → re-pulse should open the next loop iteration.
 	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+runID+"/result", rover, map[string]any{
 		"status": "succeeded", "operation_status": "done",
 	}); code != http.StatusNoContent {
@@ -2229,18 +2265,15 @@ func TestRoutineRePulseOnOperationClose(t *testing.T) {
 	if op2 == "" || op2 == op1 {
 		t.Fatalf("expected a new operation after re-pulse, got op1=%q op2=%q accept=%s", op1, op2, accept2)
 	}
-	// Continuity: new op should relate to the previous one.
 	code, detail2 := do(t, owner, "GET", ts.URL+"/v1/operations/"+op2, "", nil)
 	if code != http.StatusOK {
 		t.Fatalf("get op2 = %d %s", code, detail2)
 	}
 	if !strings.Contains(string(detail2), op1) && !strings.Contains(string(detail2), "Continues from") && !strings.Contains(string(detail2), "relates") {
-		// relations list or system comment should mention continuity
 		if !strings.Contains(string(detail2), "previous_operation_id") && !strings.Contains(strings.ToLower(string(detail2)), "continues") {
 			t.Fatalf("expected continuity link/comment on re-pulsed op: %s", detail2)
 		}
 	}
-	// Open second op: another pulse should skip (skip_if_active).
 	code, skip := do(t, owner, "POST", ts.URL+"/v1/pulses", "", map[string]string{"routine_id": routine})
 	if code != http.StatusCreated || field(t, skip, "status") != "skipped" {
 		t.Fatalf("manual pulse while open = %d %s, want skipped", code, skip)
@@ -2250,22 +2283,20 @@ func TestRoutineRePulseOnOperationClose(t *testing.T) {
 func TestRoutineAutoCommitDefersRePulseUntilCommitSucceeds(t *testing.T) {
 	ts := newTestServer(t)
 	owner := signup(t, ts, "auto-commit-loop")
-	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Self-dev"})
+	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Loop"})
 	fq := field(t, fb, "id")
 	_, tb := do(t, owner, "POST", ts.URL+"/v1/enrollment-codes", "", map[string]any{"fleet_id": fq, "name": "r"})
 	_, eb := do(t, &http.Client{}, "POST", ts.URL+"/v1/rovers", field(t, tb, "code"), map[string]any{"name": "r", "auto_tags": []string{"pilot:claude"}})
 	rover := field(t, eb, "token")
 	_, mb := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fq, "name": "M", "key": "M"})
 	code, rb := do(t, owner, "POST", ts.URL+"/v1/routines", "", map[string]any{
-		"fleet_id": fq, "title": "self-dev", "body": "iterate UFO", "mission_id": field(t, mb, "id"),
+		"fleet_id": fq, "title": "loop", "body": "iterate continuously", "mission_id": field(t, mb, "id"),
 		"metadata": map[string]any{
 			"trigger": map[string]any{"kind": "manual"},
 			"operation": map[string]any{
-				"assignee":           map[string]any{"type": "pilot", "id": "claude"},
-				"start_immediately":  true,
-				"skip_if_active":     true,
-				"re_pulse_on_close":  true,
-				"auto_commit_branch": "dev-auto",
+				"assignee":    map[string]any{"type": "pilot", "id": "claude"},
+				"pulse":       map[string]any{"start_immediately": true, "skip_if_active": true, "re_pulse_on_close": true},
+				"auto_commit": map[string]any{"branch": "feature/auto"},
 			},
 		},
 	})
@@ -2282,20 +2313,40 @@ func TestRoutineAutoCommitDefersRePulseUntilCommitSucceeds(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("accept = %d %s", code, accept)
 	}
-	if got := field(t, accept, "worktree_base_ref"); got != "dev-auto" {
-		t.Fatalf("worktree_base_ref = %q, want dev-auto (%s)", got, accept)
+	if got := field(t, accept, "worktree_base_ref"); got != "feature/auto" {
+		t.Fatalf("worktree_base_ref = %q, want feature/auto tip (%s)", got, accept)
 	}
-	if prompt := field(t, accept, "prompt"); !strings.Contains(prompt, "Self-development loop") || !strings.Contains(prompt, "dev-auto") {
-		t.Fatalf("accept prompt missing self-dev instructions: %s", prompt)
+	if got := field(t, accept, "worktree_fallback_ref"); got != defaultPullRequestBaseBranch {
+		t.Fatalf("worktree_fallback_ref = %q, want %s ship base (%s)", got, defaultPullRequestBaseBranch, accept)
+	}
+	if got := field(t, accept, "auto_commit_branch"); got != "feature/auto" {
+		t.Fatalf("auto_commit_branch = %q, want feature/auto (%s)", got, accept)
+	}
+	if prompt := field(t, accept, "prompt"); !strings.Contains(prompt, "Unattended loop") || !strings.Contains(prompt, "feature/auto") {
+		t.Fatalf("accept prompt missing unattended-loop instructions: %s", prompt)
+	}
+	if strings.Contains(field(t, accept, "prompt"), "self-dev") || strings.Contains(field(t, accept, "prompt"), "Self-dev") || strings.Contains(field(t, accept, "prompt"), "self-development") {
+		t.Fatalf("prompt must not use internal self-dev nickname: %s", field(t, accept, "prompt"))
+	}
+	var acceptMeta map[string]any
+	if err := json.Unmarshal(accept, &acceptMeta); err != nil {
+		t.Fatalf("decode accept: %v", err)
+	}
+	if v, _ := acceptMeta["can_propose_sub_operations"].(bool); !v {
+		t.Fatalf("pilot unattended loop should allow sub-ops, can_propose=%v (%s)", acceptMeta["can_propose_sub_operations"], accept)
+	}
+	if prompt := field(t, accept, "prompt"); !strings.Contains(prompt, "@@UFO_SUB_OPERATIONS@@") {
+		t.Fatalf("pilot unattended prompt should prefer split when allowed: %s", prompt)
+	}
+	if prompt := field(t, accept, "prompt"); !strings.Contains(prompt, "Iteration 1") {
+		t.Fatalf("first unattended accept should seed iteration 1: %s", prompt)
 	}
 	runID := field(t, accept, "id")
-	// Non-empty diff artifact is required to pin a worktree for source actions.
 	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+runID+"/artifacts", rover, map[string]any{
 		"kind": "diff", "name": "git.diff", "content": "diff --git a/x b/x\n+hello\n",
 	}); code != http.StatusCreated && code != http.StatusOK {
 		t.Fatalf("upload diff artifact = %d %s", code, b)
 	}
-	// Finish as done: should queue auto-commit and NOT re-pulse yet.
 	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+runID+"/result", rover, map[string]any{
 		"status": "succeeded", "operation_status": "done",
 	}); code != http.StatusNoContent {
@@ -2323,8 +2374,8 @@ func TestRoutineAutoCommitDefersRePulseUntilCommitSucceeds(t *testing.T) {
 	if detailBody.Operation.Status != "done" {
 		t.Fatalf("op status = %q, want done", detailBody.Operation.Status)
 	}
-	if len(detailBody.SourceActions) == 0 || detailBody.SourceActions[0].Kind != "commit_to_branch" || detailBody.SourceActions[0].BranchName != "dev-auto" {
-		t.Fatalf("expected queued commit_to_branch dev-auto, got %+v", detailBody.SourceActions)
+	if len(detailBody.SourceActions) == 0 || detailBody.SourceActions[0].Kind != "commit_to_branch" || detailBody.SourceActions[0].BranchName != "feature/auto" {
+		t.Fatalf("expected queued commit_to_branch feature/auto, got %+v", detailBody.SourceActions)
 	}
 	if detailBody.SourceActions[0].Status != "queued" && detailBody.SourceActions[0].Status != "accepted" {
 		t.Fatalf("auto-commit status = %q", detailBody.SourceActions[0].Status)
@@ -2332,20 +2383,17 @@ func TestRoutineAutoCommitDefersRePulseUntilCommitSucceeds(t *testing.T) {
 	if v, _ := detailBody.SourceActions[0].Metadata["re_pulse_on_success"].(bool); !v {
 		t.Fatalf("expected re_pulse_on_success metadata, got %+v", detailBody.SourceActions[0].Metadata)
 	}
-	// No second loop op yet.
 	code, acceptPending := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
 	if code == http.StatusOK {
 		t.Fatalf("expected no re-pulse before auto-commit succeeds, got accept %s", acceptPending)
 	}
-	// Rover completes auto-commit → re-pulse should open next iteration.
 	actionID := detailBody.SourceActions[0].ID
-	// Accept the source action first if still queued.
 	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/source-actions/accept", rover, nil); code != http.StatusOK && code != http.StatusNoContent {
 		t.Fatalf("accept source action = %d %s", code, b)
 	}
 	if code, b := do(t, &http.Client{}, "PATCH", ts.URL+"/v1/source-actions/"+actionID, rover, map[string]any{
-		"status": "succeeded", "branch_name": "dev-auto", "commit_sha": "abc123",
-		"message":  "committed self-dev iteration",
+		"status": "succeeded", "branch_name": "feature/auto", "commit_sha": "abc123",
+		"message":  "committed loop iteration",
 		"metadata": map[string]any{"had_changes": true, "re_pulse_on_success": true},
 	}); code != http.StatusOK {
 		t.Fatalf("complete source action = %d %s", code, b)
@@ -2358,8 +2406,40 @@ func TestRoutineAutoCommitDefersRePulseUntilCommitSucceeds(t *testing.T) {
 	if op2 == "" || op2 == op1 {
 		t.Fatalf("expected new operation after auto-commit re-pulse, op1=%q op2=%q", op1, op2)
 	}
-	if got := field(t, accept2, "worktree_base_ref"); got != "dev-auto" {
-		t.Fatalf("next iteration worktree_base_ref = %q, want dev-auto", got)
+	if got := field(t, accept2, "worktree_base_ref"); got != "feature/auto" {
+		t.Fatalf("next iteration worktree_base_ref = %q, want feature/auto tip", got)
+	}
+	if got := field(t, accept2, "worktree_fallback_ref"); got != defaultPullRequestBaseBranch {
+		t.Fatalf("next iteration worktree_fallback_ref = %q, want %s", got, defaultPullRequestBaseBranch)
+	}
+}
+
+func TestPlainAcceptOmitsWorktreeShipRefs(t *testing.T) {
+	ts := newTestServer(t)
+	owner := signup(t, ts, "plain-worktree-refs")
+	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Plain"})
+	fq := field(t, fb, "id")
+	_, tb := do(t, owner, "POST", ts.URL+"/v1/enrollment-codes", "", map[string]any{"fleet_id": fq, "name": "r"})
+	_, eb := do(t, &http.Client{}, "POST", ts.URL+"/v1/rovers", field(t, tb, "code"), map[string]any{"name": "r", "auto_tags": []string{"pilot:claude"}})
+	rover := field(t, eb, "token")
+	_, mb := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fq, "name": "M", "key": "M"})
+	code, ob := do(t, owner, "POST", ts.URL+"/v1/operations", "", map[string]any{
+		"fleet_id": fq, "title": "plain op", "mission_id": field(t, mb, "id"),
+		"assignee_type": "pilot", "assignee_id": "claude",
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("create op = %d %s", code, ob)
+	}
+	code, accept := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
+	if code != http.StatusOK {
+		t.Fatalf("accept = %d %s", code, accept)
+	}
+	for _, key := range []string{
+		"worktree_base_ref", "worktree_fallback_ref", "worktree_refresh_ref", "worktree_base_sync", "auto_commit_branch",
+	} {
+		if got := field(t, accept, key); got != "" {
+			t.Fatalf("plain op accept %s = %q, want empty (no auto-commit gate) (%s)", key, got, accept)
+		}
 	}
 }
 
@@ -2428,9 +2508,8 @@ func TestRoutineRePulseDisabledNoAutoPulse(t *testing.T) {
 		"metadata": map[string]any{
 			"trigger": map[string]any{"kind": "manual"},
 			"operation": map[string]any{
-				"assignee":          map[string]any{"type": "pilot", "id": "claude"},
-				"start_immediately": true,
-				"re_pulse_on_close": false,
+				"assignee": map[string]any{"type": "pilot", "id": "claude"},
+				"pulse":    map[string]any{"start_immediately": true, "re_pulse_on_close": false},
 			},
 		},
 	})
@@ -2446,7 +2525,6 @@ func TestRoutineRePulseDisabledNoAutoPulse(t *testing.T) {
 	if code, b := do(t, owner, "PATCH", ts.URL+"/v1/operations/"+op1, "", map[string]any{"status": "done"}); code != http.StatusOK {
 		t.Fatalf("close = %d %s", code, b)
 	}
-	// No second operation should appear for this routine.
 	_, list := do(t, owner, "GET", testFleetFilteredURL(ts.URL, fq, "/operations"), "", nil)
 	var ops []map[string]any
 	if err := json.Unmarshal(list, &ops); err != nil {
@@ -2470,9 +2548,8 @@ func TestRoutineRePulseRespectsSchedulePause(t *testing.T) {
 		"metadata": map[string]any{
 			"trigger": map[string]any{"kind": "schedule", "cron": "@hourly", "enabled": true},
 			"operation": map[string]any{
-				"assignee":          map[string]any{"type": "pilot", "id": "claude"},
-				"start_immediately": true,
-				"re_pulse_on_close": true,
+				"assignee": map[string]any{"type": "pilot", "id": "claude"},
+				"pulse":    map[string]any{"start_immediately": true, "re_pulse_on_close": true},
 			},
 		},
 	})
@@ -2480,7 +2557,6 @@ func TestRoutineRePulseRespectsSchedulePause(t *testing.T) {
 		t.Fatalf("create = %d %s", code, rb)
 	}
 	routine := field(t, rb, "id")
-	// Force a first pulse via manual API still works for schedule routines.
 	code, first := do(t, owner, "POST", ts.URL+"/v1/pulses", "", map[string]string{"routine_id": routine})
 	if code != http.StatusCreated || field(t, first, "status") != "succeeded" {
 		t.Fatalf("first pulse = %d %s", code, first)
@@ -2510,9 +2586,8 @@ func TestRoutineRePulseFailureSignals(t *testing.T) {
 		"metadata": map[string]any{
 			"trigger": map[string]any{"kind": "manual"},
 			"operation": map[string]any{
-				"assignee":          map[string]any{"type": "pilot", "id": "claude"},
-				"start_immediately": false,
-				"re_pulse_on_close": true,
+				"assignee": map[string]any{"type": "pilot", "id": "claude"},
+				"pulse":    map[string]any{"start_immediately": false, "re_pulse_on_close": true},
 			},
 		},
 	})
@@ -2525,20 +2600,17 @@ func TestRoutineRePulseFailureSignals(t *testing.T) {
 		t.Fatalf("pulse = %d %s", code, first)
 	}
 	op1 := field(t, first, "operation_id")
-	// Point the routine at an invalid user assignee so the next pulse fails.
 	code, _ = do(t, owner, "PATCH", ts.URL+"/v1/routines/"+routine, "", map[string]any{
 		"mission_id": field(t, mb, "id"), "title": "will fail re-pulse", "body": "work",
 		"metadata": map[string]any{
 			"trigger": map[string]any{"kind": "manual"},
 			"operation": map[string]any{
-				"assignee":          map[string]any{"type": "user", "id": "00000000-0000-4000-8000-000000000099"},
-				"start_immediately": false,
-				"re_pulse_on_close": true,
+				"assignee": map[string]any{"type": "user", "id": "00000000-0000-4000-8000-000000000099"},
+				"pulse":    map[string]any{"start_immediately": false, "re_pulse_on_close": true},
 			},
 		},
 	})
 	if code != http.StatusOK && code != http.StatusBadRequest {
-		// Invalid assignee may be rejected at PATCH; force via direct pulse after corrupting metadata in DB.
 	}
 	if code == http.StatusBadRequest {
 		ctx := context.Background()
@@ -2547,7 +2619,7 @@ func TestRoutineRePulseFailureSignals(t *testing.T) {
 			t.Fatalf("connect: %v", err)
 		}
 		defer conn.Close(ctx)
-		meta := `{"trigger":{"kind":"manual"},"operation":{"assignee":{"type":"user","id":"00000000-0000-4000-8000-000000000099"},"start_immediately":false,"re_pulse_on_close":true,"skip_if_active":true}}`
+		meta := `{"trigger":{"kind":"manual"},"operation":{"assignee":{"type":"user","id":"00000000-0000-4000-8000-000000000099"},"pulse":{"start_immediately":false,"re_pulse_on_close":true,"skip_if_active":true}}}`
 		if _, err := conn.Exec(ctx, `UPDATE routines SET metadata = $1::jsonb WHERE public_id = $2`, meta, routine); err != nil {
 			t.Fatalf("corrupt metadata: %v", err)
 		}
@@ -2998,7 +3070,6 @@ func TestFleetBudgetBlocksAccept(t *testing.T) {
 	owner := signup(t, ts, "fleet-budget-owner")
 	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Capped fleet"})
 	fq := field(t, fb, "id")
-	// Fleet-level max_runs=1 (tenant policy), rover unlimited.
 	if code, b := do(t, owner, "PATCH", ts.URL+"/v1/fleets/"+fq, "", map[string]any{
 		"metadata": map[string]any{"budget": map[string]any{"period": "calendar_week", "max_runs": 1}},
 	}); code != http.StatusOK {
@@ -3163,7 +3234,6 @@ func TestRoverDonationBudgetMaxRunsAndUsage(t *testing.T) {
 	}); code != http.StatusNoContent {
 		t.Fatalf("token budget: %d %s", code, b)
 	}
-	// First run already reported 15 tokens this period — accept must block.
 	do(t, owner, "POST", ts.URL+"/v1/operations", "", map[string]any{
 		"fleet_id": fq, "title": "third", "mission_id": mission,
 		"assignee_type": "pilot", "assignee_id": "claude",

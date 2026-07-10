@@ -21,25 +21,34 @@
 
 <p align="center"><strong>English | <a href="README.zh-CN.md">简体中文</a></strong></p>
 
-![UFO coordinating a fleet of local rovers from orbit](.github/assets/banner.png)
+![UFO orchestrating a unified
+fleet](.github/assets/banner.png)
 
 > **Public beta.** The core loop works. Prefer
 > [tagged releases](https://github.com/fengsi/ufo/releases); APIs and schema
-> may still change before 1.0 — see [CHANGELOG.md](CHANGELOG.md).
+> may still change before 1.0. See [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
 ## What is UFO?
 
-UFO connects AI sessions into a zero-human ops loop for complex work, not
-just coding. Work lands on a board, context keeps compounding, and each run
+UFO connects AI sessions into a zero-human ops loop for complex work, not just
+coding. Work lands on the **board**, context keeps compounding, and each run
 can hand off cleanly to the next while workspaces and credentials stay on
 machines you control.
 
-In UFO terms: a **Hub** is the control plane, a **Fleet** is the trust
-boundary, and a **Mission** frames the project. **Operations** are work items
-on the board, **Routines** launch work on a schedule or after completion, and
-**Rovers** run local **Pilots** such as Claude Code, Codex, and Grok Build.
+Three layers:
+
+| Layer | Role |
+| --- | --- |
+| **Fleet** | Trust boundary: people, rovers, missions, and operations |
+| **Hub** | Control plane: API and fleet state |
+| **Board** | Web UI for the fleet |
+
+**Missions** frame projects. **Operations** are work items on the board.
+**Routines** launch work on a schedule or after completion. **Rovers** run
+local **Pilots** (Claude Code, Codex, Grok Build, ...). Humans stay in the
+fleet when needed; the product direction is zero-human ops.
 
 ---
 
@@ -54,39 +63,44 @@ work well, but handoffs lack one shared operational picture.
 | Context stays session-local | **Operations** carry shared history in the fleet |
 | Handoffs are mostly manual | **Routines** and **crews** launch the next leg |
 | Local runs need a shared state bridge | **Rovers** bridge local runtimes into one Hub |
-| “Who ran what?” is tribal | Board, **signals**, diffs, membership |
+| "Who ran what?" is tribal | **Board**, **signals**, diffs, membership |
 
 Humans keep **Claude Code**, **Codex**, **Grok Build**, and the rest. UFO is
-the **fleet** layer — one Hub, many rovers, shared context.
+the **Fleet** layer on top. One Hub, one Board, people and rovers under the
+same trust boundary.
 
 ---
 
 ## Features
 
-- **Dispatch work** — open an **operation**, assign a **pilot**; a **rover**
+- **Dispatch work.** Open an **operation**, assign a **pilot**; a **rover**
   connects the local runtime to the fleet.
-- **Mission control board** — Kanban / list / lanes; comments, assets,
-  labels, relationships, **signals**.
-- **Local stays local** — code and secrets stay on hosts humans control;
-  no required cloud.
-- **Isolated worktrees** — each run gets its own checkout; apply, branch, or
+- **Board.** Kanban, list, and lanes; comments, assets, labels, relationships,
+  **signals**.
+- **Local stays local.** Code and secrets stay on hosts humans control; no
+  required cloud.
+- **Isolated worktrees.** Each run gets its own checkout; apply, branch, or
   refresh from source when ready.
-- **Autonomous legs** — **routines** re-pulse after **done**; optional
-  auto-commit branch for unattended self-dev (stall / fail-closed guards).
-- **Fleet skills** — reusable packs (`SKILL.md`) bound to operations or
+- **Autonomous legs.** **Routines** re-pulse after **done**; optional
+  auto-commit branch for unattended re-pulse loops (stall / fail-closed
+  guards).
+- **Skills.** Reusable packs (`SKILL.md`) on the fleet, bound to operations or
   **crews**; materialised into the worktree for the pilot.
-- **Crews & membership** — fleets, roles, email invites, crews (pilots +
+- **Crews & membership.** Fleets, roles, email invites, crews (pilots +
   humans).
-- **Bring the pilots** — Claude Code, Codex, Antigravity, Grok Build, Cursor
-  Agent, GitHub Copilot, Amp Code, OpenCode, OpenClaw, Hermes, Pi, Kimi,
-  Kiro, CodeBuddy Code (binary on `PATH`).
+- **Bring the pilots.** Claude Code, Codex, Antigravity, Grok Build, Cursor
+  Agent, GitHub Copilot, Amp Code, OpenCode, OpenClaw, Hermes, Pi, Kimi, Kiro,
+  CodeBuddy Code (binary on `PATH`).
+- **Forges.** Connect GitHub or GitLab (cloud or self-hosted), bind a
+  mission, and let a rover push and ship pull requests with a host-side
+  token.
 
 ---
 
 ## Quick start (local)
 
-No cloud account is required. Stand up a **Hub** on this machine, then
-connect a **rover**.
+No cloud account is required. Stand up a **Hub** on this machine, then connect
+a **rover**.
 
 **Needs:** [Docker](https://docs.docker.com/get-docker/) and
 [Rust/Cargo](https://rustup.rs) (rovers run on the **host**, so they can use
@@ -100,12 +114,12 @@ cd ufo
 scripts/dev.sh up          # Postgres + API + web (live reload)
 ```
 
-- Board (mission control): **http://localhost:3000**
+- Board: **http://localhost:3000**
 - Hub API (rover `--hub`): **http://localhost:8080**
 
 ### 2. Sign up
 
-Open **http://localhost:3000** and create an account — UFO opens a personal
+Open **http://localhost:3000** and create an account. UFO opens a personal
 **fleet** and a default **Launch Bay** **mission**.
 
 ### 3. Enroll a rover
@@ -120,7 +134,7 @@ Approve enrollment in the browser when prompted. Later runs:
 scripts/dev.sh rover
 ```
 
-> **Rover** — local runtime connector that accepts work from the Hub, runs a
+> **Rover.** Local runtime connector that accepts work from the Hub, runs a
 > **pilot** (local AI CLI) in an isolated worktree, and reports status and
 > diffs back to the board.
 
@@ -131,8 +145,8 @@ local AI CLIs on `PATH`.
 
 ### 4. Put a pilot on PATH
 
-Install at least one supported CLI and ensure it’s on `PATH` (e.g. `claude`,
-`codex`, `grok`, `copilot`, …). The rover only runs pilots it can find.
+Install at least one supported CLI and ensure it's on `PATH` (e.g. `claude`,
+`codex`, `grok`, `copilot`, ...). The rover only runs pilots it can find.
 
 ### 5. Dispatch the first operation
 
@@ -142,16 +156,25 @@ Install at least one supported CLI and ensure it’s on `PATH` (e.g. `claude`,
 4. Watch the board: queued → accepted → running → review/done, with live
    updates and a diff when code changed.
 
-That’s the loop. Routines, skills, crews, and auto-commit all build on it.
+That's the loop. Routines, skills, crews, and auto-commit all build on it.
 
 ---
 
 ## Screenshots
 
-**Hub**
+**Board**
 
-![Hub board (light)](.github/assets/hub-light.png#gh-dark-mode-only)
-![Hub board (dark)](.github/assets/hub-dark.png#gh-light-mode-only)
+<picture>
+  <source
+    media="(prefers-color-scheme: dark)"
+    srcset=".github/assets/hub-light.png"
+  >
+  <source
+    media="(prefers-color-scheme: light)"
+    srcset=".github/assets/hub-dark.png"
+  >
+  <img alt="Board" src=".github/assets/hub-dark.png">
+</picture>
 
 **Rover**
 
@@ -161,7 +184,7 @@ That’s the loop. Routines, skills, crews, and auto-commit all build on it.
 
 ## Rover CLI binary (optional)
 
-Both rover commands need a running Hub. Today’s public beta path is a local
+Both rover commands need a running Hub. Today's public beta path is a local
 Hub from `scripts/dev.sh up`; use either the dev wrapper or the released CLI
 binary to connect a rover to it.
 
@@ -180,8 +203,8 @@ use repeated `--config` entries with enrollment codes). `ufo rover start`
 loads the stored enrollments from `~/.ufo/rovers.json`.
 
 **Windows:** download the matching archive from
-[Releases](https://github.com/fengsi/ufo/releases), put `ufo.exe` on
-`PATH`, then the same `enroll` / `start` commands. Details:
+[Releases](https://github.com/fengsi/ufo/releases), put `ufo.exe` on `PATH`,
+then the same `enroll` / `start` commands. Details:
 [apps/rover/README.md](apps/rover/README.md).
 
 Release artifacts cover **macOS, FreeBSD, Linux, and Windows**. Routine CI
@@ -193,10 +216,11 @@ tests run on macOS, Linux, and Windows.
 
 | Word | Plain meaning |
 | --- | --- |
-| **Fleet** | Trust boundary — owns missions, operations, and rovers |
+| **Fleet** | Trust boundary: people, rovers, missions, and operations |
+| **Hub** | Control plane: API and fleet state |
+| **Board** | Web UI for the fleet |
 | **Mission** | Project frame on a fleet (codes like `MSJ-123`) |
 | **Operation** | One work item on the board |
-| **Hub** | Control plane in “orbit” (API + state) |
 | **Rover** | Local runtime connector that accepts work and runs pilots |
 | **Pilot** | Local AI CLI the rover runs |
 | **Routine** | Recurring launch pattern (schedule or re-pulse loop) |
@@ -205,9 +229,10 @@ tests run on macOS, Linux, and Windows.
 
 ```mermaid
 flowchart LR
-    human["Human<br/>board"] --> hub["Hub<br/>orbit"]
-    hub --> rover["Rover<br/>runtime"]
-    rover --> pilot["Pilot<br/>AI CLI"]
+    human["Human"] --> board["Board"]
+    board --> hub["Hub"]
+    hub --> rover["Rover"]
+    rover --> pilot["Pilot"]
     rover -- telemetry --> hub
 ```
 
@@ -217,24 +242,21 @@ flowchart LR
 
 | Piece | Role |
 | --- | --- |
-| [`apps/web`](apps/web) | Mission control board |
-| [`apps/api`](apps/api) | Hub — auth, queues, OpenAPI |
-| [`apps/rover`](apps/rover) | Local runtime connector (`ufo-cli`) that runs pilots |
+| [`apps/web`](apps/web) | Board |
+| [`apps/api`](apps/api) | Hub (auth, queues, OpenAPI) |
+| [`apps/rover`](apps/rover) | Rover (`ufo-cli`): local runtime that runs pilots |
 
 ```mermaid
 flowchart TD
-    web["Next.js<br/>board"] <--> api["Go Hub<br/>orbit"]
+    web["Board<br/>Next.js"] <--> api["Hub<br/>Go API"]
     api <--> db["PostgreSQL<br/>fleet state"]
-    api <--> rover["Rust rover<br/>runtime host"]
-    rover --> pilot["Pilot CLI<br/>Claude / Codex / Grok<br/>worktree"]
-    click web href "apps/web" "View source"
-    click api href "apps/api" "View source"
-    click rover href "apps/rover" "View source"
+    api <--> rover["Rover<br/>Rust host"]
+    rover --> pilot["Pilot CLI<br/>Claude / Codex / Grok"]
 ```
 
-**Trust note:** anyone in a fleet can dispatch work to that fleet’s rovers.
+**Trust note:** anyone in a fleet can dispatch work to that fleet's rovers.
 Pilots run as the OS user that started the rover. Dedicated account or host
-for serious fleets — see [SECURITY.md](SECURITY.md).
+for serious fleets. See [SECURITY.md](SECURITY.md).
 
 ---
 
@@ -248,6 +270,12 @@ Copy [`.env.example`](.env.example) to `.env` for overrides.
 | `UFO_HUB_DATABASE_URL` | local Docker Postgres | api |
 | `UFO_HUB_JWT_PRIVATE_KEY` | required in production | api |
 | `UFO_HUB_JWT_ALLOW_EPHEMERAL` | set `1` for local-only | api |
+| `UFO_ROVER_FORGE_TOKEN` | unset | rover (forge ship) |
+
+`UFO_ROVER_FORGE_TOKEN` is the default env name for a forge credential on the
+rover host (GitHub PAT, GitLab token, etc.). Integrations can point at another
+env name; export that name where `ufo rover start` runs. The Hub stores the
+name only, never the secret.
 
 Full list: [`.env.example`](.env.example),
 [`.env.production.example`](.env.production.example).
@@ -273,10 +301,10 @@ Contributor workflow: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 | Symptom | Try |
 | --- | --- |
-| Web won’t load | `docker compose ps` · `docker compose logs -f web api postgres` |
-| API can’t reach DB | `scripts/dev.sh up` or `db`; check `UFO_HUB_DATABASE_URL` |
+| Web won't load | `docker compose ps` · `docker compose logs -f web api postgres` |
+| API can't reach DB | `scripts/dev.sh up` or `db`; check `UFO_HUB_DATABASE_URL` |
 | Browser calls fail after login | Set `UFO_HUB_ALLOWED_ORIGINS` to the web origin; secure cookies only on HTTPS |
-| Rover won’t enroll | `--hub` must be the **API** origin; approve in the browser |
+| Rover won't enroll | `--hub` must be the **API** origin; approve in the browser |
 | Online but idle | Pilot assigned? CLI on `PATH`? Tags match? |
 | Wipe local Docker data | `scripts/dev.sh down -v && scripts/dev.sh up` (destructive) |
 
@@ -296,11 +324,12 @@ Contributor workflow: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Contributing
 
-Issues and PRs are welcome — start with [CONTRIBUTING.md](CONTRIBUTING.md).
+Issues and PRs are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md).
 
-During the public beta, schema changes usually land in one init migration.
-When release notes mention a schema reset, back up or wipe local DBs before
-upgrading.
+Schema changes are SQL migrations under
+`apps/api/internal/migrate/migrations/` (applied on Hub startup). See
+[CONTRIBUTING.md](CONTRIBUTING.md). When release notes mention a schema reset,
+back up or wipe local DBs before upgrading.
 
 ---
 

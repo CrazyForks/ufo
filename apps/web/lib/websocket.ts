@@ -1,4 +1,3 @@
-// Current-user live event client over WebSocket.
 
 export type WebSocketEvent = {
   type: string;

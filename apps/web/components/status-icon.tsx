@@ -1,7 +1,6 @@
 import { cn } from "@/lib/utils";
 import { STATUS_TEXT } from "@/lib/types";
 
-// Status glyphs share a compact 14x14 viewBox.
 export function StatusIcon({ status, className, subOperations = false }: { status: string; className?: string; subOperations?: boolean }) {
   const color = STATUS_TEXT[status] ?? "text-muted-foreground";
   return (

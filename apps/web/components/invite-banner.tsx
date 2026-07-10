@@ -10,7 +10,6 @@ function roleLabel(t: (key: MessageKey) => string, role: string) {
   return key === "members.role.owner" || key === "members.role.admin" || key === "members.role.member" ? t(key) : role;
 }
 
-// Pending invitations addressed to the signed-in user (matched by email).
 export function InviteBanner() {
   const app = useApp();
   const t = useT();

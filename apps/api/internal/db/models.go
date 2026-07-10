@@ -104,6 +104,53 @@ type Fleet struct {
 	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
 }
 
+type Forge struct {
+	ID                int64              `json:"id"`
+	PublicID          pgtype.UUID        `json:"public_id"`
+	FleetID           int64              `json:"fleet_id"`
+	Key               string             `json:"key"`
+	Name              string             `json:"name"`
+	Provider          string             `json:"provider"`
+	BaseUrl           string             `json:"base_url"`
+	Repo              string             `json:"repo"`
+	DefaultBaseBranch string             `json:"default_base_branch"`
+	CredentialKind    string             `json:"credential_kind"`
+	Credential        []byte             `json:"credential"`
+	Metadata          []byte             `json:"metadata"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+}
+
+type ForgeAction struct {
+	ID            int64              `json:"id"`
+	PublicID      pgtype.UUID        `json:"public_id"`
+	FleetID       int64              `json:"fleet_id"`
+	OperationID   pgtype.Int8        `json:"operation_id"`
+	RoutineID     pgtype.Int8        `json:"routine_id"`
+	PullRequestID pgtype.Int8        `json:"pull_request_id"`
+	RoverID       pgtype.Int8        `json:"rover_id"`
+	Kind          string             `json:"kind"`
+	Status        string             `json:"status"`
+	Provider      string             `json:"provider"`
+	BaseUrl       string             `json:"base_url"`
+	Repo          string             `json:"repo"`
+	HeadBranch    string             `json:"head_branch"`
+	BaseBranch    string             `json:"base_branch"`
+	CommitSha     string             `json:"commit_sha"`
+	Title         string             `json:"title"`
+	Body          string             `json:"body"`
+	RemoteUrl     string             `json:"remote_url"`
+	RemoteNumber  pgtype.Int4        `json:"remote_number"`
+	ResultSha     string             `json:"result_sha"`
+	Message       string             `json:"message"`
+	Metadata      []byte             `json:"metadata"`
+	CreatedBy     pgtype.Int8        `json:"created_by"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+	AcceptedAt    pgtype.Timestamptz `json:"accepted_at"`
+	FinishedAt    pgtype.Timestamptz `json:"finished_at"`
+}
+
 type Invitation struct {
 	ID           int64              `json:"id"`
 	PublicID     pgtype.UUID        `json:"public_id"`
@@ -145,6 +192,13 @@ type Mission struct {
 	Metadata     []byte             `json:"metadata"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+}
+
+type MissionForge struct {
+	MissionID int64              `json:"mission_id"`
+	ForgeID   int64              `json:"forge_id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
 }
 
 type Operation struct {
@@ -195,17 +249,29 @@ type OperationRelation struct {
 }
 
 type PullRequest struct {
-	ID          int64              `json:"id"`
-	PublicID    pgtype.UUID        `json:"public_id"`
-	OperationID int64              `json:"operation_id"`
-	Url         string             `json:"url"`
-	Title       string             `json:"title"`
-	Status      string             `json:"status"`
-	Number      pgtype.Int4        `json:"number"`
-	Metadata    []byte             `json:"metadata"`
-	CreatedBy   pgtype.Int8        `json:"created_by"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	ID           int64              `json:"id"`
+	PublicID     pgtype.UUID        `json:"public_id"`
+	FleetID      int64              `json:"fleet_id"`
+	OperationID  pgtype.Int8        `json:"operation_id"`
+	RoutineID    pgtype.Int8        `json:"routine_id"`
+	Provider     string             `json:"provider"`
+	BaseUrl      string             `json:"base_url"`
+	Repo         string             `json:"repo"`
+	HeadBranch   string             `json:"head_branch"`
+	BaseBranch   string             `json:"base_branch"`
+	Url          string             `json:"url"`
+	Title        string             `json:"title"`
+	Status       string             `json:"status"`
+	Number       pgtype.Int4        `json:"number"`
+	CreatedByUfo bool               `json:"created_by_ufo"`
+	HeadSha      string             `json:"head_sha"`
+	Mergeable    pgtype.Bool        `json:"mergeable"`
+	CiStatus     string             `json:"ci_status"`
+	Metadata     []byte             `json:"metadata"`
+	CreatedBy    pgtype.Int8        `json:"created_by"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+	LastSyncedAt pgtype.Timestamptz `json:"last_synced_at"`
 }
 
 type Pulse struct {

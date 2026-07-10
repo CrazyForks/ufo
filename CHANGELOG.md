@@ -5,7 +5,32 @@ All notable changes to UFO are recorded here.
 > **Public beta:** before 1.0, contracts may still evolve. Prefer tagged
 > releases; release notes call out anything that needs a careful upgrade.
 
-## [0.6.2] — 2026-07-06
+## [0.7.0] - 2026-07-09
+
+Public beta feature release: **GitHub and GitLab forges**, optional unattended
+ship onto a branch or pull request, and migration checksums. Schema expands
+for forges; start fresh or migrate a 0.6.x Hub DB manually. Rover CLI
+**0.7.0+**.
+
+### Forges
+- Owners and admins can connect GitHub or GitLab (including self-hosted API
+  bases), bind forges to missions, and manage them from Integrations.
+- Rovers push branches and open, update, and merge pull or merge requests with
+  host-side credentials; tokens are not stored in the Hub.
+- Operation detail shows richer pull-request chips (number, branches, CI /
+  status when available).
+
+### Unattended loops & ship
+- Routines can auto-commit, re-pulse, and optionally ship (open a PR, wait for
+  CI, merge to a ship base such as `orbit`, or integrate without a PR).
+- Continuous loops keep iterating on progress; ship is opt-in and aimed at
+  stall or one-shot land, not every successful auto-commit.
+
+### Hub
+- Migration checksums on Hub startup so applied SQL cannot drift under this
+  release.
+
+## [0.6.2] - 2026-07-06
 
 Public beta patch release. Rover CLI **0.6.2+**.
 
@@ -15,7 +40,7 @@ Public beta patch release. Rover CLI **0.6.2+**.
 ### CI
 - Removed cross-platform rover binary builds from routine CI.
 
-## [0.6.1] — 2026-07-05
+## [0.6.1] - 2026-07-05
 
 Public beta feature release. Adds email-first onboarding, reusable skills and
 repo context, usage and budget controls, safer unattended routine loops, and
@@ -54,11 +79,11 @@ manually. Rover CLI **0.6.1+**.
   configured for a loop.
 - Follow-up operations keep a visible link to the previous operation, so loop
   progress is easier to audit.
-- Self-development loops can commit successful work to a branch before
+- Unattended re-pulse loops can commit successful work to a branch before
   starting the next iteration.
 - Loops pause when repeated auto-commits make no changes, preventing silent
   churn.
-- Captain and self-development prompts now split, consolidate, and verify loop
+- Captain and unattended-loop prompts now split, consolidate, and verify loop
   work more consistently between iterations.
 
 ### Pilot handoff & rover
@@ -66,7 +91,7 @@ manually. Rover CLI **0.6.1+**.
   human to review the operation.
 - The CLI now gives clearer branch and worktree status after automated
   updates.
-- Successful self-development loop commits can clean up their operation
+- Successful unattended-loop commits can clean up their operation
   worktrees automatically.
 - Fixed the outpost TUI home screen so dense rover, unit, operation, and event
   lists stay inside the terminal frame instead of scrolling the banner away.
@@ -79,12 +104,12 @@ manually. Rover CLI **0.6.1+**.
   routine, toast, and auth surfaces.
 - Added usage summaries and budget editors for fleet, mission, and rover
   scopes.
-- Added settings for skills and routine controls for self-development loops.
+- Added skill settings and routine controls for unattended re-pulse loops.
 
 ### Docs
 - Added a Simplified Chinese README.
 
-## [0.5.0] — 2026-07-01
+## [0.5.0] - 2026-07-01
 
 Public beta feature release. Advances the database schema and API surface
 (profiles, mission moves, pulses, and related Hub work). Prefer a fresh local
@@ -106,7 +131,7 @@ Hub DB when coming from 0.3.x. Rover CLI **0.5.0+**.
   the current display code (`KEY-seq`).
 - Stacked **fleet → mission → operation** context into pilot prompts; on
   conflict, operation wins over mission over fleet. After a mission move,
-  context always comes from the operation’s **current** mission.
+  context always comes from the operation's **current** mission.
 - Tightened run lifecycle fences around **`finalized_at`**, accept/result
   paths, and status updates so cancel, heartbeat, and requeue respect terminal
   runs.
@@ -130,7 +155,7 @@ Hub DB when coming from 0.3.x. Rover CLI **0.5.0+**.
   **VERSION** banner metric, hub host shown as `host (version)`, and layout
   fixes so list and detail rows fit the frame without spurious ellipsis.
 - Standardized ready-for-operation wording in docs and status copy (away from
-  “listening” as the product verb).
+  "listening" as the product verb).
 
 ### Protocol & deploy
 - Expanded the OpenAPI contract for users, operations, assets, routines,
@@ -139,7 +164,7 @@ Hub DB when coming from 0.3.x. Rover CLI **0.5.0+**.
 - Added Hub database URL helpers and refreshed configuration examples for
   deploy.
 
-## [0.3.1] — 2026-06-30
+## [0.3.1] - 2026-06-30
 
 Rover patch release.
 
@@ -151,7 +176,7 @@ Rover patch release.
 - Switched Homebrew install and upgrade guidance to the fully qualified
   `fengsi/ufo/ufo-cli` formula.
 
-## [0.3.0] — 2026-06-30
+## [0.3.0] - 2026-06-30
 
 Public beta release. This release substantially reshapes the database schema,
 API surface, rover protocol, and storage model; back up 0.2.x data before
@@ -290,7 +315,7 @@ upgrading, and expect to reset dev databases or migrate them manually.
   assets, routines, source worktrees, storage backends, installation,
   supported platforms, and the new configuration surface.
 
-## [0.2.1] — 2026-06-22
+## [0.2.1] - 2026-06-22
 
 Cleanup release.
 
@@ -300,7 +325,7 @@ Cleanup release.
 ### Protocol & development
 - Cleaned up the API contract and web types, and trimmed internal queries.
 
-## [0.2.0] — 2026-06-22
+## [0.2.0] - 2026-06-22
 
 Second public preview release.
 
@@ -336,7 +361,7 @@ Second public preview release.
 - Bumped preview app versions to 0.2.0 and refreshed Go, npm, and Cargo
   dependencies for release.
 
-## [0.1.0] — 2026-06-15
+## [0.1.0] - 2026-06-15
 
 First public preview release.
 
@@ -385,7 +410,7 @@ First public preview release.
 
 ### Real-time & reliability
 - WebSocket UI streaming and rover long-poll, both backed by PostgreSQL
-  `LISTEN/NOTIFY` — operations, runs, rover presence/tags, and signals
+  `LISTEN/NOTIFY`, operations, runs, rover presence/tags, and signals
   update without client polling or an extra broker.
 - Orphaned-run lease sweeper requeues silent runs.
 - Database-enforced single active run per operation prevents duplicate pilot

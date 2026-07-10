@@ -107,23 +107,23 @@ export function signupHref(next?: string): string {
 
 export function useRedirectIfAuthenticated(): void {
   useEffect(() => {
-    let cancelled = false;
+    let canceled = false;
     (async () => {
       try {
         const res = await fetch("/api/v1/users/me", {
           cache: "no-store",
           credentials: "same-origin",
         });
-        if (cancelled || !res.ok) return;
+        if (canceled || !res.ok) return;
         const fleetId = await resolveActiveFleetId(readStoredFleetId());
-        if (cancelled) return;
+        if (canceled) return;
         if (fleetId) setStoredFleet(fleetId);
         redirectAfterAuth(undefined, fleetId);
       } catch {
       }
     })();
     return () => {
-      cancelled = true;
+      canceled = true;
     };
   }, []);
 }

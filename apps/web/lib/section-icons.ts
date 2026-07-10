@@ -1,4 +1,4 @@
-import { Antenna, Network, Orbit, Repeat2, Route, SlidersHorizontal, Users, type LucideIcon } from "lucide-react";
+import { Antenna, Network, Orbit, Plug, Repeat2, Route, SlidersHorizontal, Users, type LucideIcon } from "lucide-react";
 import type { Section } from "@/lib/routes";
 
 export const SECTION_ICONS: Record<Section, LucideIcon> = {
@@ -8,5 +8,6 @@ export const SECTION_ICONS: Record<Section, LucideIcon> = {
   crews: Network,
   rovers: Antenna,
   members: Users,
+  integrations: Plug,
   settings: SlidersHorizontal,
 };

@@ -49,5 +49,5 @@ UFO can run generated work on your machines, so the trust boundary matters:
 ## Scope
 
 The Hub is multi-instance-safe and fleet-scopes every query, but UFO does
-**not** sandbox pilot execution — that is the host owner's responsibility per
+**not** sandbox pilot execution, that is the host owner's responsibility per
 the trust model above.
