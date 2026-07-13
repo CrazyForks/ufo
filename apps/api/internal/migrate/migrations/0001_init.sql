@@ -358,12 +358,13 @@ CREATE TABLE forge_actions (
     rover_id        bigint,
     kind            text NOT NULL
                     CHECK (kind IN (
-                        'push_branch',
+                        'update_base_branch',
+                        'push_head_branch',
+                        'merge_head_into_base_branch',
                         'open_pull_request',
                         'sync_pull_request',
                         'merge_pull_request',
-                        'ensure_base_branch',
-                        'integrate_into_base'
+                        'discover_pull_request'
                     )),
     status          text NOT NULL DEFAULT 'queued'
                     CHECK (status IN ('queued', 'accepted', 'succeeded', 'failed', 'conflicted')),

@@ -306,6 +306,16 @@ UPDATE operations SET metadata = sqlc.arg(metadata) WHERE id = sqlc.arg(id) AND 
 UPDATE operations SET metadata = metadata || sqlc.arg(metadata)::jsonb
 WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id);
 
+-- name: MergeOperationLoopMetadata :exec
+UPDATE operations
+SET metadata = jsonb_set(
+    metadata,
+    '{loop}',
+    COALESCE(metadata->'loop', '{}'::jsonb) || sqlc.arg(loop_metadata)::jsonb,
+    true
+)
+WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id);
+
 -- name: SetOperationWorktreeNameIfMissing :one
 UPDATE operations
 SET metadata = metadata || jsonb_build_object('worktree_name', sqlc.arg(worktree_name)::text)
@@ -1580,6 +1590,22 @@ RETURNING id, public_id, fleet_id, operation_id, routine_id, pull_request_id, ro
     provider, base_url, repo, head_branch, base_branch, commit_sha, title, body, remote_url,
     remote_number, result_sha, message, metadata, created_by, created_at, updated_at, accepted_at, finished_at;
 
+-- name: HeartbeatForgeAction :one
+UPDATE forge_actions
+SET accepted_at = now()
+WHERE public_id = sqlc.arg(public_id)
+  AND fleet_id = sqlc.arg(fleet_id)
+  AND rover_id = sqlc.arg(rover_id)
+  AND status = 'accepted'
+RETURNING id;
+
+-- name: GetForgeActionStatusForRover :one
+SELECT status
+FROM forge_actions
+WHERE public_id = sqlc.arg(public_id)
+  AND fleet_id = sqlc.arg(fleet_id)
+  AND rover_id = sqlc.arg(rover_id);
+
 -- name: ListForgeActionsForOperation :many
 SELECT id, public_id, fleet_id, operation_id, routine_id, pull_request_id, rover_id, kind, status,
     provider, base_url, repo, head_branch, base_branch, commit_sha, title, body, remote_url,
@@ -1600,6 +1626,36 @@ INSERT INTO pull_requests (
     sqlc.arg(url), sqlc.arg(title), sqlc.arg(status), sqlc.arg(number), sqlc.arg(created_by_ufo),
     sqlc.arg(head_sha), sqlc.arg(mergeable), sqlc.arg(ci_status), sqlc.arg(metadata), sqlc.arg(created_by)
 )
+RETURNING id, public_id, fleet_id, operation_id, routine_id, provider, base_url, repo, head_branch,
+    base_branch, url, title, status, number, created_by_ufo, head_sha, mergeable, ci_status,
+    metadata, created_by, created_at, updated_at, last_synced_at;
+
+-- name: GetPullRequestByForgeIdentity :one
+SELECT id, public_id, fleet_id, operation_id, routine_id, provider, base_url, repo, head_branch,
+    base_branch, url, title, status, number, created_by_ufo, head_sha, mergeable, ci_status,
+    metadata, created_by, created_at, updated_at, last_synced_at
+FROM pull_requests
+WHERE fleet_id = sqlc.arg(fleet_id)
+  AND provider = sqlc.arg(provider)
+  AND base_url = sqlc.arg(base_url)
+  AND repo = sqlc.arg(repo)
+  AND number = sqlc.arg(number);
+
+-- name: RelinkPullRequestToOperation :one
+UPDATE pull_requests
+SET operation_id = sqlc.arg(operation_id),
+    routine_id = sqlc.arg(routine_id),
+    head_branch = sqlc.arg(head_branch),
+    base_branch = sqlc.arg(base_branch),
+    url = CASE WHEN sqlc.arg(url) = '' THEN url ELSE sqlc.arg(url) END,
+    title = CASE WHEN sqlc.arg(title) = '' THEN title ELSE sqlc.arg(title) END,
+    status = sqlc.arg(status),
+    head_sha = sqlc.arg(head_sha),
+    mergeable = sqlc.arg(mergeable),
+    ci_status = sqlc.arg(ci_status),
+    metadata = metadata || sqlc.arg(metadata)::jsonb,
+    last_synced_at = now()
+WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id)
 RETURNING id, public_id, fleet_id, operation_id, routine_id, provider, base_url, repo, head_branch,
     base_branch, url, title, status, number, created_by_ufo, head_sha, mergeable, ci_status,
     metadata, created_by, created_at, updated_at, last_synced_at;

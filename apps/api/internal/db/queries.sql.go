@@ -3013,6 +3013,27 @@ func (q *Queries) GetForge(ctx context.Context, arg GetForgeParams) (Forge, erro
 	return i, err
 }
 
+const getForgeActionStatusForRover = `-- name: GetForgeActionStatusForRover :one
+SELECT status
+FROM forge_actions
+WHERE public_id = $1
+  AND fleet_id = $2
+  AND rover_id = $3
+`
+
+type GetForgeActionStatusForRoverParams struct {
+	PublicID pgtype.UUID `json:"public_id"`
+	FleetID  int64       `json:"fleet_id"`
+	RoverID  pgtype.Int8 `json:"rover_id"`
+}
+
+func (q *Queries) GetForgeActionStatusForRover(ctx context.Context, arg GetForgeActionStatusForRoverParams) (string, error) {
+	row := q.db.QueryRow(ctx, getForgeActionStatusForRover, arg.PublicID, arg.FleetID, arg.RoverID)
+	var status string
+	err := row.Scan(&status)
+	return status, err
+}
+
 const getForgeByPublicID = `-- name: GetForgeByPublicID :one
 SELECT id, public_id, fleet_id, key, name, provider, base_url, repo, default_base_branch,
     credential_kind, credential, metadata, created_at, updated_at
@@ -3390,6 +3411,63 @@ func (q *Queries) GetPendingAssetByPublicID(ctx context.Context, publicID pgtype
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+	)
+	return i, err
+}
+
+const getPullRequestByForgeIdentity = `-- name: GetPullRequestByForgeIdentity :one
+SELECT id, public_id, fleet_id, operation_id, routine_id, provider, base_url, repo, head_branch,
+    base_branch, url, title, status, number, created_by_ufo, head_sha, mergeable, ci_status,
+    metadata, created_by, created_at, updated_at, last_synced_at
+FROM pull_requests
+WHERE fleet_id = $1
+  AND provider = $2
+  AND base_url = $3
+  AND repo = $4
+  AND number = $5
+`
+
+type GetPullRequestByForgeIdentityParams struct {
+	FleetID  int64       `json:"fleet_id"`
+	Provider string      `json:"provider"`
+	BaseUrl  string      `json:"base_url"`
+	Repo     string      `json:"repo"`
+	Number   pgtype.Int4 `json:"number"`
+}
+
+func (q *Queries) GetPullRequestByForgeIdentity(ctx context.Context, arg GetPullRequestByForgeIdentityParams) (PullRequest, error) {
+	row := q.db.QueryRow(ctx, getPullRequestByForgeIdentity,
+		arg.FleetID,
+		arg.Provider,
+		arg.BaseUrl,
+		arg.Repo,
+		arg.Number,
+	)
+	var i PullRequest
+	err := row.Scan(
+		&i.ID,
+		&i.PublicID,
+		&i.FleetID,
+		&i.OperationID,
+		&i.RoutineID,
+		&i.Provider,
+		&i.BaseUrl,
+		&i.Repo,
+		&i.HeadBranch,
+		&i.BaseBranch,
+		&i.Url,
+		&i.Title,
+		&i.Status,
+		&i.Number,
+		&i.CreatedByUfo,
+		&i.HeadSha,
+		&i.Mergeable,
+		&i.CiStatus,
+		&i.Metadata,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.LastSyncedAt,
 	)
 	return i, err
 }
@@ -3976,6 +4054,29 @@ type HeartbeatParams struct {
 
 func (q *Queries) Heartbeat(ctx context.Context, arg HeartbeatParams) (int64, error) {
 	row := q.db.QueryRow(ctx, heartbeat, arg.ID, arg.FleetID)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const heartbeatForgeAction = `-- name: HeartbeatForgeAction :one
+UPDATE forge_actions
+SET accepted_at = now()
+WHERE public_id = $1
+  AND fleet_id = $2
+  AND rover_id = $3
+  AND status = 'accepted'
+RETURNING id
+`
+
+type HeartbeatForgeActionParams struct {
+	PublicID pgtype.UUID `json:"public_id"`
+	FleetID  int64       `json:"fleet_id"`
+	RoverID  pgtype.Int8 `json:"rover_id"`
+}
+
+func (q *Queries) HeartbeatForgeAction(ctx context.Context, arg HeartbeatForgeActionParams) (int64, error) {
+	row := q.db.QueryRow(ctx, heartbeatForgeAction, arg.PublicID, arg.FleetID, arg.RoverID)
 	var id int64
 	err := row.Scan(&id)
 	return id, err
@@ -6659,6 +6760,28 @@ func (q *Queries) MergeMissionMetadata(ctx context.Context, arg MergeMissionMeta
 	return err
 }
 
+const mergeOperationLoopMetadata = `-- name: MergeOperationLoopMetadata :exec
+UPDATE operations
+SET metadata = jsonb_set(
+    metadata,
+    '{loop}',
+    COALESCE(metadata->'loop', '{}'::jsonb) || $1::jsonb,
+    true
+)
+WHERE id = $2 AND fleet_id = $3
+`
+
+type MergeOperationLoopMetadataParams struct {
+	LoopMetadata []byte `json:"loop_metadata"`
+	ID           int64  `json:"id"`
+	FleetID      int64  `json:"fleet_id"`
+}
+
+func (q *Queries) MergeOperationLoopMetadata(ctx context.Context, arg MergeOperationLoopMetadataParams) error {
+	_, err := q.db.Exec(ctx, mergeOperationLoopMetadata, arg.LoopMetadata, arg.ID, arg.FleetID)
+	return err
+}
+
 const mergeOperationMetadata = `-- name: MergeOperationMetadata :exec
 UPDATE operations SET metadata = metadata || $1::jsonb
 WHERE id = $2 AND fleet_id = $3
@@ -7050,6 +7173,87 @@ func (q *Queries) ReactionsForTargets(ctx context.Context, arg ReactionsForTarge
 		return nil, err
 	}
 	return items, nil
+}
+
+const relinkPullRequestToOperation = `-- name: RelinkPullRequestToOperation :one
+UPDATE pull_requests
+SET operation_id = $1,
+    routine_id = $2,
+    head_branch = $3,
+    base_branch = $4,
+    url = CASE WHEN $5 = '' THEN url ELSE $5 END,
+    title = CASE WHEN $6 = '' THEN title ELSE $6 END,
+    status = $7,
+    head_sha = $8,
+    mergeable = $9,
+    ci_status = $10,
+    metadata = metadata || $11::jsonb,
+    last_synced_at = now()
+WHERE id = $12 AND fleet_id = $13
+RETURNING id, public_id, fleet_id, operation_id, routine_id, provider, base_url, repo, head_branch,
+    base_branch, url, title, status, number, created_by_ufo, head_sha, mergeable, ci_status,
+    metadata, created_by, created_at, updated_at, last_synced_at
+`
+
+type RelinkPullRequestToOperationParams struct {
+	OperationID pgtype.Int8 `json:"operation_id"`
+	RoutineID   pgtype.Int8 `json:"routine_id"`
+	HeadBranch  string      `json:"head_branch"`
+	BaseBranch  string      `json:"base_branch"`
+	Url         interface{} `json:"url"`
+	Title       interface{} `json:"title"`
+	Status      string      `json:"status"`
+	HeadSha     string      `json:"head_sha"`
+	Mergeable   pgtype.Bool `json:"mergeable"`
+	CiStatus    string      `json:"ci_status"`
+	Metadata    []byte      `json:"metadata"`
+	ID          int64       `json:"id"`
+	FleetID     int64       `json:"fleet_id"`
+}
+
+func (q *Queries) RelinkPullRequestToOperation(ctx context.Context, arg RelinkPullRequestToOperationParams) (PullRequest, error) {
+	row := q.db.QueryRow(ctx, relinkPullRequestToOperation,
+		arg.OperationID,
+		arg.RoutineID,
+		arg.HeadBranch,
+		arg.BaseBranch,
+		arg.Url,
+		arg.Title,
+		arg.Status,
+		arg.HeadSha,
+		arg.Mergeable,
+		arg.CiStatus,
+		arg.Metadata,
+		arg.ID,
+		arg.FleetID,
+	)
+	var i PullRequest
+	err := row.Scan(
+		&i.ID,
+		&i.PublicID,
+		&i.FleetID,
+		&i.OperationID,
+		&i.RoutineID,
+		&i.Provider,
+		&i.BaseUrl,
+		&i.Repo,
+		&i.HeadBranch,
+		&i.BaseBranch,
+		&i.Url,
+		&i.Title,
+		&i.Status,
+		&i.Number,
+		&i.CreatedByUfo,
+		&i.HeadSha,
+		&i.Mergeable,
+		&i.CiStatus,
+		&i.Metadata,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.LastSyncedAt,
+	)
+	return i, err
 }
 
 const removeCrewPilot = `-- name: RemoveCrewPilot :exec

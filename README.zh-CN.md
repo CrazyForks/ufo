@@ -3,7 +3,7 @@
 <p align="center"><strong>开源的无人值守自动化平台</strong> 🦾🩶</p>
 
 <p align="center">
-把 AI 会话串成无人值守的工作闭环：保留上下文，分派工作，并跨迭代交接！
+将 AI 会话编排为无人值守的工作闭环：持续沉淀上下文，分派工作，并跨迭代交接！
 </p>
 
 <p align="center">
@@ -11,7 +11,7 @@
   <a href="https://github.com/fengsi/ufo/releases"><img alt="Release" src="https://img.shields.io/github/v/release/fengsi/ufo?style=flat-square"></a>
   <a href="https://crates.io/crates/ufo-cli"><img alt="crates.io" src="https://img.shields.io/crates/v/ufo-cli?style=flat-square"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/fengsi/ufo?style=flat-square"></a>
-  <a href="CHANGELOG.md"><img alt="Status" src="https://img.shields.io/badge/status-beta-blue?style=flat-square"></a>
+  <img alt="Status" src="https://img.shields.io/badge/status-beta-blue?style=flat-square">
   <a href="apps/api/go.mod"><img alt="Go" src="https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go&style=flat-square"></a>
   <a href="apps/web/package.json"><img alt="Node" src="https://img.shields.io/badge/Node-20.9%2B-5FA04E?logo=node.js&style=flat-square"></a>
   <a href="apps/rover/Cargo.toml"><img alt="Rust" src="https://img.shields.io/badge/Rust-2024-B7410E?logo=rust&style=flat-square"></a>
@@ -24,15 +24,15 @@
 fleet](.github/assets/banner.png)
 
 > **公开 beta。** 核心闭环已经可用。建议使用
-> [tagged releases](https://github.com/fengsi/ufo/releases)；1.0 之前API 和 schema
-> 仍可能变化，升级注意事项见 [CHANGELOG.md](CHANGELOG.md)。
+> [tagged releases](https://github.com/fengsi/ufo/releases)；1.0 之前 API 和
+> schema 仍可能变化，升级注意事项见 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
 
 ## UFO 是什么？
 
-UFO 把多个 AI 会话串成一个面向复杂工作的无人值守闭环：不只写代码，也能承接日常业务和系统操作。工作落在 **看板** 上，上下文会持续沉淀，每次迭代
-都能干净交接；项目数据与凭证继续留在你自己的机器上。
+UFO 将 AI 会话编排为面向复杂工作的无人值守闭环，不只写代码。工作落在 **看板** 上，上下文会持续沉淀，每次迭代都能干净交接；工作区与凭证继续留在
+你自己的机器上。
 
 三层结构：
 
@@ -42,23 +42,22 @@ UFO 把多个 AI 会话串成一个面向复杂工作的无人值守闭环：不
 | **中枢（Hub）** | 控制平面：API 与舰队状态 |
 | **看板（Board）** | 面向舰队的 Web UI |
 
-**任务（Mission）** 框定项目。**行动（Operation）** 是看板上的工作项。
-**巡航（Routine）** 按计划或在完成后触发工作。**航行器（Rover）** 在本地
-运行 **领航员（Pilot）**（Claude Code、Codex、Grok Build 等）。需要时人
-依然在舰队中；产品的方向是走向无人值守。
+**任务（Mission）** 框定项目。**行动（Operation）** 是看板上的工作项。**巡航（Routine）** 按计划或在完成后触发工作。
+**航行器（Rover）** 在本地运行 **领航员（Pilot）**（Claude Code、Codex、Grok Build 等），人类成员依然作为舰队
+的后备保障随时待命。UFO 演进的终极目标，是实现真正意义上的无人值守自动化运作。
 
 ---
 
 ## 为什么是 UFO？
 
-大多数 agent 工作流仍然分布在不同会话里：聊天标签页、终端、本地工作树和人工笔记各记一段。单次运行可以完成工作，但交接之间缺少一张统一的全局视图。
+Agent 工作流是碎片化的：上下文散落在聊天标签页、终端、本地工作树和人工笔记里。单次运行或许表现不错，但在交接时往往缺少统一的全局视角。
 
 | 独立 AI 会话 | UFO |
 | --- | --- |
 | 上下文留在各自会话里 | **行动** 在舰队里保留共享历史 |
-| 交接主要靠人手整理 | **巡航** 和 **乘组** 启动下一段工作 |
+| 任务交接高度依赖人工 | **巡航** 和 **乘组** 启动下一段工作 |
 | 本地运行缺少共享状态 | **航行器** 把本地运行环境接入同一个中枢 |
-| "谁跑了什么？"靠口口相传 | **看板**、**信号**、diff、成员关系 |
+| "谁跑了什么？"全凭口耳相传 | **看板**、**信号**、diff、成员关系 |
 
 人类继续使用 **Claude Code**、**Codex**、**Grok Build** 和其他工具。UFO 做的是 **舰队** 层。一个中枢，一张
 看板，人与航行器同属一条信任边界。
@@ -71,13 +70,14 @@ UFO 把多个 AI 会话串成一个面向复杂工作的无人值守闭环：不
 - **看板。** Kanban、列表与泳道；评论、资产、标签、关联关系与 **信号**。
 - **本地仍在本地。** 代码和密钥留在人类控制的主机上；不强制依赖云。
 - **隔离工作树。** 每次运行都有自己的检出；准备好后再应用回源码、提交到分支，或从源码刷新。
-- **自主航段。** **巡航** 在行动 **已完成** 后继续出航；可选自动提交分支，用于无人值守的再出航循环，并带停滞与失败即停防护。
+- **自主航段。** 行动 **已完成** 后，**巡航** 会自动触发并驱动下一段航程；可选开启自动提交分支做无人值守的循环流转，并内置防卡死与失败即停
+  机制。
 - **技能。** 舰队上的可复用 `SKILL.md` 包，绑定到行动或 **乘组**；执行时写入工作树给领航员使用。
 - **乘组与成员。** 舰队、角色、邮件邀请、乘组（领航员 + 人类成员）。
 - **自带领航员。** Claude Code、Codex、Antigravity、Grok Build、Cursor Agent、GitHub
   Copilot、Amp Code、OpenCode、OpenClaw、Hermes、Pi、Kimi、Kiro、CodeBuddy Code（可执行文件在
   `PATH` 上）。
-- **Forge。** 连接 GitHub 或 GitLab（云或自托管），绑定任务，由航行器在本机用令牌推送并处理合并请求。
+- **Forge。** 接入 GitHub 或 GitLab（云端或自托管）并绑定任务，航行器即可用本机令牌推送代码并处理 PR/MR。
 
 ---
 
@@ -122,17 +122,17 @@ scripts/dev.sh rover
 同一台主机上的航行器可以保存多份接入，包括接入不同中枢。启动一次航行器后，每份已保存的接入都会保持待命；按航行器配置并发单元（`units`），即可用同一套
 本地 AI CLI 同时承接多个并发行动。
 
-### 4. 把领航员放到 PATH 上
+### 4. 将领航员加入 PATH 环境变量
 
-安装至少一个受支持的 CLI，并确保它在 `PATH` 上，例如 `claude`、`codex`、`grok`、`copilot` 等。航行器只会运行它能
-找到的领航员。
+安装至少一个受支持的 CLI，并确保它在 `PATH` 上，例如 `claude`、`codex`、`grok` 等。航行器只会运行它能找到的领航员。
 
 ### 5. 派发第一个行动
 
 1. 打开一个 **任务**（舰队里的项目框架）。
 2. 放入一个 **行动**（工作项）。
 3. 指定一个 **领航员**。
-4. 看着看板流转：queued → accepted → running → review/done；过程中会有实时更新，代码变更也会显示 diff。
+4. 在看板上观察状态流转：queued → accepted → running → review/done；过程中会有实时更新，代码变更也会显示
+   diff。
 
 这就是基本闭环。巡航、技能、乘组和 auto-commit 都建立在它之上。
 
@@ -175,11 +175,11 @@ ufo rover enroll --hub http://localhost:8080
 ufo rover start
 ```
 
-要把同一台主机接入另一个中枢，再对那个中枢执行一次`ufo rover enroll`；也可以用多个带接入码的 `--config`。
+要把同一台主机接入另一个中枢，再对那个中枢执行一次 `ufo rover enroll`；也可以用多个带接入码的 `--config`。
 `ufo rover start` 会从 `~/.ufo/rovers.json` 加载已保存的接入。
 
-**Windows：** 从 [Releases](https://github.com/fengsi/ufo/releases)下载对应压缩包，把
-`ufo.exe` 放到 `PATH` 上，然后使用同样的`enroll` / `start` 命令。详情见
+**Windows：** 从 [Releases](https://github.com/fengsi/ufo/releases) 下载对应压缩包，把
+`ufo.exe` 放到 `PATH` 上，然后使用同样的 `enroll` / `start` 命令。详情见
 [apps/rover/README.md](apps/rover/README.md)。
 
 发布版本提供适用于 macOS、FreeBSD、Linux 和 Windows 的航行器可执行文件；常规 CI 只在 macOS、Linux 和
@@ -229,8 +229,8 @@ flowchart TD
     rover --> pilot["领航员 CLI<br/>Claude / Codex / Grok"]
 ```
 
-**信任说明：** 舰队里的任何成员都可以把行动派给该舰队的航行器。领航员会以启动航行器的 OS 用户身份运行。严肃舰队建议使用专用账号或主机；见
-[SECURITY.md](SECURITY.md)。
+**信任说明：** 舰队里的任何成员都可以把行动派给该舰队的航行器。领航员以启动航行器的 OS 用户权限运行。面向生产环境的舰队请使用专用账号或独立主机；详
+见 [SECURITY.md](SECURITY.md)。
 
 ---
 
@@ -244,7 +244,12 @@ flowchart TD
 | `UFO_HUB_DATABASE_URL` | local Docker Postgres | api |
 | `UFO_HUB_JWT_PRIVATE_KEY` | production 必填 | api |
 | `UFO_HUB_JWT_ALLOW_EPHEMERAL` | 本地开发可设 `1` | api |
+| `UFO_HUB_MIN_ROVER_VERSION` | 当前版本 | api |
+| `UFO_HUB_MAX_ROVER_VERSION` | 未设置 | api |
 | `UFO_ROVER_FORGE_TOKEN` | 未设置 | 航行器（forge 推送/MR） |
+
+航行器版本范围使用 semver。版本格式无效，或最大版本低于实际最小版本时，中枢会拒绝启动。航行器会等待可访问且兼容的中枢，并在重连后重新检查兼容性；中枢
+要求新版航行器时，运行 `ufo rover upgrade` 升级。
 
 `UFO_ROVER_FORGE_TOKEN` 是 forge 凭证在航行器主机上的默认环境变量名（GitHub PAT、GitLab token 等）。
 Integrations 里可改成其他名称；在运行 `ufo rover start` 的环境中导出对应变量。中枢只保存变量名，不保存密钥。
@@ -296,10 +301,10 @@ scripts/dev.sh rover enroll
 
 ## 参与贡献
 
-欢迎提交 issue 和 PR；请先阅读[CONTRIBUTING.md](CONTRIBUTING.md)。
+欢迎提交 issue 和 PR；请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-schema 变更请使用 `apps/api/internal/migrate/migrations/` 下的 SQL migration，Hub 启动时自
-动应用。详见[CONTRIBUTING.md](CONTRIBUTING.md)。若发布说明要求 schema reset，升级前请备份或清空本地 DB。
+数据库结构变更写入 `apps/api/internal/migrate/migrations/`（中枢启动时自动应用）。详见
+[CONTRIBUTING.md](CONTRIBUTING.md)。若发布说明要求重置数据库，升级前请备份或清空本地中枢数据库。
 
 ---
 

@@ -113,7 +113,7 @@ fn redact_secrets_covers_github_and_gitlab_token_shapes() {
 fn sample_forge_action(provider: &str, base_url: &str, repo: &str) -> forge::AcceptedForgeAction {
     forge::AcceptedForgeAction {
         id: "1".into(),
-        kind: "push_branch".into(),
+        kind: "push_head_branch".into(),
         provider: provider.into(),
         base_url: base_url.into(),
         repo: repo.into(),
@@ -127,10 +127,23 @@ fn sample_forge_action(provider: &str, base_url: &str, repo: &str) -> forge::Acc
         checks_commands: vec![],
         checks_timeout_seconds: 0,
         ship_base_sync: String::new(),
+        lease_seconds: 600,
         operation_id: String::new(),
         operation_worktree_name: String::new(),
         operation_created_at: String::new(),
     }
+}
+
+#[test]
+fn forge_lease_renewal_times_out_before_stale_reaccept() {
+    assert!(!forge::forge_lease_renewal_timed_out(
+        Duration::from_secs(299),
+        600
+    ));
+    assert!(forge::forge_lease_renewal_timed_out(
+        Duration::from_secs(300),
+        600
+    ));
 }
 
 #[test]
@@ -144,6 +157,69 @@ fn forge_remote_url_is_credential_free_and_scheme_aware() {
     let url = forge::remote_https_url(&gl).unwrap();
     assert_eq!(url, "http://oauth2@gitlab.example/group/proj.git");
     assert!(!url.contains("oauth2:"), "{url}");
+}
+
+#[test]
+fn forge_discover_head_sha_matches_when_required() {
+    assert!(forge::discover_head_sha_matches("", "abc"));
+    assert!(forge::discover_head_sha_matches("ABC", "abc"));
+    assert!(!forge::discover_head_sha_matches("abc", "abd"));
+    assert!(!forge::discover_head_sha_matches("abc", ""));
+}
+
+#[test]
+fn hub_protocol_uses_product_semver() {
+    assert!(hub_protocol_supported("0.7.3"));
+    assert!(hub_protocol_supported("0.8.0"));
+    assert!(hub_protocol_supported("v0.7.3"));
+    assert!(hub_protocol_supported("0.7.3+dev.abc1234"));
+    assert!(!hub_protocol_supported("0.7.2"));
+    assert!(!hub_protocol_supported("0.6.2"));
+    assert!(!hub_protocol_supported("dev"));
+    assert!(ensure_hub_protocol("0.7.3").is_ok());
+    assert!(ensure_hub_protocol("dev").is_err());
+}
+
+#[test]
+fn forge_provider_response_shapes() {
+    let gh_list = serde_json::json!({
+        "number": 12,
+        "html_url": "https://github.com/fleet/mission/pull/12",
+        "title": "operation ship",
+        "base": { "ref": "orbit" },
+        "head": { "ref": "operation/head", "sha": "abc123" }
+    });
+    let (base, head, sha) = forge::github_list_pr_identity(&gh_list);
+    assert_eq!(base, "orbit");
+    assert_eq!(head, "operation/head");
+    assert_eq!(sha, "abc123");
+    assert_eq!(
+        forge::github_pr_mergeable(&serde_json::json!({"mergeable": true})),
+        Some(true)
+    );
+    assert_eq!(
+        forge::github_pr_mergeable(&serde_json::json!({"mergeable": null})),
+        None
+    );
+
+    let gl_list = serde_json::json!({
+        "iid": 7,
+        "web_url": "https://gitlab.example/fleet/mission/-/merge_requests/7",
+        "title": "operation ship",
+        "target_branch": "orbit",
+        "source_branch": "operation/head",
+        "sha": "def456",
+        "detailed_merge_status": "mergeable"
+    });
+    let (base, head, sha) = forge::gitlab_list_mr_identity(&gl_list);
+    assert_eq!(base, "orbit");
+    assert_eq!(head, "operation/head");
+    assert_eq!(sha, "def456");
+    assert_eq!(forge::gitlab_mr_mergeable(&gl_list), Some(true));
+    assert_eq!(
+        forge::gitlab_mr_mergeable(&serde_json::json!({"detailed_merge_status": "conflict"})),
+        Some(false)
+    );
 }
 
 #[test]

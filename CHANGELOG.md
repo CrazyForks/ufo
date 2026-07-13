@@ -5,6 +5,27 @@ All notable changes to UFO are recorded here.
 > **Public beta:** before 1.0, contracts may still evolve. Prefer tagged
 > releases; release notes call out anything that needs a careful upgrade.
 
+## [0.7.3] - 2026-07-12
+
+Public beta maintenance release. Improves forge ship recovery, forge-action
+lease renewal, and Hub/Rover version compatibility. Upgrade Hub and Rover
+together; Rover CLI **0.7.3+**.
+
+### Forges
+- After ship failure, discover a unique open PR/MR on the auto-commit head
+  (branch and commit SHA when known). Recovery resumes ship (sync / CI /
+  merge); `shipped` means landed, not merely linked.
+- Rovers renew forge-action leases while working, stop before an unrenewed
+  lease can be re-accepted, and complete idempotently (including heartbeat
+  after finalization).
+
+### Hub & Rover
+- Hub enforces a rover version floor; invalid min/max rover version env
+  aborts Hub startup. Rover requires Hub version 0.7.3+ from `/healthz`
+  and waits for a reachable, compatible Hub before accepting work.
+- Hub `/healthz` `version` is product semver (release stamp or
+  `0.7.3+dev.<sha>` on source builds).
+
 ## [0.7.1] - 2026-07-10
 
 Rover patch release.

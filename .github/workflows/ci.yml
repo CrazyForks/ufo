@@ -29,9 +29,10 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: apps/api/go.mod
-      - name: Build & vet
+      - name: Format, build & vet
         working-directory: apps/api
         run: |
+          test -z "$(gofmt -l .)"
           go build ./...
           go vet ./...
       - name: Create API test database

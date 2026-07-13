@@ -4,7 +4,7 @@
 [![Build](https://img.shields.io/github/actions/workflow/status/fengsi/ufo/ci.yml?logo=github&style=flat-square)](https://github.com/fengsi/ufo/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/ufo-cli?style=flat-square)](https://crates.io/crates/ufo-cli)
 [![License](https://img.shields.io/crates/l/ufo-cli?style=flat-square)](https://github.com/fengsi/ufo/blob/main/LICENSE)
-[![Status](https://img.shields.io/badge/status-beta-blue?style=flat-square)](https://github.com/fengsi/ufo/blob/main/CHANGELOG.md)
+![Status](https://img.shields.io/badge/status-beta-blue?style=flat-square)
 [![Rust](https://img.shields.io/badge/Rust-2024-B7410E?logo=rust&style=flat-square)](https://github.com/fengsi/ufo/blob/main/apps/rover/Cargo.toml)
 
 ![UFO orchestrating a unified fleet](https://raw.githubusercontent.com/fengsi/ufo/main/.github/assets/banner.png)
@@ -33,7 +33,7 @@ The installer puts `ufo` in `~/.local/bin` by default. Override with
 `UFO_ROVER_INSTALL_DIR=/usr/local/bin`, or pin a release with:
 
 ```bash
-curl -fsSL https://getufo.dev/install.sh | UFO_ROVER_VERSION=v0.7.1 sh
+curl -fsSL https://getufo.dev/install.sh | UFO_ROVER_VERSION=v0.7.3 sh
 ```
 
 Homebrew (macOS, Linux):
@@ -57,6 +57,10 @@ Cargo fallback:
 ```bash
 cargo install ufo-cli
 ```
+
+The rover waits while its Hub is unavailable and rechecks protocol
+compatibility after reconnecting. If the Hub requires a newer rover, run
+`ufo rover upgrade` before restarting it.
 
 Rover CI runs tests on macOS, Linux, and Windows. Release CI builds archives
 for macOS, FreeBSD, Linux, and Windows. Other operating systems may work, but

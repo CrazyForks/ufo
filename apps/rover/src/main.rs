@@ -3295,7 +3295,22 @@ async fn rover_loop(
     let client = http_client();
     let hub = entry.hub.clone();
     let token = entry.token.clone();
-    if let Some(version) = fetch_hub_version(&client, &hub).await {
+    let version = loop {
+        if let Some(health) = fetch_hub_health(&client, &hub).await {
+            let version = health.version.trim().to_string();
+            match ensure_hub_protocol(&version) {
+                Ok(()) => break version,
+                Err(err) => {
+                    errline!("{err}");
+                    dashboard_rover_waiting(&dashboard, rover_id, "waiting for compatible Hub");
+                }
+            }
+        } else {
+            dashboard_rover_waiting(&dashboard, rover_id, "waiting for Hub");
+        }
+        sleep(Duration::from_secs(retry_seconds.max(1))).await;
+    };
+    if !version.is_empty() {
         dashboard_hub_version(&dashboard, rover_id, version);
     }
 
@@ -3382,6 +3397,7 @@ async fn rover_loop(
     let revoked = Arc::new(AtomicBool::new(false));
     let upgrade_required = Arc::new(AtomicBool::new(false));
     let can_auto_upgrade = Arc::new(AtomicBool::new(false));
+    let hub_incompatible = Arc::new(AtomicBool::new(false));
     tokio::spawn(stream_rover_config(
         hub.clone(),
         rover_id.to_string(),
@@ -3391,6 +3407,7 @@ async fn rover_loop(
         revoked.clone(),
         upgrade_required.clone(),
         can_auto_upgrade.clone(),
+        hub_incompatible.clone(),
         dashboard.clone(),
     ));
 
@@ -3413,8 +3430,13 @@ async fn rover_loop(
             );
             return Ok(());
         }
+        if hub_incompatible.load(Ordering::Relaxed) {
+            dashboard_rover_waiting(&dashboard, rover_id, "waiting for compatible Hub");
+            sleep(Duration::from_secs(1)).await;
+            continue;
+        }
         let permit = sem.clone().acquire_owned().await?;
-        if revoked.load(Ordering::Relaxed) {
+        if revoked.load(Ordering::Relaxed) || hub_incompatible.load(Ordering::Relaxed) {
             drop(permit);
             continue;
         }
@@ -3463,6 +3485,10 @@ async fn rover_loop(
 
         match forge::accept_forge_action(&client, &hub, &token).await {
             Ok(Some(action)) => {
+                if hub_incompatible.load(Ordering::Relaxed) {
+                    drop(permit);
+                    continue;
+                }
                 let client = client.clone();
                 let hub = hub.clone();
                 let token = token.clone();
@@ -3491,17 +3517,36 @@ async fn rover_loop(
                         &rover_id,
                         &format!("forge:{}", action.kind),
                     );
-                    let report = forge::execute_forge_action(
-                        &client,
-                        &action,
-                        operation_directory.as_deref(),
-                        source_worktree.as_deref(),
-                    )
-                    .await;
-                    if let Err(e) =
+                    let work = async {
+                        let report = forge::execute_forge_action(
+                            &client,
+                            &action,
+                            operation_directory.as_deref(),
+                            source_worktree.as_deref(),
+                        )
+                        .await;
                         forge::report_forge_action(&client, &hub, &token, &action.id, &report).await
-                    {
-                        errline!("[{rover_id}] forge report error: {e:#}");
+                    };
+                    tokio::pin!(work);
+                    let lease = forge::heartbeat_forge_action(
+                        &client,
+                        &hub,
+                        &token,
+                        &action.id,
+                        action.lease_seconds,
+                    );
+                    tokio::pin!(lease);
+                    tokio::select! {
+                        result = &mut work => {
+                            if let Err(e) = result {
+                                errline!("[{rover_id}] forge report error: {e:#}");
+                            }
+                        }
+                        result = &mut lease => {
+                            if let Err(e) = result {
+                                errline!("[{rover_id}] forge action stopped: {e:#}");
+                            }
+                        }
                     }
                     active_runs.fetch_sub(1, Ordering::Relaxed);
                     dashboard_rover_waiting(&dashboard, &rover_id, "ready");
@@ -3519,6 +3564,10 @@ async fn rover_loop(
 
         match accept_source_action(&client, &hub, &token).await {
             Ok(Some(action)) => {
+                if hub_incompatible.load(Ordering::Relaxed) {
+                    drop(permit);
+                    continue;
+                }
                 let client = client.clone();
                 let hub = hub.clone();
                 let token = token.clone();
@@ -3598,6 +3647,10 @@ async fn rover_loop(
 
         match accept_run(&client, &hub, &token).await {
             Ok(Some(run)) => {
+                if hub_incompatible.load(Ordering::Relaxed) {
+                    drop(permit);
+                    continue;
+                }
                 let client = client.clone();
                 let hub = hub.clone();
                 let token = token.clone();
@@ -4911,6 +4964,7 @@ async fn git_bytes(directory: &Path, args: &[&str]) -> Result<Vec<u8>> {
 
 async fn git_bytes_env(directory: &Path, args: &[&str], env: &[(&str, String)]) -> Result<Vec<u8>> {
     let mut cmd = Command::new("git");
+    cmd.kill_on_drop(true);
     cmd.arg("-C").arg(directory).args(args);
     for (k, v) in env {
         cmd.env(k, v);
@@ -5860,7 +5914,7 @@ async fn execute_run(
     } else {
         "failed"
     };
-    post_result(
+    let result_post = post_result(
         client,
         hub,
         token,
@@ -5874,8 +5928,15 @@ async fn execute_run(
         sub_operations.as_ref(),
         sub_operations_feedback.as_ref(),
         Some(usage),
-    )
-    .await?;
+    );
+    tokio::pin!(result_post);
+    tokio::select! {
+        result = &mut result_post => result?,
+        result = &mut lease => {
+            result?;
+            return Err(anyhow!("heartbeat stopped unexpectedly"));
+        }
+    }
     append_event(
         client,
         hub,
@@ -7474,22 +7535,42 @@ async fn post_result(
     if let Some(u) = usage {
         body["usage"] = u;
     }
-    let resp = client
-        .post(hub_url(hub, format!("runs/{run_id}/result")))
-        .bearer_auth(token)
-        .json(&body)
-        .send()
-        .await?;
-    if matches!(
-        resp.status(),
-        StatusCode::NOT_FOUND | StatusCode::UNAUTHORIZED
-    ) {
-        return Err(RunLeaseLost.into());
+    let mut backoff = 1u64;
+    loop {
+        match client
+            .post(hub_url(hub, format!("runs/{run_id}/result")))
+            .bearer_auth(token)
+            .json(&body)
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => return Ok(()),
+            Ok(resp)
+                if matches!(
+                    resp.status(),
+                    StatusCode::NOT_FOUND | StatusCode::UNAUTHORIZED
+                ) =>
+            {
+                return Err(RunLeaseLost.into());
+            }
+            Ok(resp) if resp.status() == StatusCode::UPGRADE_REQUIRED => {
+                return Err(hub_status_error("result post", resp).await);
+            }
+            Ok(resp)
+                if resp.status().is_client_error()
+                    && !matches!(
+                        resp.status(),
+                        StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS
+                    ) =>
+            {
+                return Err(anyhow!("result post returned {}", resp.status()));
+            }
+            Ok(resp) => logline!("result post run {run_id} -> {}; retrying", resp.status()),
+            Err(e) => logline!("result post run {run_id}: {e}; retrying"),
+        }
+        sleep(Duration::from_secs(backoff)).await;
+        backoff = (backoff * 2).min(30);
     }
-    if !resp.status().is_success() {
-        return Err(anyhow!("result post returned {}", resp.status()));
-    }
-    Ok(())
 }
 
 fn merge_usage_from_event(usage: &mut Value, v: &Value) {
@@ -7807,6 +7888,8 @@ fn rover_entry_from_enroll(
 struct HubHealthResp {
     version: String,
 }
+
+const MIN_HUB_PROTOCOL_VERSION: &str = "0.7.3";
 
 #[derive(Debug, Deserialize)]
 struct GithubReleaseResp {
@@ -8177,6 +8260,7 @@ async fn stream_rover_config(
     revoked: Arc<AtomicBool>,
     upgrade_required: Arc<AtomicBool>,
     can_auto_upgrade: Arc<AtomicBool>,
+    hub_incompatible: Arc<AtomicBool>,
     dashboard: Option<Dashboard>,
 ) {
     use futures_util::StreamExt;
@@ -8185,6 +8269,7 @@ async fn stream_rover_config(
     let mut current = initial_units;
     let mut backoff = 1u64;
     while !revoked.load(Ordering::Relaxed) {
+        hub_incompatible.store(true, Ordering::Relaxed);
         let resp = client
             .get(hub_url(&hub, format!("rovers/{rover_id}/stream")))
             .bearer_auth(&token)
@@ -8216,10 +8301,21 @@ async fn stream_rover_config(
                 continue;
             }
         };
-        backoff = 1;
-        if let Some(version) = fetch_hub_version(&update_check_client(), &hub).await {
-            dashboard_hub_version(&dashboard, &rover_id, version);
+        let Some(version) = fetch_hub_version(&update_check_client(), &hub).await else {
+            sleep(Duration::from_secs(backoff)).await;
+            backoff = (backoff * 2).min(30);
+            continue;
+        };
+        if let Err(err) = ensure_hub_protocol(&version) {
+            errline!("{err}");
+            dashboard_rover_status(&dashboard, &rover_id, "hub upgrade");
+            sleep(Duration::from_secs(backoff)).await;
+            backoff = (backoff * 2).min(30);
+            continue;
         }
+        backoff = 1;
+        dashboard_hub_version(&dashboard, &rover_id, version);
+        hub_incompatible.store(false, Ordering::Relaxed);
         let mut stream = resp.bytes_stream();
         let mut buffer = String::new();
         while let Some(chunk) = stream.next().await {
@@ -8274,6 +8370,7 @@ async fn stream_rover_config(
         if revoked.load(Ordering::Relaxed) {
             return;
         }
+        hub_incompatible.store(true, Ordering::Relaxed);
         sleep(Duration::from_secs(backoff)).await;
     }
 }
@@ -8387,12 +8484,34 @@ fn update_hint_for_exe(exe: &Path) -> &'static str {
 }
 
 async fn fetch_hub_version(client: &Client, hub: &str) -> Option<String> {
+    let health = fetch_hub_health(client, hub).await?;
+    let version = health.version.trim().to_string();
+    (!version.is_empty()).then_some(version)
+}
+
+async fn fetch_hub_health(client: &Client, hub: &str) -> Option<HubHealthResp> {
     let resp = client.get(hub_health_url(hub)).send().await.ok()?;
     if !resp.status().is_success() {
         return None;
     }
-    let version = resp.json::<HubHealthResp>().await.ok()?.version;
-    (!version.trim().is_empty()).then(|| version.trim().to_string())
+    resp.json::<HubHealthResp>().await.ok()
+}
+
+fn hub_protocol_supported(hub_version: &str) -> bool {
+    match compare_versions(hub_version, MIN_HUB_PROTOCOL_VERSION) {
+        Some(std::cmp::Ordering::Less) => false,
+        Some(_) => true,
+        None => false,
+    }
+}
+
+fn ensure_hub_protocol(hub_version: &str) -> Result<()> {
+    if hub_protocol_supported(hub_version) {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "Hub version {hub_version} is older than this rover requires ({MIN_HUB_PROTOCOL_VERSION}+); upgrade the Hub"
+    ))
 }
 
 async fn enroll(

@@ -22,6 +22,6 @@ check() {
 check "rover Cargo.toml" "$(awk -F '"' '/^version = / { print $2; exit }' apps/rover/Cargo.toml)"
 check "web package.json" "$(awk -F '"' '/"version":/ { print $4; exit }' apps/web/package.json)"
 check "OpenAPI" "$(awk '/^  version: / { print $2; exit }' apps/api/internal/spec/openapi.yaml)"
-check "Hub rover gate" "$(sed -n 's/.*currentRoverVersion = "\([^"]*\)".*/\1/p' apps/api/internal/server/server.go)"
+check "Hub rover gate" "$(sed -n 's/.*currentRoverVersion[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' apps/api/internal/server/server.go | head -1)"
 
 echo "release version ok: $want"

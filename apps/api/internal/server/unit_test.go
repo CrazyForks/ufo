@@ -152,17 +152,207 @@ func TestRoverVersionAllowed(t *testing.T) {
 	}
 }
 
-func TestNewDefaultsToCurrentRoverMinAndUnboundedMax(t *testing.T) {
+func TestNewDefaultsToCurrentRoverMinAndUnsetMax(t *testing.T) {
 	t.Setenv("UFO_HUB_MIN_ROVER_VERSION", "")
 	t.Setenv("UFO_HUB_MAX_ROVER_VERSION", "")
 	t.Setenv("UFO_HUB_JWT_ALLOW_EPHEMERAL", "1")
 
 	s := New(nil, 0, nil)
 	if s.minRoverVersion != currentRoverVersion || s.maxRoverVersion != "" {
-		t.Fatalf("range = %q..%q, want %q..unbounded", s.minRoverVersion, s.maxRoverVersion, currentRoverVersion)
+		t.Fatalf("range = %q..%q, want %q..unset", s.minRoverVersion, s.maxRoverVersion, currentRoverVersion)
 	}
 	if !s.roverVersionAllowed("99.0.0") {
 		t.Fatal("newer rover rejected when max version is unset")
+	}
+}
+
+func TestFloorRoverVersionRaisesStaleEnvMin(t *testing.T) {
+	if got := floorRoverVersion("0.7.1", minProtocolRoverVersion); got != minProtocolRoverVersion {
+		t.Fatalf("floor = %q, want %q", got, minProtocolRoverVersion)
+	}
+	if got := floorRoverVersion("0.8.0", minProtocolRoverVersion); got != "0.8.0" {
+		t.Fatalf("floor = %q, want 0.8.0", got)
+	}
+	if got := floorRoverVersion("", minProtocolRoverVersion); got != minProtocolRoverVersion {
+		t.Fatalf("floor empty = %q", got)
+	}
+	if minProtocolRoverVersion != "0.7.3" {
+		t.Fatalf("minProtocolRoverVersion = %q, want 0.7.3", minProtocolRoverVersion)
+	}
+}
+
+func TestNewFloorsEnvMinToProtocolNotCurrent(t *testing.T) {
+	t.Setenv("UFO_HUB_MIN_ROVER_VERSION", "0.7.1")
+	t.Setenv("UFO_HUB_MAX_ROVER_VERSION", "")
+	t.Setenv("UFO_HUB_JWT_ALLOW_EPHEMERAL", "1")
+	s := New(nil, 0, nil)
+	if s.minRoverVersion != minProtocolRoverVersion {
+		t.Fatalf("min = %q, want protocol floor %q", s.minRoverVersion, minProtocolRoverVersion)
+	}
+}
+
+func TestNewPanicsOnImpossibleMaxBelowMin(t *testing.T) {
+	t.Setenv("UFO_HUB_MIN_ROVER_VERSION", "0.7.1")
+	t.Setenv("UFO_HUB_MAX_ROVER_VERSION", "0.7.1")
+	t.Setenv("UFO_HUB_JWT_ALLOW_EPHEMERAL", "1")
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic for max below protocol min")
+		}
+	}()
+	_ = New(nil, 0, nil)
+}
+
+func TestNewPanicsOnMalformedMax(t *testing.T) {
+	t.Setenv("UFO_HUB_MIN_ROVER_VERSION", "")
+	t.Setenv("UFO_HUB_MAX_ROVER_VERSION", "not-a-version")
+	t.Setenv("UFO_HUB_JWT_ALLOW_EPHEMERAL", "1")
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic for malformed max")
+		}
+	}()
+	_ = New(nil, 0, nil)
+}
+
+func TestNewPanicsOnMalformedMin(t *testing.T) {
+	t.Setenv("UFO_HUB_MIN_ROVER_VERSION", "not-a-version")
+	t.Setenv("UFO_HUB_MAX_ROVER_VERSION", "")
+	t.Setenv("UFO_HUB_JWT_ALLOW_EPHEMERAL", "1")
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic for malformed min")
+		}
+	}()
+	_ = New(nil, 0, nil)
+}
+
+func TestValidatedMinRoverVersion(t *testing.T) {
+	got, err := validatedMinRoverVersion("0.7.1", "0.7.3")
+	if err != nil || got != "0.7.3" {
+		t.Fatalf("floored min = %q err %v", got, err)
+	}
+	if _, err := validatedMinRoverVersion("dev", "0.7.3"); err == nil {
+		t.Fatal("expected error for non-semver min")
+	}
+}
+
+func TestValidatedMaxRoverVersion(t *testing.T) {
+	got, err := validatedMaxRoverVersion("0.7.3", "")
+	if err != nil || got != "" {
+		t.Fatalf("empty max = %q err %v", got, err)
+	}
+	got, err = validatedMaxRoverVersion("0.7.3", "0.8.0")
+	if err != nil || got != "0.8.0" {
+		t.Fatalf("ok max = %q err %v", got, err)
+	}
+	if _, err := validatedMaxRoverVersion("0.7.3", "0.7.1"); err == nil {
+		t.Fatal("expected error for max below min")
+	}
+	if _, err := validatedMaxRoverVersion("0.7.3", "dev"); err == nil {
+		t.Fatal("expected error for non-semver max")
+	}
+}
+
+func TestForgeSHAEqual(t *testing.T) {
+	if !forgeSHAEqual("abc", "ABC") || forgeSHAEqual("abc", "abd") || forgeSHAEqual("", "abc") {
+		t.Fatal("forgeSHAEqual mismatch")
+	}
+}
+
+func TestHubVersionIsProductSemver(t *testing.T) {
+	v := hubVersion()
+	if _, ok := parseRoverVersion(v); !ok {
+		t.Fatalf("hubVersion %q is not semver", v)
+	}
+	if cmp, ok := compareRoverVersion(v, minProtocolRoverVersion); !ok || cmp < 0 {
+		t.Fatalf("hubVersion %q below protocol floor %q", v, minProtocolRoverVersion)
+	}
+	if cmp, ok := compareRoverVersion(currentRoverVersion+"+dev.abc1234", minProtocolRoverVersion); !ok || cmp < 0 {
+		t.Fatal("build-metadata suffix must still satisfy protocol floor")
+	}
+}
+
+func TestClassifyDiscoverRoverFailure(t *testing.T) {
+	for _, msg := range []string{
+		"no open pull request for operation/head → orbit",
+		"no open pull request for operation/head → orbit at abc",
+		"no open merge request for operation/head → orbit",
+		"2 open pull requests for operation/head → orbit; not linking",
+		"3 open merge requests for operation/head → orbit; not linking",
+	} {
+		if got := classifyDiscoverRoverFailure(msg); got != discoverStop {
+			t.Fatalf("remote-stable %q: got %v want stop", msg, got)
+		}
+	}
+	for _, msg := range []string{
+		"",
+		"github list pulls 502",
+		"timeout",
+		"no unique open pull request for auto-commit branch",
+	} {
+		if got := classifyDiscoverRoverFailure(msg); got != discoverRetry {
+			t.Fatalf("transient %q: got %v want retry", msg, got)
+		}
+	}
+}
+
+func TestDiscoverAttemptCapAndShaReset(t *testing.T) {
+	meta := mergeOperationLoopMetadata(nil, map[string]any{
+		"pr_discover_attempt_sha": "sha1",
+		"pr_discover_attempts":    maxPRDiscoverTries,
+	})
+	if discoverAttemptCount(meta, "sha1") != maxPRDiscoverTries {
+		t.Fatalf("attempts = %d, want %d", discoverAttemptCount(meta, "sha1"), maxPRDiscoverTries)
+	}
+	if discoverAttemptCount(meta, "sha2") != 0 {
+		t.Fatal("new sha should reset attempt count")
+	}
+	cleared := mergeOperationLoopMetadata(meta, map[string]any{"pr_discover_for_sha": ""})
+	if loopMetadataString(cleared, "pr_discover_for_sha") != "" {
+		t.Fatal("for_sha should clear for a later ship-fail rediscover under a new attempt window")
+	}
+}
+
+func TestDiscoverAttemptCount(t *testing.T) {
+	meta := mergeOperationLoopMetadata(nil, map[string]any{
+		"pr_discover_attempt_sha": "sha1",
+		"pr_discover_attempts":    2,
+	})
+	if discoverAttemptCount(meta, "sha1") != 2 {
+		t.Fatal("want 2 for matching sha")
+	}
+	if discoverAttemptCount(meta, "other") != 0 {
+		t.Fatal("want 0 for different sha")
+	}
+}
+
+func TestMatchingOpenPR(t *testing.T) {
+	prs := []db.PullRequest{
+		{
+			Status: "open", Provider: "github", BaseUrl: "https://api.github.com", Repo: "fleet/mission",
+			HeadBranch: "operation/head", BaseBranch: "orbit", HeadSha: "aaa",
+			Number: pgtype.Int4{Int32: 1, Valid: true},
+		},
+		{
+			Status: "closed", Provider: "github", BaseUrl: "https://api.github.com", Repo: "fleet/mission",
+			HeadBranch: "operation/head", BaseBranch: "orbit", HeadSha: "bbb",
+			Number: pgtype.Int4{Int32: 2, Valid: true},
+		},
+		{
+			Status: "open", Provider: "gitlab", BaseUrl: "https://gitlab.com/api/v4", Repo: "fleet/mission",
+			HeadBranch: "operation/head", BaseBranch: "orbit", HeadSha: "aaa",
+			Number: pgtype.Int4{Int32: 3, Valid: true},
+		},
+	}
+	if !matchingOpenPR(prs, "github", "https://api.github.com", "fleet/mission", "operation/head", "orbit", "aaa") {
+		t.Fatal("expected match on forge+branch+sha")
+	}
+	if matchingOpenPR(prs, "github", "https://api.github.com", "fleet/mission", "operation/head", "orbit", "bbb") {
+		t.Fatal("closed PR or wrong sha must not match")
+	}
+	if matchingOpenPR(prs, "github", "https://api.github.com", "fleet/mission", "operation/other", "orbit", "aaa") {
+		t.Fatal("wrong head branch must not match")
 	}
 }
 

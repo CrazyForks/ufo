@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: UFO Hub API
-  version: 0.7.1
+  version: 0.7.3
   license:
     name: BSD-3-Clause
     url: https://opensource.org/license/bsd-3-clause
@@ -100,9 +100,9 @@ paths:
                 required: [status, version]
                 properties:
                   status: { type: string }
-                  version: { type: string }
+                  version: { type: string, description: Hub product version (semver). }
                   rover_min_version: { type: string, description: Minimum UFO rover CLI version accepted by this Hub. }
-                  rover_max_version: { type: string, description: "Maximum UFO rover CLI version accepted by this Hub, or empty when unbounded." }
+                  rover_max_version: { type: string, description: "Maximum UFO rover CLI version accepted by this Hub, or empty when unset." }
         "4XX": { description: Client error, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
   /v1/auth/signup:
@@ -1930,8 +1930,24 @@ paths:
         "200":
           description: Updated
           content: { application/json: { schema: { $ref: "#/components/schemas/ForgeAction" } } }
+        "204": { description: Already completed }
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/forge-actions/{id}/heartbeat:
+    put:
+      tags: [rover]
+      operationId: heartbeatForgeAction
+      summary: Renew an accepted forge action's lease
+      security: [{ roverConnectionToken: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/RoverVersion" }
+      responses:
+        "204": { description: Lease renewed or action already finalized }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "426": { $ref: "#/components/responses/UpgradeRequired" }
 
   /v1/runs/{id}/heartbeat:
     put:
@@ -2026,7 +2042,7 @@ paths:
       tags: [rover]
       operationId: runResult
       summary: Submit run result (terminal status, session, message, optional spawn payload)
-      description: Nested under the run. Sets status and finalized_at together; second call is 409.
+      description: Nested under the run. Sets status and finalized_at together; finalized retries return 204.
       security: [{ roverConnectionToken: [] }]
       parameters:
         - { $ref: "#/components/parameters/Id" }
@@ -2085,7 +2101,7 @@ components:
       description: Required when authenticating with an enrollment code or rover connection token; ignored for user-authenticated requests.
       schema:
         type: string
-        example: "0.7.1"
+        example: "0.7.3"
 
   responses:
     BadRequest:
@@ -2936,17 +2952,19 @@ components:
     AcceptedForgeAction:
       type: object
       description: Rover-facing view of an accepted forge action (push/PR/merge/ship).
+      required: [id, kind, provider, base_url, repo, head_branch, base_branch, lease_seconds]
       properties:
         id: { type: string, format: uuid }
         kind:
           type: string
           enum:
-            - push_branch
+            - update_base_branch
+            - push_head_branch
+            - merge_head_into_base_branch
             - open_pull_request
             - sync_pull_request
             - merge_pull_request
-            - ensure_base_branch
-            - integrate_into_base
+            - discover_pull_request
         provider: { type: string, enum: [github, gitlab] }
         base_url: { type: string }
         repo: { type: string }
@@ -2962,6 +2980,7 @@ components:
         checks_commands: { type: array, items: { type: string } }
         checks_timeout_seconds: { type: integer }
         ship_base_sync: { type: string }
+        lease_seconds: { type: integer, minimum: 1, description: Accepted-action lease duration. }
         operation_id: { type: string, format: uuid }
         operation_worktree_name: { type: string }
         operation_created_at: { type: string, format: date-time }

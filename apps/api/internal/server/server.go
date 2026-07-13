@@ -84,9 +84,31 @@ type Server struct {
 	signupLimiter    *ipRateLimiter
 }
 
+func (s *Server) transactional(ctx context.Context) (*Server, pgx.Tx, error) {
+	if s.pool == nil {
+		return s, nil, nil
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	clone := *s
+	clone.pool = nil
+	clone.q = s.q.WithTx(tx)
+	return &clone, tx, nil
+}
+
 func New(pool *pgxpool.Pool, longPoll time.Duration, notifier *Notifier) *Server {
 	assets, stores := assetStoresFromEnv()
 	jwtKey, err := jwtSigningKeyFromEnv()
+	if err != nil {
+		panic(err)
+	}
+	minRover, err := validatedMinRoverVersion(envString("UFO_HUB_MIN_ROVER_VERSION", currentRoverVersion), minProtocolRoverVersion)
+	if err != nil {
+		panic(err)
+	}
+	maxRover, err := validatedMaxRoverVersion(minRover, strings.TrimSpace(os.Getenv("UFO_HUB_MAX_ROVER_VERSION")))
 	if err != nil {
 		panic(err)
 	}
@@ -99,8 +121,8 @@ func New(pool *pgxpool.Pool, longPoll time.Duration, notifier *Notifier) *Server
 		assets:           assets,
 		assetStores:      stores,
 		jwtKey:           jwtKey,
-		minRoverVersion:  envString("UFO_HUB_MIN_ROVER_VERSION", currentRoverVersion),
-		maxRoverVersion:  strings.TrimSpace(os.Getenv("UFO_HUB_MAX_ROVER_VERSION")),
+		minRoverVersion:  minRover,
+		maxRoverVersion:  maxRover,
 		trustProxy:       envBool("UFO_HUB_TRUST_PROXY"),
 		loginLimiter:     newIPRateLimiter(envInt("UFO_HUB_AUTH_LOGIN_LIMIT", 20), time.Duration(envInt("UFO_HUB_AUTH_LOGIN_WINDOW_SECONDS", 300))*time.Second),
 		signupLimiter:    newIPRateLimiter(envInt("UFO_HUB_AUTH_SIGNUP_LIMIT", 10), time.Duration(envInt("UFO_HUB_AUTH_SIGNUP_WINDOW_SECONDS", 900))*time.Second),
@@ -171,10 +193,13 @@ func clientIP(r *http.Request, trustProxy bool) string {
 }
 
 const (
-	currentRoverVersion = "0.7.1"
-	roverVersionHeader  = "X-UFO-Rover-Version"
-	maxRoverUnits       = 100
+	currentRoverVersion     = "0.7.3"
+	minProtocolRoverVersion = "0.7.3"
+	roverVersionHeader      = "X-UFO-Rover-Version"
+	maxRoverUnits           = 100
 )
+
+var hubReleaseVersion string
 
 func envInt(key string, def int) int {
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
@@ -314,6 +339,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("DELETE /pull-requests/{id}", s.requireUser(s.deletePullRequest))
 	api.HandleFunc("POST /forge-actions/accept", s.roverAuth(s.acceptForgeAction))
 	api.HandleFunc("PATCH /forge-actions/{id}", s.roverAuth(s.completeForgeAction))
+	api.HandleFunc("PUT /forge-actions/{id}/heartbeat", s.roverAuth(s.heartbeatForgeAction))
 	api.HandleFunc("POST /assets", s.createAsset)
 	api.HandleFunc("PATCH /assets/{id}", s.patchAsset)
 	api.HandleFunc("DELETE /assets/{id}", s.deleteAsset)
@@ -411,6 +437,49 @@ func compareRoverVersion(a, b string) (int, bool) {
 	return 0, true
 }
 
+func floorRoverVersion(configured, floor string) string {
+	configured = strings.TrimSpace(configured)
+	floor = strings.TrimSpace(floor)
+	if floor == "" {
+		return configured
+	}
+	if configured == "" {
+		return floor
+	}
+	if cmp, ok := compareRoverVersion(configured, floor); ok && cmp < 0 {
+		return floor
+	}
+	return configured
+}
+
+func validatedMinRoverVersion(configured, floor string) (string, error) {
+	configured = strings.TrimSpace(configured)
+	if configured != "" {
+		if _, ok := parseRoverVersion(configured); !ok {
+			return "", fmt.Errorf("invalid UFO_HUB_MIN_ROVER_VERSION %q (want semver X.Y.Z)", configured)
+		}
+	}
+	min := floorRoverVersion(configured, floor)
+	if _, ok := parseRoverVersion(min); !ok {
+		return "", fmt.Errorf("invalid minimum rover protocol version %q", min)
+	}
+	return min, nil
+}
+
+func validatedMaxRoverVersion(min, max string) (string, error) {
+	max = strings.TrimSpace(max)
+	if max == "" {
+		return "", nil
+	}
+	if _, ok := parseRoverVersion(max); !ok {
+		return "", fmt.Errorf("invalid UFO_HUB_MAX_ROVER_VERSION %q (want semver X.Y.Z)", max)
+	}
+	if cmp, ok := compareRoverVersion(min, max); !ok || cmp > 0 {
+		return "", fmt.Errorf("UFO_HUB_MAX_ROVER_VERSION %q is below minimum rover version %q", max, min)
+	}
+	return max, nil
+}
+
 func (s *Server) roverVersionAllowed(version string) bool {
 	if version == "" {
 		return false
@@ -454,19 +523,20 @@ func (s *Server) requireRoverVersion(w http.ResponseWriter, r *http.Request) boo
 }
 
 func hubVersion() string {
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return "dev"
+	if v := strings.TrimSpace(hubReleaseVersion); v != "" {
+		return strings.TrimPrefix(v, "v")
 	}
-	if info.Main.Version != "" && info.Main.Version != "(devel)" {
-		return info.Main.Version
-	}
-	for _, setting := range info.Settings {
-		if setting.Key == "vcs.revision" && len(setting.Value) >= 7 {
-			return "dev-" + setting.Value[:7]
+	if info, ok := debug.ReadBuildInfo(); ok {
+		if v := info.Main.Version; v != "" && v != "(devel)" {
+			return strings.TrimPrefix(v, "v")
+		}
+		for _, setting := range info.Settings {
+			if setting.Key == "vcs.revision" && len(setting.Value) >= 7 {
+				return currentRoverVersion + "+dev." + setting.Value[:7]
+			}
 		}
 	}
-	return "dev"
+	return currentRoverVersion
 }
 
 func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
@@ -4595,12 +4665,20 @@ func (s *Server) getPulse(w http.ResponseWriter, r *http.Request) {
 func (s *Server) executeRoutinePulse(ctx context.Context, routine db.Routine, createdByUserID int64, triggerKind string, extraMeta map[string]json.RawMessage) (db.Operation, db.Pulse, error) {
 	now := time.Now().UTC()
 	triggerKind = strings.TrimSpace(triggerKind)
-	tx, err := s.pool.Begin(ctx)
+	worker, tx, err := s.transactional(ctx)
 	if err != nil {
 		return db.Operation{}, db.Pulse{}, err
 	}
-	defer tx.Rollback(ctx)
-	qtx := s.q.WithTx(tx)
+	if tx != nil {
+		defer tx.Rollback(ctx)
+	}
+	qtx := worker.q
+	commit := func() error {
+		if tx == nil {
+			return nil
+		}
+		return tx.Commit(ctx)
+	}
 
 	locked, err := qtx.LockRoutine(ctx, db.LockRoutineParams{ID: routine.ID, FleetID: routine.FleetID})
 	if err != nil {
@@ -4699,7 +4777,7 @@ func (s *Server) executeRoutinePulse(ctx context.Context, routine db.Routine, cr
 			if err := advanceSchedule(); err != nil {
 				return db.Operation{}, db.Pulse{}, err
 			}
-			if err := tx.Commit(ctx); err != nil {
+			if err := commit(); err != nil {
 				return db.Operation{}, db.Pulse{}, err
 			}
 			return db.Operation{}, skipped, nil
@@ -4722,7 +4800,7 @@ func (s *Server) executeRoutinePulse(ctx context.Context, routine db.Routine, cr
 		if aerr := advanceSchedule(); aerr != nil {
 			return db.Operation{}, db.Pulse{}, errors.Join(err, aerr)
 		}
-		if cerr := tx.Commit(ctx); cerr != nil {
+		if cerr := commit(); cerr != nil {
 			return db.Operation{}, db.Pulse{}, errors.Join(err, cerr)
 		}
 		if triggerKind == "schedule" {
@@ -4746,7 +4824,7 @@ func (s *Server) executeRoutinePulse(ctx context.Context, routine db.Routine, cr
 	if err := advanceSchedule(); err != nil {
 		return db.Operation{}, db.Pulse{}, err
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := commit(); err != nil {
 		return db.Operation{}, db.Pulse{}, err
 	}
 	return op, pulse, nil
@@ -5893,9 +5971,7 @@ func (s *Server) afterAutoCommitSourceAction(ctx context.Context, action db.Sour
 		if iter := loopMetadataInt(op.Metadata, "iteration"); iter <= 0 {
 			loopPatch["iteration"] = 1
 		}
-		_ = s.q.SetOperationMetadata(ctx, db.SetOperationMetadataParams{
-			ID: op.ID, FleetID: op.FleetID, Metadata: mergeOperationLoopMetadata(op.Metadata, loopPatch),
-		})
+		_ = patchOperationLoopMetadata(ctx, s.q, op, loopPatch)
 		if op2, err := s.q.GetOperation(ctx, db.GetOperationParams{ID: op.ID, FleetID: op.FleetID}); err == nil {
 			op = op2
 		}
@@ -6026,11 +6102,8 @@ func (s *Server) requeuePilotForAutoCommitIssue(ctx context.Context, op db.Opera
 		return false
 	}
 	tries++
-	_ = s.q.SetOperationMetadata(ctx, db.SetOperationMetadataParams{
-		ID: op.ID, FleetID: op.FleetID,
-		Metadata: mergeOperationLoopMetadata(op.Metadata, map[string]any{
-			"auto_commit_resolve_tries": tries,
-		}),
+	_ = patchOperationLoopMetadata(ctx, s.q, op, map[string]any{
+		"auto_commit_resolve_tries": tries,
 	})
 	var b strings.Builder
 	b.WriteString("Auto-commit could not land; resolve it in this worktree and finish without waiting for a human.\n\n")
@@ -6934,12 +7007,14 @@ func (s *Server) postComment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) resumeAfterComment(ctx context.Context, op db.Operation, kind, prompt string) bool {
-	tx, err := s.pool.Begin(ctx)
+	worker, tx, err := s.transactional(ctx)
 	if err != nil {
 		return false
 	}
-	defer tx.Rollback(ctx)
-	qtx := s.q.WithTx(tx)
+	if tx != nil {
+		defer tx.Rollback(ctx)
+	}
+	qtx := worker.q
 	st, err := s.dispatchOrBlockWithSource(ctx, qtx, op, kind, prompt, runSourceHumanComment)
 	if err != nil {
 		return false
@@ -6948,6 +7023,9 @@ func (s *Server) resumeAfterComment(ctx context.Context, op db.Operation, kind, 
 		return false
 	}
 	_ = qtx.ArchiveActionRequiredForOperation(ctx, pgtype.Int8{Int64: op.ID, Valid: true})
+	if tx == nil {
+		return true
+	}
 	return tx.Commit(ctx) == nil
 }
 
@@ -8357,8 +8435,24 @@ func (s *Server) setRunStatus(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "invalid status: "+req.Status)
 		return
 	}
+	var metadata []byte
+	if len(req.Metadata) > 0 {
+		var ok bool
+		metadata, ok = jsonObjectBytes(w, req.Metadata, "metadata")
+		if !ok {
+			return
+		}
+	}
 	ctx := r.Context()
-	run, err := s.q.SetRunStatus(ctx, db.SetRunStatusParams{ID: id, Status: req.Status, FleetID: wid})
+	worker, tx, err := s.transactional(ctx)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	if tx != nil {
+		defer tx.Rollback(ctx)
+	}
+	run, err := worker.q.SetRunStatus(ctx, db.SetRunStatusParams{ID: id, Status: req.Status, FleetID: wid})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			httpError(w, http.StatusNotFound, "run not found")
@@ -8367,26 +8461,31 @@ func (s *Server) setRunStatus(w http.ResponseWriter, r *http.Request) {
 		serverError(w, err)
 		return
 	}
-	if len(req.Metadata) > 0 {
-		metadata, ok := jsonObjectBytes(w, req.Metadata, "metadata")
-		if !ok {
-			return
-		}
-		run, err = s.q.MergeRunMetadata(ctx, db.MergeRunMetadataParams{ID: id, FleetID: wid, Metadata: metadata})
+	if metadata != nil {
+		run, err = worker.q.MergeRunMetadata(ctx, db.MergeRunMetadataParams{ID: id, FleetID: wid, Metadata: metadata})
 		if err != nil {
 			serverError(w, err)
 			return
 		}
 	}
-	_, _ = s.q.AppendRunEvent(ctx, db.AppendRunEventParams{RunID: id, Kind: "status", Message: req.Status})
-	s.applyRunCompletion(ctx, wid, run, req.Status)
+	_, _ = worker.q.AppendRunEvent(ctx, db.AppendRunEventParams{RunID: id, Kind: "status", Message: req.Status})
+	if err := worker.applyRunCompletion(ctx, wid, run, req.Status); err != nil {
+		serverError(w, err)
+		return
+	}
+	if tx != nil {
+		if err := tx.Commit(ctx); err != nil {
+			serverError(w, err)
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, s.runDTOs(ctx, []db.Run{run})[0])
 }
 
-func (s *Server) applyRunCompletion(ctx context.Context, wid int64, run db.Run, runStatus string) {
+func (s *Server) applyRunCompletion(ctx context.Context, wid int64, run db.Run, runStatus string) error {
 	if op, err := s.q.GetOperation(ctx, db.GetOperationParams{ID: run.OperationID, FleetID: wid}); err == nil && op.Orchestrating {
 		s.maybeReconvene(ctx, wid, op)
-		return
+		return nil
 	}
 
 	operationStatus, ok := operationStatusForRun(runStatus)
@@ -8395,11 +8494,11 @@ func (s *Server) applyRunCompletion(ctx context.Context, wid int64, run db.Run, 
 		operationStatus, ok = run.RequestedStatus, true
 	}
 	if !ok {
-		return
+		return nil
 	}
 	op, err := s.q.GetOperation(ctx, db.GetOperationParams{ID: run.OperationID, FleetID: wid})
 	if err != nil {
-		return
+		return err
 	}
 	unattendedLoopDefaultDone := false
 	if !pilotSet && !run.NeedsInput && operationStatus == "in_review" && !op.MainOperationID.Valid &&
@@ -8416,12 +8515,15 @@ func (s *Server) applyRunCompletion(ctx context.Context, wid int64, run db.Run, 
 	}
 	if run.NeedsInput && (operationStatus == "in_review" || operationStatus == "blocked") {
 		if s.pilotHandoffForInput(ctx, op, run) {
-			return
+			return nil
 		}
 	}
 
 	prevStatus := op.Status
-	_ = s.setOperationStatus(ctx, s.q, op, operationStatus)
+	if err := s.setOperationStatus(ctx, s.q, op, operationStatus); err != nil {
+		log.Printf("set operation status op %d: %v", op.ID, err)
+		return err
+	}
 	if (pilotSet || unattendedLoopDefaultDone) && operationStatus == "done" && !op.MainOperationID.Valid {
 		s.markReviewedSubOperationsDone(ctx, wid, op.ID, nil)
 	}
@@ -8439,7 +8541,7 @@ func (s *Server) applyRunCompletion(ctx context.Context, wid int64, run db.Run, 
 	if operationStatus == "done" && s.runHasSource(ctx, run.ID, runSourceShipBaseResolve) {
 		if fresh, err := s.q.GetOperation(ctx, db.GetOperationParams{ID: op.ID, FleetID: wid}); err == nil {
 			if s.maybeRetryForgeShipAfterPilot(ctx, fresh) {
-				return
+				return nil
 			}
 		}
 	}
@@ -8491,6 +8593,7 @@ func (s *Server) applyRunCompletion(ctx context.Context, wid int64, run db.Run, 
 	if orchestratedSubOperation && settled {
 		s.maybeReconvene(ctx, wid, mainOperation)
 	}
+	return nil
 }
 
 func (s *Server) markReviewedSubOperationsDone(ctx context.Context, wid, mainOperationID int64, skip map[int64]bool) {
@@ -8501,7 +8604,10 @@ func (s *Server) markReviewedSubOperationsDone(ctx context.Context, wid, mainOpe
 	for _, subOperation := range subOperations {
 		if subOperation.Status == "in_review" && !skip[subOperation.ID] {
 			prev := subOperation.Status
-			_ = s.setOperationStatus(ctx, s.q, subOperation, "done")
+			if err := s.setOperationStatus(ctx, s.q, subOperation, "done"); err != nil {
+				log.Printf("set sub-operation status op %d: %v", subOperation.ID, err)
+				continue
+			}
 			if isTerminalOperationStatus("done") && !isTerminalOperationStatus(prev) {
 				if fresh, err := s.q.GetOperation(ctx, db.GetOperationParams{ID: subOperation.ID, FleetID: wid}); err == nil {
 					s.maybeRePulseOnClose(ctx, fresh, "done")
@@ -8554,16 +8660,24 @@ func (s *Server) runResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	run, err := s.q.MarkRunFinalized(ctx, db.MarkRunFinalizedParams{ID: id, FleetID: wid, Status: status})
+	worker, tx, err := s.transactional(ctx)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	if tx != nil {
+		defer tx.Rollback(ctx)
+	}
+	run, err := worker.q.MarkRunFinalized(ctx, db.MarkRunFinalizedParams{ID: id, FleetID: wid, Status: status})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			existing, gerr := s.q.GetRun(ctx, db.GetRunParams{ID: id, FleetID: wid})
+			existing, gerr := worker.q.GetRun(ctx, db.GetRunParams{ID: id, FleetID: wid})
 			if gerr != nil {
 				httpError(w, http.StatusNotFound, "run not found")
 				return
 			}
 			if existing.FinalizedAt.Valid {
-				httpError(w, http.StatusConflict, "result already submitted")
+				w.WriteHeader(http.StatusNoContent)
 				return
 			}
 			httpError(w, http.StatusConflict, "run is not active")
@@ -8573,57 +8687,67 @@ func (s *Server) runResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.NeedsInput {
-		_ = s.q.SetRunNeedsInput(ctx, db.SetRunNeedsInputParams{ID: id, FleetID: wid})
+		_ = worker.q.SetRunNeedsInput(ctx, db.SetRunNeedsInputParams{ID: id, FleetID: wid})
 		run.NeedsInput = true
 	}
 	if req.OperationStatus != "" && pilotSettableStatus[req.OperationStatus] {
-		_ = s.q.SetRunRequestedStatus(ctx, db.SetRunRequestedStatusParams{ID: id, FleetID: wid, RequestedStatus: req.OperationStatus})
+		_ = worker.q.SetRunRequestedStatus(ctx, db.SetRunRequestedStatusParams{ID: id, FleetID: wid, RequestedStatus: req.OperationStatus})
 		run.RequestedStatus = req.OperationStatus
 	}
 	if req.SessionID != "" {
-		_ = s.q.SetRunSession(ctx, db.SetRunSessionParams{ID: id, FleetID: wid, SessionID: optText(req.SessionID)})
-		_ = s.q.SetOperationSession(ctx, db.SetOperationSessionParams{
+		_ = worker.q.SetRunSession(ctx, db.SetRunSessionParams{ID: id, FleetID: wid, SessionID: optText(req.SessionID)})
+		_ = worker.q.SetOperationSession(ctx, db.SetOperationSessionParams{
 			ID: run.OperationID, FleetID: wid, PilotSessionID: optText(req.SessionID),
 			PilotSessionKind: optText(run.Pilot), PilotSessionRoverID: run.RoverID,
 		})
 	}
 	if strings.TrimSpace(req.Message) != "" {
-		_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
+		_, _ = worker.q.CreateComment(ctx, db.CreateCommentParams{
 			OperationID: run.OperationID, AuthorType: "pilot",
 			AuthorPilotKind: pgtype.Text{String: run.Pilot, Valid: true}, Body: req.Message,
 		})
 	}
 	if len(req.Operations) > 0 {
-		s.spawnOperations(ctx, wid, run, req.Operations)
+		if err := worker.spawnOperations(ctx, wid, run, req.Operations); err != nil {
+			serverError(w, err)
+			return
+		}
 	}
 	if len(req.SubOperations) > 0 {
-		s.spawnSubOperations(ctx, wid, run, req.SubOperations)
+		if err := worker.spawnSubOperations(ctx, wid, run, req.SubOperations); err != nil {
+			serverError(w, err)
+			return
+		}
 	}
 	if len(req.SubOperationsFeedback) > 0 {
-		s.applySubOperationsFeedback(ctx, wid, run, req.SubOperationsFeedback)
+		worker.applySubOperationsFeedback(ctx, wid, run, req.SubOperationsFeedback)
 	}
-	s.storeRunUsage(ctx, run, req.Usage)
-	_, _ = s.q.AppendRunEvent(ctx, db.AppendRunEventParams{RunID: id, Kind: "status", Message: status})
-	s.applyRunCompletion(ctx, wid, run, status)
+	worker.storeRunUsage(ctx, run, req.Usage)
+	_, _ = worker.q.AppendRunEvent(ctx, db.AppendRunEventParams{RunID: id, Kind: "status", Message: status})
+	if aerr := worker.applyRunCompletion(ctx, wid, run, status); aerr != nil {
+		serverError(w, aerr)
+		return
+	}
+	if tx != nil {
+		if err := tx.Commit(ctx); err != nil {
+			serverError(w, err)
+			return
+		}
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) spawnOperations(ctx context.Context, wid int64, sourceRun db.Run, operations []operationReq) {
+func (s *Server) spawnOperations(ctx context.Context, wid int64, sourceRun db.Run, operations []operationReq) error {
 	sourceOperation, err := s.q.GetOperation(ctx, db.GetOperationParams{ID: sourceRun.OperationID, FleetID: wid})
 	if err != nil {
-		return
+		return err
 	}
 	if len(operations) > s.maxSubOperations {
 		log.Printf("spawnOperations: operation %d capped %d operations to %d", sourceOperation.ID, len(operations), s.maxSubOperations)
 		operations = operations[:s.maxSubOperations]
 	}
 
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return
-	}
-	defer tx.Rollback(ctx)
-	qtx := s.q.WithTx(tx)
+	qtx := s.q
 
 	assigneeType := sourceOperation.AssigneeType
 	assigneeID := sourceOperation.AssigneeID
@@ -8653,7 +8777,7 @@ func (s *Server) spawnOperations(ctx context.Context, wid int64, sourceRun db.Ru
 		}
 		sequence, err := qtx.BumpMissionSequence(ctx, db.BumpMissionSequenceParams{ID: sourceOperation.MissionID, FleetID: wid})
 		if err != nil {
-			return
+			return err
 		}
 		op, err := qtx.CreateOperation(ctx, db.CreateOperationParams{
 			FleetID: wid, MissionID: sourceOperation.MissionID, Sequence: sequence,
@@ -8663,23 +8787,23 @@ func (s *Server) spawnOperations(ctx context.Context, wid int64, sourceRun db.Ru
 			Metadata: sourceOperation.Metadata, CreatedBy: sourceOperation.CreatedBy,
 		})
 		if err != nil {
-			return
+			return err
 		}
 		if kind != "" {
 			if _, err := s.dispatchOrBlock(ctx, qtx, op, kind, ""); err != nil {
-				return
+				return err
 			}
 		}
 		created++
 	}
 	if created == 0 {
-		return
+		return nil
 	}
 	_, _ = qtx.CreateComment(ctx, db.CreateCommentParams{
 		OperationID: sourceOperation.ID, AuthorType: "system",
 		Body: fmt.Sprintf("Created %d top-level operation(s)", created),
 	})
-	_ = tx.Commit(ctx)
+	return nil
 }
 
 func (s *Server) applySubOperationsFeedback(ctx context.Context, wid int64, run db.Run, feedback []subOperationsFeedbackReq) {
@@ -8746,10 +8870,13 @@ func (s *Server) canProposeSubOperations(ctx context.Context, op db.Operation) b
 	return s.resolvePilotKind(ctx, s.q, atype, textValue(op.AssigneePilotKind), idValue(op.AssigneeID)) != ""
 }
 
-func (s *Server) spawnSubOperations(ctx context.Context, wid int64, splitRun db.Run, subOperations []subOperationReq) {
+func (s *Server) spawnSubOperations(ctx context.Context, wid int64, splitRun db.Run, subOperations []subOperationReq) error {
 	mainOperation, err := s.q.GetOperation(ctx, db.GetOperationParams{ID: splitRun.OperationID, FleetID: wid})
-	if err != nil || !s.canProposeSubOperations(ctx, mainOperation) {
-		return
+	if err != nil {
+		return err
+	}
+	if !s.canProposeSubOperations(ctx, mainOperation) {
+		return nil
 	}
 	if len(subOperations) > s.maxSubOperations {
 		log.Printf("spawnSubOperations: operation %d capped %d sub-operations to %d", mainOperation.ID, len(subOperations), s.maxSubOperations)
@@ -8786,17 +8913,12 @@ func (s *Server) spawnSubOperations(ctx context.Context, wid int64, splitRun db.
 		}
 		mainPilotKind = s.resolvePilotKind(ctx, s.q, atype, textValue(mainOperation.AssigneePilotKind), idValue(mainOperation.AssigneeID))
 		if mainPilotKind == "" {
-			return
+			return nil
 		}
 		autoKinds = []string{mainPilotKind}
 	}
 
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return
-	}
-	defer tx.Rollback(ctx)
-	qtx := s.q.WithTx(tx)
+	qtx := s.q
 
 	created := 0
 	autoKind := 0
@@ -8831,17 +8953,19 @@ func (s *Server) spawnSubOperations(ctx context.Context, wid int64, splitRun db.
 			atype, aid, akind = "pilot", 0, kind
 		}
 		if _, err := s.createSubOperation(ctx, qtx, wid, mainOperation, so.Title, so.Body, atype, aid, akind); err != nil {
-			return
+			return err
 		}
 		created++
 	}
 	if created == 0 {
-		return
+		return nil
 	}
 	if err := qtx.SetOperationOrchestrating(ctx, db.SetOperationOrchestratingParams{ID: mainOperation.ID, FleetID: wid, Orchestrating: true}); err != nil {
-		return
+		return err
 	}
-	_ = s.setOperationStatus(ctx, qtx, mainOperation, "in_progress")
+	if err := s.setOperationStatus(ctx, qtx, mainOperation, "in_progress"); err != nil {
+		return err
+	}
 	role := "Captain"
 	if !isCrew {
 		role = "Main operation"
@@ -8850,7 +8974,7 @@ func (s *Server) spawnSubOperations(ctx context.Context, wid int64, splitRun db.
 		OperationID: mainOperation.ID, AuthorType: "system",
 		Body: fmt.Sprintf("%s split into %d sub-operations", role, created),
 	})
-	_ = tx.Commit(ctx)
+	return nil
 }
 
 func (s *Server) maybeReconvene(ctx context.Context, wid int64, mainOperation db.Operation) {

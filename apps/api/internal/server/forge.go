@@ -268,6 +268,7 @@ type acceptedForgeAction struct {
 	ChecksCommands        []string        `json:"checks_commands,omitempty"`
 	ChecksTimeoutSeconds  int             `json:"checks_timeout_seconds,omitempty"`
 	ShipBaseSync          string          `json:"ship_base_sync,omitempty"`
+	LeaseSeconds          int             `json:"lease_seconds"`
 	OperationID           string          `json:"operation_id,omitempty"`
 	OperationWorktreeName string          `json:"operation_worktree_name,omitempty"`
 	OperationCreatedAt    string          `json:"operation_created_at,omitempty"`
@@ -289,8 +290,9 @@ type completeForgeActionReq struct {
 }
 
 var validForgeActionKind = map[string]bool{
-	"push_branch": true, "open_pull_request": true, "sync_pull_request": true,
-	"merge_pull_request": true, "ensure_base_branch": true, "integrate_into_base": true,
+	"update_base_branch": true, "push_head_branch": true, "merge_head_into_base_branch": true,
+	"open_pull_request": true, "sync_pull_request": true,
+	"merge_pull_request": true, "discover_pull_request": true,
 }
 
 var validForgeActionFinalStatus = map[string]bool{
@@ -344,6 +346,7 @@ func (s *Server) acceptForgeAction(w http.ResponseWriter, r *http.Request) {
 		ChecksCommands:       forgeMetaStringSlice(action.Metadata, "checks_commands"),
 		ChecksTimeoutSeconds: forgeMetaInt(action.Metadata, "checks_timeout_seconds"),
 		ShipBaseSync:         forgeMetaString(action.Metadata, "ship_base_sync"),
+		LeaseSeconds:         forgeActionStaleSeconds,
 	}
 	if action.OperationID.Valid {
 		op, err := s.q.GetOperation(ctx, db.GetOperationParams{ID: action.OperationID.Int64, FleetID: action.FleetID})
@@ -379,7 +382,15 @@ func (s *Server) completeForgeAction(w http.ResponseWriter, r *http.Request) {
 		num = pgtype.Int4{Int32: *req.RemoteNumber, Valid: true}
 	}
 	meta := sourceActionMetadata(req.Metadata)
-	action, err := s.q.CompleteForgeAction(ctx, db.CompleteForgeActionParams{
+	worker, tx, err := s.transactional(ctx)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	if tx != nil {
+		defer tx.Rollback(ctx)
+	}
+	action, err := worker.q.CompleteForgeAction(ctx, db.CompleteForgeActionParams{
 		PublicID: pid, FleetID: rv.FleetID, RoverID: pgtype.Int8{Int64: rv.ID, Valid: true},
 		Status: req.Status, RemoteUrl: strings.TrimSpace(req.RemoteURL), RemoteNumber: num,
 		ResultSha: strings.TrimSpace(req.ResultSHA), CommitSha: strings.TrimSpace(req.CommitSHA),
@@ -387,14 +398,61 @@ func (s *Server) completeForgeAction(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			httpError(w, http.StatusNotFound, "forge action not found")
+			status, getErr := worker.q.GetForgeActionStatusForRover(ctx, db.GetForgeActionStatusForRoverParams{
+				PublicID: pid, FleetID: rv.FleetID, RoverID: pgtype.Int8{Int64: rv.ID, Valid: true},
+			})
+			if getErr == nil && validForgeActionFinalStatus[status] {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			if errors.Is(getErr, pgx.ErrNoRows) || getErr == nil {
+				httpError(w, http.StatusNotFound, "forge action not found")
+				return
+			}
+			err = getErr
+		}
+		serverError(w, err)
+		return
+	}
+	worker.afterForgeAction(ctx, action, req)
+	if tx != nil {
+		if err := tx.Commit(ctx); err != nil {
+			serverError(w, err)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, s.forgeActionDTO(action))
+}
+
+func (s *Server) heartbeatForgeAction(w http.ResponseWriter, r *http.Request) {
+	rv := currentRover(r)
+	pid, ok := pathUUID(w, r)
+	if !ok {
+		return
+	}
+	_, err := s.q.HeartbeatForgeAction(r.Context(), db.HeartbeatForgeActionParams{
+		PublicID: pid, FleetID: rv.FleetID, RoverID: pgtype.Int8{Int64: rv.ID, Valid: true},
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			status, getErr := s.q.GetForgeActionStatusForRover(r.Context(), db.GetForgeActionStatusForRoverParams{
+				PublicID: pid, FleetID: rv.FleetID, RoverID: pgtype.Int8{Int64: rv.ID, Valid: true},
+			})
+			if getErr == nil && validForgeActionFinalStatus[status] {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			if getErr != nil && !errors.Is(getErr, pgx.ErrNoRows) {
+				serverError(w, getErr)
+				return
+			}
+			httpError(w, http.StatusNotFound, "forge action not active")
 			return
 		}
 		serverError(w, err)
 		return
 	}
-	s.afterForgeAction(ctx, action, req)
-	writeJSON(w, http.StatusOK, s.forgeActionDTO(action))
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) forgeActionDTO(a db.ForgeAction) map[string]any {
@@ -421,22 +479,22 @@ func (s *Server) afterForgeAction(ctx context.Context, action db.ForgeAction, re
 		return
 	}
 	switch action.Kind {
-	case "push_branch":
+	case "push_head_branch":
 		if action.Status != "succeeded" {
 			s.failForgeShip(ctx, op, action, "push failed")
 			return
 		}
 		if forgeMetaBool(action.Metadata, "next_open_pull_request") {
 			s.enqueueOpenPullRequest(ctx, op, action)
-		} else if forgeMetaBool(action.Metadata, "next_integrate") {
-			s.enqueueIntegrateIntoBase(ctx, op, action)
+		} else if forgeMetaBool(action.Metadata, "next_merge_head_into_base_branch") {
+			s.enqueueMergeHeadIntoBaseBranch(ctx, op, action)
 		}
 	case "open_pull_request":
 		if action.Status != "succeeded" {
 			s.failForgeShip(ctx, op, action, "open pull request failed")
 			return
 		}
-		s.recordUFOPullRequest(ctx, op, action, req)
+		_, _ = recordUFOPullRequest(ctx, s.q, op, action, req, true, "forge_ship")
 		s.enqueueSyncPullRequest(ctx, op, action)
 	case "sync_pull_request":
 		s.applyPullRequestSync(ctx, action, req)
@@ -462,13 +520,13 @@ func (s *Server) afterForgeAction(ctx context.Context, action db.ForgeAction, re
 			return
 		}
 		s.enqueueSyncPullRequestAttempt(ctx, op, action, attempts)
-	case "merge_pull_request", "integrate_into_base":
+	case "merge_pull_request", "merge_head_into_base_branch":
 		if action.Status != "succeeded" {
 			s.failForgeShip(ctx, op, action, action.Kind+" failed")
 			return
 		}
 		s.markForgeShipSucceeded(ctx, op, action)
-	case "ensure_base_branch":
+	case "update_base_branch":
 		if action.Status == "conflicted" || (action.Status == "failed" && looksLikeGitConflict(action.Message)) {
 			if s.requeuePilotForShipBaseSync(ctx, op, action) {
 				return
@@ -480,9 +538,11 @@ func (s *Server) afterForgeAction(ctx context.Context, action db.ForgeAction, re
 			s.failForgeShip(ctx, op, action, "ship base sync failed")
 			return
 		}
-		if forgeMetaBool(action.Metadata, "next_push_branch") {
+		if forgeMetaBool(action.Metadata, "next_push_head_branch") {
 			s.enqueuePushBranchAfterBaseSync(ctx, op, action)
 		}
+	case "discover_pull_request":
+		s.afterDiscoverPullRequest(ctx, op, action, req)
 	}
 }
 
@@ -584,10 +644,28 @@ func effectiveCIWaitTimeoutSeconds(rop routineOperationConfig) int {
 	return defaultCIWaitTimeoutSeconds
 }
 
+func patchOperationLoopMetadata(ctx context.Context, q *db.Queries, op db.Operation, patch map[string]any) error {
+	loopMetadata, err := json.Marshal(patch)
+	if err != nil {
+		return err
+	}
+	return q.MergeOperationLoopMetadata(ctx, db.MergeOperationLoopMetadataParams{
+		LoopMetadata: loopMetadata, ID: op.ID, FleetID: op.FleetID,
+	})
+}
+
 func (s *Server) failForgeShip(ctx context.Context, op db.Operation, action db.ForgeAction, reason string) {
 	msg := strings.TrimSpace(action.Message)
 	if msg == "" {
 		msg = reason
+	}
+	_ = patchOperationLoopMetadata(ctx, s.q, op, map[string]any{
+		"forge_ship_failed":            true,
+		"forge_ship_blocked_operation": loopMetadataBool(op.Metadata, "forge_ship_blocked_operation") || op.Status == "done",
+		"pending_forge_ship":           false,
+	})
+	if op2, err := s.q.GetOperation(ctx, db.GetOperationParams{ID: op.ID, FleetID: op.FleetID}); err == nil {
+		op = op2
 	}
 	_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
 		OperationID: op.ID, AuthorType: "system",
@@ -595,13 +673,298 @@ func (s *Server) failForgeShip(ctx context.Context, op db.Operation, action db.F
 	})
 	if op.Status == "done" {
 		_ = s.setOperationStatus(ctx, s.q, op, "blocked")
+		if op2, err := s.q.GetOperation(ctx, db.GetOperationParams{ID: op.ID, FleetID: op.FleetID}); err == nil {
+			op = op2
+		}
 	}
 	s.notifyMembers(ctx, op.FleetID, op.ID, "forge_ship_failed", "action_required",
 		"Forge ship failed: "+op.Title, msg)
+	s.maybeQueueDiscoverPullRequest(ctx, op)
+}
+
+const maxPRDiscoverTries = 3
+
+func discoverAttemptCount(meta []byte, sha string) int {
+	sha = strings.TrimSpace(sha)
+	if sha == "" || loopMetadataString(meta, "pr_discover_attempt_sha") != sha {
+		return 0
+	}
+	return loopMetadataInt(meta, "pr_discover_attempts")
+}
+
+type discoverFailureClass int
+
+const (
+	discoverRetry discoverFailureClass = iota
+	discoverStop
+)
+
+func classifyDiscoverRoverFailure(msg string) discoverFailureClass {
+	m := strings.TrimSpace(msg)
+	if m == "" {
+		return discoverRetry
+	}
+	if strings.HasPrefix(m, "no open pull request for ") ||
+		strings.HasPrefix(m, "no open merge request for ") ||
+		strings.HasSuffix(m, "; not linking") {
+		return discoverStop
+	}
+	return discoverRetry
+}
+
+func (s *Server) applyDiscoverFailure(ctx context.Context, op db.Operation, shaKey, msg string, class discoverFailureClass) {
+	switch class {
+	case discoverStop:
+		_ = patchOperationLoopMetadata(ctx, s.q, op, map[string]any{"pr_discover_for_sha": ""})
+		_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
+			OperationID: op.ID, AuthorType: "system",
+			Body: fmt.Sprintf("PR discover: %s", msg),
+		})
+	default:
+		_ = patchOperationLoopMetadata(ctx, s.q, op, map[string]any{"pr_discover_for_sha": ""})
+		_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
+			OperationID: op.ID, AuthorType: "system",
+			Body: fmt.Sprintf("PR discover: %s; will retry.", msg),
+		})
+		if fresh, err := s.q.GetOperation(ctx, db.GetOperationParams{ID: op.ID, FleetID: op.FleetID}); err == nil {
+			s.maybeQueueDiscoverPullRequest(ctx, fresh)
+		}
+	}
+}
+
+func (s *Server) afterDiscoverPullRequest(ctx context.Context, op db.Operation, action db.ForgeAction, req completeForgeActionReq) {
+	shaKey := strings.TrimSpace(action.CommitSha)
+	if shaKey == "" {
+		shaKey = loopMetadataString(op.Metadata, "last_commit_sha")
+	}
+	if action.Status != "succeeded" {
+		msg := strings.TrimSpace(action.Message)
+		if msg == "" {
+			msg = "no unique open pull request for auto-commit branch"
+		}
+		s.applyDiscoverFailure(ctx, op, shaKey, msg, classifyDiscoverRoverFailure(msg))
+		return
+	}
+	url := strings.TrimSpace(req.RemoteURL)
+	if url == "" {
+		url = strings.TrimSpace(action.RemoteUrl)
+	}
+	patch := map[string]any{
+		"forge_ship_blocked_operation": false,
+		"forge_ship_failed":            false,
+		"pending_forge_ship":           true,
+		"shipped":                      false,
+	}
+	if shaKey != "" {
+		patch["pr_discover_for_sha"] = shaKey
+	}
+	if req.RemoteNumber != nil {
+		patch["pull_request_number"] = *req.RemoteNumber
+	} else if action.RemoteNumber.Valid {
+		patch["pull_request_number"] = action.RemoteNumber.Int32
+	}
+	if url != "" {
+		patch["pull_request_url"] = url
+	}
+	if err := s.recordDiscoverPullRequestRecovery(ctx, op, action, req, patch); err != nil {
+		log.Printf("discover recovery op %d: %v", op.ID, err)
+		s.applyDiscoverFailure(ctx, op, shaKey, err.Error(), discoverRetry)
+		return
+	}
+	if op.Status == "blocked" && loopMetadataBool(op.Metadata, "forge_ship_blocked_operation") {
+		_ = s.setOperationStatus(ctx, s.q, op, "done")
+	}
+	s.enqueueSyncPullRequest(ctx, op, action)
+	body := "Linked open pull request from auto-commit branch; resuming forge ship."
+	if url != "" {
+		body = fmt.Sprintf("Linked open pull request %s; resuming forge ship.", url)
+	}
+	_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
+		OperationID: op.ID, AuthorType: "system", Body: body,
+	})
+}
+
+func (s *Server) recordDiscoverPullRequestRecovery(ctx context.Context, op db.Operation, action db.ForgeAction, req completeForgeActionReq, patch map[string]any) error {
+	if s.pool == nil {
+		linked, linkMsg := recordUFOPullRequest(ctx, s.q, op, action, req, false, "forge_discover")
+		if !linked {
+			if linkMsg == "" {
+				linkMsg = "linking the pull request in UFO failed"
+			}
+			return errors.New(linkMsg)
+		}
+		if err := patchOperationLoopMetadata(ctx, s.q, op, patch); err != nil {
+			return fmt.Errorf("update operation recovery state: %w", err)
+		}
+		return nil
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	qtx := s.q.WithTx(tx)
+	linked, linkMsg := recordUFOPullRequest(ctx, qtx, op, action, req, false, "forge_discover")
+	if !linked {
+		if linkMsg == "" {
+			linkMsg = "linking the pull request in UFO failed"
+		}
+		return errors.New(linkMsg)
+	}
+	if err := patchOperationLoopMetadata(ctx, qtx, op, patch); err != nil {
+		return fmt.Errorf("update operation recovery state: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
+func forgeSHAEqual(a, b string) bool {
+	a = strings.ToLower(strings.TrimSpace(a))
+	b = strings.ToLower(strings.TrimSpace(b))
+	if a == "" || b == "" {
+		return false
+	}
+	return a == b
+}
+
+func matchingOpenPR(prs []db.PullRequest, provider, baseURL, repo, headBranch, baseBranch, headSHA string) bool {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	repo = strings.Trim(strings.TrimSpace(repo), "/")
+	headBranch = strings.TrimSpace(headBranch)
+	baseBranch = strings.TrimSpace(baseBranch)
+	headSHA = strings.TrimSpace(headSHA)
+	for _, pr := range prs {
+		if !strings.EqualFold(strings.TrimSpace(pr.Status), "open") {
+			continue
+		}
+		if strings.ToLower(strings.TrimSpace(pr.Provider)) != provider {
+			continue
+		}
+		if strings.TrimRight(strings.TrimSpace(pr.BaseUrl), "/") != baseURL {
+			continue
+		}
+		if strings.Trim(strings.TrimSpace(pr.Repo), "/") != repo {
+			continue
+		}
+		if strings.TrimSpace(pr.HeadBranch) != headBranch {
+			continue
+		}
+		if baseBranch != "" && strings.TrimSpace(pr.BaseBranch) != baseBranch {
+			continue
+		}
+		if headSHA != "" {
+			prSHA := strings.TrimSpace(pr.HeadSha)
+			if prSHA == "" || !forgeSHAEqual(prSHA, headSHA) {
+				continue
+			}
+		}
+		return true
+	}
+	return false
+}
+
+func (s *Server) operationHasMatchingOpenPullRequest(ctx context.Context, op db.Operation, provider, baseURL, repo, headBranch, baseBranch, headSHA string) bool {
+	prs, err := s.q.ListPullRequestsForOperation(ctx, pgtype.Int8{Int64: op.ID, Valid: true})
+	if err != nil {
+		return false
+	}
+	return matchingOpenPR(prs, provider, baseURL, repo, headBranch, baseBranch, headSHA)
+}
+
+func (s *Server) maybeQueueDiscoverPullRequest(ctx context.Context, op db.Operation) {
+	if loopMetadataBool(op.Metadata, "shipped") {
+		return
+	}
+	if !loopMetadataBool(op.Metadata, "forge_ship_failed") {
+		return
+	}
+	if !s.operationWantsForgeShip(ctx, op) {
+		return
+	}
+	head := s.operationAutoCommitBranch(ctx, op)
+	if head == "" {
+		head = loopMetadataString(op.Metadata, "last_commit_branch")
+	}
+	if head == "" {
+		return
+	}
+	base := s.operationShipBaseBranch(ctx, op)
+	if base == "" {
+		base = defaultPullRequestBaseBranch
+	}
+	sha := strings.TrimSpace(loopMetadataString(op.Metadata, "last_commit_sha"))
+	if sha == "" {
+		return
+	}
+	if loopMetadataString(op.Metadata, "pr_discover_for_sha") == sha {
+		return
+	}
+	if discoverAttemptCount(op.Metadata, sha) >= maxPRDiscoverTries {
+		return
+	}
+	routine, hasRoutine := s.loopRoutine(ctx, op)
+	rop := routineOperationConfig{}
+	if hasRoutine {
+		rop = routineOperationConfigFromMetadata(routine)
+	} else {
+		rop.CreatePullRequest = true
+		rop.PullRequestBaseBranch = defaultPullRequestBaseBranch
+	}
+	cfg, ok, err := s.resolveOperationForge(ctx, op, rop.ForgeKey)
+	if err != nil || !ok {
+		return
+	}
+	roverID := pgtype.Int8{}
+	if run, err := s.q.LatestSourceRunForOperation(ctx, db.LatestSourceRunForOperationParams{
+		OperationID: op.ID, FleetID: op.FleetID,
+	}); err == nil && run.RoverID.Valid {
+		roverID = run.RoverID
+	}
+	routineID := pgtype.Int8{}
+	if hasRoutine {
+		routineID = pgtype.Int8{Int64: routine.ID, Valid: true}
+	}
+	metaMap := map[string]json.RawMessage{
+		"forge_ship":  jsonRaw(true),
+		"pr_discover": jsonRaw(true),
+		"forge_id":    jsonRaw(cfg.ID),
+		"forge_key":   jsonRaw(cfg.Key),
+	}
+	tries := discoverAttemptCount(op.Metadata, sha) + 1
+	if tries > 1 {
+		metaMap["not_before"] = jsonRaw(time.Now().UTC().Add(time.Duration(forgeSyncBackoffSec(tries-1)) * time.Second).Format(time.RFC3339))
+	}
+	metaPatch := map[string]any{
+		"pr_discover_for_sha":     sha,
+		"pr_discover_attempt_sha": sha,
+		"pr_discover_attempts":    tries,
+	}
+	params := db.CreateForgeActionParams{
+		FleetID: op.FleetID, OperationID: pgtype.Int8{Int64: op.ID, Valid: true},
+		RoutineID: routineID, RoverID: roverID,
+		Kind:     "discover_pull_request",
+		Provider: cfg.Provider, BaseUrl: cfg.BaseURL, Repo: cfg.Repo,
+		HeadBranch: head, BaseBranch: base,
+		CommitSha: sha,
+		Title:     op.Title,
+		Metadata:  metadataBytes(metaMap),
+	}
+	if err := s.createForgeActionWithOpMeta(ctx, params, op, metaPatch); err != nil {
+		return
+	}
+	_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
+		OperationID: op.ID, AuthorType: "system",
+		Body: fmt.Sprintf("Queuing PR discover for %s → %s (link open forge PR if exactly one).", head, base),
+	})
 }
 
 func (s *Server) markForgeShipSucceeded(ctx context.Context, op db.Operation, action db.ForgeAction) {
-	patch := map[string]any{"shipped": true}
+	patch := map[string]any{
+		"forge_ship_blocked_operation": false,
+		"forge_ship_failed":            false,
+		"pending_forge_ship":           false,
+		"shipped":                      true,
+	}
 	if action.RemoteNumber.Valid {
 		patch["pull_request_number"] = action.RemoteNumber.Int32
 	}
@@ -613,18 +976,16 @@ func (s *Server) markForgeShipSucceeded(ctx context.Context, op db.Operation, ac
 	} else if sha := strings.TrimSpace(action.CommitSha); sha != "" {
 		patch["integrated_sha"] = sha
 	}
-	_ = s.q.SetOperationMetadata(ctx, db.SetOperationMetadataParams{
-		ID: op.ID, FleetID: op.FleetID, Metadata: mergeOperationLoopMetadata(op.Metadata, patch),
-	})
+	_ = patchOperationLoopMetadata(ctx, s.q, op, patch)
 	_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
 		OperationID: op.ID, AuthorType: "system",
 		Body: fmt.Sprintf("Shipped to %s via %s.", action.BaseBranch, action.Kind),
 	})
 }
 
-func (s *Server) recordUFOPullRequest(ctx context.Context, op db.Operation, action db.ForgeAction, req completeForgeActionReq) {
+func recordUFOPullRequest(ctx context.Context, q *db.Queries, op db.Operation, action db.ForgeAction, req completeForgeActionReq, createdByUFO bool, source string) (linked bool, detail string) {
 	if !action.RemoteNumber.Valid && req.RemoteNumber == nil {
-		return
+		return false, "no remote pull request number"
 	}
 	num := action.RemoteNumber
 	if req.RemoteNumber != nil {
@@ -639,8 +1000,8 @@ func (s *Server) recordUFOPullRequest(ctx context.Context, op db.Operation, acti
 		title = t
 	}
 	status := "open"
-	if s := strings.TrimSpace(req.PRStatus); s != "" {
-		status = s
+	if st := strings.TrimSpace(req.PRStatus); st != "" {
+		status = st
 	}
 	ci := strings.TrimSpace(req.CIStatus)
 	head := strings.TrimSpace(req.HeadSHA)
@@ -655,23 +1016,57 @@ func (s *Server) recordUFOPullRequest(ctx context.Context, op db.Operation, acti
 	if action.RoutineID.Valid {
 		routineID = action.RoutineID
 	}
-	_, err := s.q.CreatePullRequest(ctx, db.CreatePullRequestParams{
-		FleetID:     op.FleetID,
-		OperationID: pgtype.Int8{Int64: op.ID, Valid: true},
-		RoutineID:   routineID,
-		Provider:    action.Provider, BaseUrl: action.BaseUrl, Repo: action.Repo,
+	opID := pgtype.Int8{Int64: op.ID, Valid: true}
+	meta := metadataBytes(map[string]json.RawMessage{"source": jsonRaw(source)})
+	existing, err := q.GetPullRequestByForgeIdentity(ctx, db.GetPullRequestByForgeIdentityParams{
+		FleetID: op.FleetID, Provider: action.Provider, BaseUrl: action.BaseUrl, Repo: action.Repo, Number: num,
+	})
+	if err == nil {
+		_, err = q.RelinkPullRequestToOperation(ctx, db.RelinkPullRequestToOperationParams{
+			ID: existing.ID, FleetID: op.FleetID, OperationID: opID, RoutineID: routineID,
+			HeadBranch: action.HeadBranch, BaseBranch: action.BaseBranch,
+			Url: url, Title: title, Status: status, HeadSha: head, Mergeable: mergeable, CiStatus: ci,
+			Metadata: meta,
+		})
+		if err != nil {
+			log.Printf("relink UFO pull request op %d: %v", op.ID, err)
+			return false, "database error while linking the pull request"
+		}
+		return true, ""
+	}
+	_, err = q.CreatePullRequest(ctx, db.CreatePullRequestParams{
+		FleetID: op.FleetID, OperationID: opID, RoutineID: routineID,
+		Provider: action.Provider, BaseUrl: action.BaseUrl, Repo: action.Repo,
 		HeadBranch: action.HeadBranch, BaseBranch: action.BaseBranch,
 		Url: url, Title: title, Status: status, Number: num,
-		CreatedByUfo: true, HeadSha: head, Mergeable: mergeable, CiStatus: ci,
-		Metadata: metadataBytes(map[string]json.RawMessage{"source": jsonRaw("forge_ship")}),
+		CreatedByUfo: createdByUFO, HeadSha: head, Mergeable: mergeable, CiStatus: ci,
+		Metadata: meta,
 	})
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return
+			existing, gerr := q.GetPullRequestByForgeIdentity(ctx, db.GetPullRequestByForgeIdentityParams{
+				FleetID: op.FleetID, Provider: action.Provider, BaseUrl: action.BaseUrl, Repo: action.Repo, Number: num,
+			})
+			if gerr != nil {
+				return false, "database error while linking the pull request"
+			}
+			_, rerr := q.RelinkPullRequestToOperation(ctx, db.RelinkPullRequestToOperationParams{
+				ID: existing.ID, FleetID: op.FleetID, OperationID: opID, RoutineID: routineID,
+				HeadBranch: action.HeadBranch, BaseBranch: action.BaseBranch,
+				Url: url, Title: title, Status: status, HeadSha: head, Mergeable: mergeable, CiStatus: ci,
+				Metadata: meta,
+			})
+			if rerr != nil {
+				log.Printf("relink UFO pull request after conflict op %d: %v", op.ID, rerr)
+				return false, "database error while linking the pull request"
+			}
+			return true, ""
 		}
 		log.Printf("record UFO pull request op %d: %v", op.ID, err)
+		return false, "database error while linking the pull request"
 	}
+	return true, ""
 }
 
 func (s *Server) applyPullRequestSync(ctx context.Context, action db.ForgeAction, req completeForgeActionReq) {
@@ -811,6 +1206,7 @@ func (s *Server) enqueueSyncPullRequestAttempt(ctx context.Context, op db.Operat
 	})
 	if err != nil {
 		log.Printf("enqueue sync_pull_request op %d: %v", op.ID, err)
+		s.failForgeShip(ctx, op, prev, "could not queue sync_pull_request")
 	}
 }
 
@@ -832,7 +1228,7 @@ func (s *Server) enqueueMergePullRequest(ctx context.Context, op db.Operation, s
 	}
 }
 
-func (s *Server) enqueueIntegrateIntoBase(ctx context.Context, op db.Operation, push db.ForgeAction) {
+func (s *Server) enqueueMergeHeadIntoBaseBranch(ctx context.Context, op db.Operation, push db.ForgeAction) {
 	metaMap := map[string]json.RawMessage{"forge_ship": jsonRaw(true)}
 	if k := forgeMetaString(push.Metadata, "forge_key"); k != "" {
 		metaMap["forge_key"] = jsonRaw(k)
@@ -845,13 +1241,13 @@ func (s *Server) enqueueIntegrateIntoBase(ctx context.Context, op db.Operation, 
 		OperationID: pgtype.Int8{Int64: op.ID, Valid: true},
 		RoutineID:   push.RoutineID,
 		RoverID:     push.RoverID,
-		Kind:        "integrate_into_base",
+		Kind:        "merge_head_into_base_branch",
 		Provider:    push.Provider, BaseUrl: push.BaseUrl, Repo: push.Repo,
 		HeadBranch: push.HeadBranch, BaseBranch: push.BaseBranch,
 		CommitSha: push.CommitSha, Metadata: metadataBytes(metaMap),
 	})
 	if err != nil {
-		s.failForgeShip(ctx, op, push, "could not queue integrate_into_base")
+		s.failForgeShip(ctx, op, push, "could not queue merge_head_into_base_branch")
 	}
 }
 
@@ -867,6 +1263,9 @@ func (s *Server) operationWantsForgeShip(ctx context.Context, op db.Operation) b
 
 func (s *Server) maybeQueueForgeShip(ctx context.Context, op db.Operation, headBranch, commitSHA string) bool {
 	if loopMetadataBool(op.Metadata, "shipped") {
+		return false
+	}
+	if loopMetadataBool(op.Metadata, "pending_forge_ship") {
 		return false
 	}
 	commitSHA = strings.TrimSpace(commitSHA)
@@ -899,10 +1298,6 @@ func (s *Server) maybeQueueForgeShip(ctx context.Context, op db.Operation, headB
 		})
 		return false
 	}
-	base := s.operationShipBaseBranch(ctx, op)
-	if base == "" {
-		base = defaultPullRequestBaseBranch
-	}
 	head := strings.TrimSpace(headBranch)
 	if head == "" {
 		if b := operationMetadataNestedString(op.Metadata, "auto_commit", "branch"); b != "" {
@@ -915,6 +1310,16 @@ func (s *Server) maybeQueueForgeShip(ctx context.Context, op db.Operation, headB
 		}
 	}
 	if head == "" {
+		head = s.operationAutoCommitBranch(ctx, op)
+	}
+	if head == "" {
+		return false
+	}
+	base := s.operationShipBaseBranch(ctx, op)
+	if base == "" {
+		base = defaultPullRequestBaseBranch
+	}
+	if s.operationHasMatchingOpenPullRequest(ctx, op, cfg.Provider, cfg.BaseURL, cfg.Repo, head, base, commitSHA) {
 		return false
 	}
 	createPR := true
@@ -941,19 +1346,19 @@ func (s *Server) maybeQueueForgeShip(ctx context.Context, op db.Operation, headB
 	metaMap := s.forgeShipActionMetadata(cfg, rop, createPR, syncMode)
 	metaMap["ship_head_branch"] = jsonRaw(head)
 	metaMap["ship_commit_sha"] = jsonRaw(commitSHA)
-	kind := "push_branch"
+	kind := "push_head_branch"
 	actionHead := head
 	actionBase := base
 	actionSHA := commitSHA
 	if reference != "" && reference != base {
-		kind = "ensure_base_branch"
+		kind = "update_base_branch"
 		actionHead = reference
 		actionBase = base
 		actionSHA = ""
-		metaMap["next_push_branch"] = jsonRaw(true)
+		metaMap["next_push_head_branch"] = jsonRaw(true)
 		metaMap["ship_base_sync"] = jsonRaw(syncMode)
 	}
-	_, err = s.q.CreateForgeAction(ctx, db.CreateForgeActionParams{
+	err = s.createForgeActionWithOpMeta(ctx, db.CreateForgeActionParams{
 		FleetID:     op.FleetID,
 		OperationID: pgtype.Int8{Int64: op.ID, Valid: true},
 		RoutineID:   routineID,
@@ -962,6 +1367,9 @@ func (s *Server) maybeQueueForgeShip(ctx context.Context, op db.Operation, headB
 		Provider:    cfg.Provider, BaseUrl: cfg.BaseURL, Repo: cfg.Repo,
 		HeadBranch: actionHead, BaseBranch: actionBase, CommitSha: actionSHA,
 		Metadata: metadataBytes(metaMap),
+	}, op, map[string]any{
+		"pending_forge_ship": true,
+		"shipped":            false,
 	})
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -971,11 +1379,7 @@ func (s *Server) maybeQueueForgeShip(ctx context.Context, op db.Operation, headB
 		log.Printf("queue forge ship op %d: %v", op.ID, err)
 		return false
 	}
-	_ = s.q.SetOperationMetadata(ctx, db.SetOperationMetadataParams{
-		ID: op.ID, FleetID: op.FleetID,
-		Metadata: mergeOperationLoopMetadata(op.Metadata, map[string]any{"shipped": true}),
-	})
-	if kind == "ensure_base_branch" {
+	if kind == "update_base_branch" {
 		_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
 			OperationID: op.ID, AuthorType: "system",
 			Body: fmt.Sprintf("Queuing ship base sync of %s from %s (%s), then ship %s onto %s via %s (pull_request.create=%v).",
@@ -999,7 +1403,7 @@ func (s *Server) forgeShipActionMetadata(cfg forgeConfig, rop routineOperationCo
 	if createPR {
 		metaMap["next_open_pull_request"] = jsonRaw(true)
 	} else {
-		metaMap["next_integrate"] = jsonRaw(true)
+		metaMap["next_merge_head_into_base_branch"] = jsonRaw(true)
 	}
 	if labels := rop.pullRequestLabels(); len(labels) > 0 {
 		metaMap["labels"] = jsonRaw(labels)
@@ -1040,13 +1444,10 @@ func (s *Server) requeuePilotForShipBaseSync(ctx context.Context, op db.Operatio
 		return false
 	}
 	tries++
-	_ = s.q.SetOperationMetadata(ctx, db.SetOperationMetadataParams{
-		ID: op.ID, FleetID: op.FleetID,
-		Metadata: mergeOperationLoopMetadata(op.Metadata, map[string]any{
-			"ship_base_resolve_tries": tries,
-			"shipped":                 false,
-			"pending_forge_ship":      true,
-		}),
+	_ = patchOperationLoopMetadata(ctx, s.q, op, map[string]any{
+		"ship_base_resolve_tries": tries,
+		"shipped":                 false,
+		"pending_forge_ship":      true,
 	})
 	base := strings.TrimSpace(action.BaseBranch)
 	ref := strings.TrimSpace(action.HeadBranch)
@@ -1084,16 +1485,37 @@ func (s *Server) maybeRetryForgeShipAfterPilot(ctx context.Context, op db.Operat
 	}
 	head := loopMetadataString(op.Metadata, "last_commit_branch")
 	sha := loopMetadataString(op.Metadata, "last_commit_sha")
-	_ = s.q.SetOperationMetadata(ctx, db.SetOperationMetadataParams{
-		ID: op.ID, FleetID: op.FleetID,
-		Metadata: mergeOperationLoopMetadata(op.Metadata, map[string]any{
-			"pending_forge_ship": false,
-		}),
-	})
+	patch := map[string]any{"pending_forge_ship": false}
+	op.Metadata = mergeOperationLoopMetadata(op.Metadata, patch)
+	if err := patchOperationLoopMetadata(ctx, s.q, op, patch); err != nil {
+		return false
+	}
 	if head == "" || sha == "" {
 		return false
 	}
 	return s.maybeQueueForgeShip(ctx, op, head, sha)
+}
+
+func (s *Server) createForgeActionWithOpMeta(ctx context.Context, params db.CreateForgeActionParams, op db.Operation, metaPatch map[string]any) error {
+	if s.pool == nil {
+		if _, err := s.q.CreateForgeAction(ctx, params); err != nil {
+			return err
+		}
+		return patchOperationLoopMetadata(ctx, s.q, op, metaPatch)
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	qtx := s.q.WithTx(tx)
+	if _, err := qtx.CreateForgeAction(ctx, params); err != nil {
+		return err
+	}
+	if err := patchOperationLoopMetadata(ctx, qtx, op, metaPatch); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *Server) enqueuePushBranchAfterBaseSync(ctx context.Context, op db.Operation, ensure db.ForgeAction) {
@@ -1110,14 +1532,14 @@ func (s *Server) enqueuePushBranchAfterBaseSync(ctx context.Context, op db.Opera
 		return
 	}
 	metaMap := metadataMap(ensure.Metadata)
-	delete(metaMap, "next_push_branch")
+	delete(metaMap, "next_push_head_branch")
 	delete(metaMap, "ship_base_sync")
 	_, err := s.q.CreateForgeAction(ctx, db.CreateForgeActionParams{
 		FleetID:     ensure.FleetID,
 		OperationID: ensure.OperationID,
 		RoutineID:   ensure.RoutineID,
 		RoverID:     ensure.RoverID,
-		Kind:        "push_branch",
+		Kind:        "push_head_branch",
 		Provider:    ensure.Provider, BaseUrl: ensure.BaseUrl, Repo: ensure.Repo,
 		HeadBranch: head, BaseBranch: ensure.BaseBranch, CommitSha: sha,
 		Metadata: metadataBytes(metaMap),

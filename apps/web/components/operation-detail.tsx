@@ -780,7 +780,6 @@ export function OperationDetail() {
 
         <div className="min-h-0 flex-1 overflow-hidden px-4 pt-4 lg:px-10">
           <div className="mx-auto flex h-full min-h-0 w-full max-w-[78rem]">
-            {/* main */}
             <div className="min-w-0 flex-1 overflow-y-auto pb-2 pr-6">
               <div className="mx-auto w-full max-w-[52rem] space-y-4">
                 {editingBody ? (
@@ -945,7 +944,6 @@ export function OperationDetail() {
               </div>
             </div>
 
-            {/* properties rail */}
             <div className="min-h-0 w-72 shrink-0 overflow-y-auto border-l border-border bg-muted/20">
               <div className="divide-y divide-border/60 text-sm">
                 <div className="space-y-0.5 p-4">
@@ -1004,9 +1002,10 @@ export function OperationDetail() {
                 <div className="p-4">
                   <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium uppercase text-muted-foreground"><Tags className="size-3.5" /> {t("common.labels")}</p>
                   <Labels op={d.operation} />
+                </div>
 
                 {loopNotice && (
-                  <div className="border-t border-border p-4">
+                  <div className="p-4">
                     <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium uppercase text-muted-foreground"><RefreshCw className="size-3.5" /> {t("op.loop")}</p>
                     <div className="space-y-1">
                       {typeof loopNotice.iteration === "number" && (
@@ -1062,8 +1061,6 @@ export function OperationDetail() {
                   </div>
                 )}
                 {canManageSkills && <OperationSkills operationId={d.operation.id} fleetId={app.fleet} />}
-
-                </div>
 
                 <div className="p-4">
                   <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium uppercase text-muted-foreground"><Antenna className="size-3.5" /> {t("op.dispatchRoverTags")}</p>

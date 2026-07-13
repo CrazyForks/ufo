@@ -31,9 +31,15 @@ run_diff() {
 }
 
 run_api() {
-  step "api: go build / vet / test"
+  step "api: gofmt / build / vet / test"
   (
     cd apps/api
+    unformatted="$(gofmt -l .)"
+    if [ -n "$unformatted" ]; then
+      echo "gofmt needed on:" >&2
+      echo "$unformatted" >&2
+      return 1
+    fi
     go build ./...
     go vet ./...
     go test ./...

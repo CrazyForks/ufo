@@ -1230,6 +1230,66 @@ func TestRoverRunOwnership(t *testing.T) {
 
 }
 
+func TestForgeActionLeaseAndIdempotentCompletion(t *testing.T) {
+	ts, srv := newTestServerWithNotifier(t)
+	owner := signup(t, ts, "forge-action")
+	code, body := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Forge Actions"})
+	if code != http.StatusCreated {
+		t.Fatalf("create fleet: %d %s", code, body)
+	}
+	fleetID := field(t, body, "id")
+	_, enrollment := do(t, owner, "POST", ts.URL+"/v1/enrollment-codes", "", map[string]any{
+		"fleet_id": fleetID, "name": "forge-rover",
+	})
+	_, enrolled := do(t, &http.Client{}, "POST", ts.URL+"/v1/rovers", field(t, enrollment, "code"), map[string]any{
+		"name": "forge-rover",
+	})
+	roverToken := field(t, enrolled, "token")
+
+	var actionID string
+	if err := srv.pool.QueryRow(context.Background(), `
+		INSERT INTO forge_actions (fleet_id, kind)
+		SELECT id, 'push_head_branch' FROM fleets WHERE public_id = $1
+		RETURNING public_id`, fleetID).Scan(&actionID); err != nil {
+		t.Fatalf("create forge action: %v", err)
+	}
+	code, accepted := do(t, &http.Client{}, "POST", ts.URL+"/v1/forge-actions/accept", roverToken, nil)
+	if code != http.StatusOK || field(t, accepted, "id") != actionID {
+		t.Fatalf("accept forge action: %d %s", code, accepted)
+	}
+	var acceptedAction acceptedForgeAction
+	if err := json.Unmarshal(accepted, &acceptedAction); err != nil || acceptedAction.LeaseSeconds != forgeActionStaleSeconds {
+		t.Fatalf("forge action lease = %d, want %d (%v)", acceptedAction.LeaseSeconds, forgeActionStaleSeconds, err)
+	}
+	if _, err := srv.pool.Exec(context.Background(), "UPDATE forge_actions SET accepted_at = now() - interval '20 minutes' WHERE public_id = $1", actionID); err != nil {
+		t.Fatalf("age forge action lease: %v", err)
+	}
+	if code, body := do(t, &http.Client{}, "PUT", ts.URL+"/v1/forge-actions/"+actionID+"/heartbeat", roverToken, nil); code != http.StatusNoContent {
+		t.Fatalf("heartbeat forge action: %d %s", code, body)
+	}
+	if code, body := do(t, &http.Client{}, "POST", ts.URL+"/v1/forge-actions/accept", roverToken, nil); code != http.StatusNoContent {
+		t.Fatalf("renewed forge action was reaccepted: %d %s", code, body)
+	}
+
+	result := map[string]any{"status": "succeeded", "result_sha": "abc123"}
+	for attempt := 1; attempt <= 2; attempt++ {
+		want := http.StatusOK
+		if attempt == 2 {
+			want = http.StatusNoContent
+		}
+		if code, body := do(t, &http.Client{}, "PATCH", ts.URL+"/v1/forge-actions/"+actionID, roverToken, result); code != want {
+			t.Fatalf("complete forge action attempt %d: %d, want %d (%s)", attempt, code, want, body)
+		}
+	}
+	if code, body := do(t, &http.Client{}, "PUT", ts.URL+"/v1/forge-actions/"+actionID+"/heartbeat", roverToken, nil); code != http.StatusNoContent {
+		t.Fatalf("heartbeat finalized forge action: %d %s", code, body)
+	}
+	missing := "00000000-0000-0000-0000-000000000000"
+	if code, body := do(t, &http.Client{}, "PATCH", ts.URL+"/v1/forge-actions/"+missing, roverToken, result); code != http.StatusNotFound {
+		t.Fatalf("complete missing forge action: %d %s", code, body)
+	}
+}
+
 func TestRoverListReportsRunningUnits(t *testing.T) {
 	ts := newTestServer(t)
 	owner := signup(t, ts, "rover-usage")
@@ -1845,8 +1905,27 @@ func TestFinalizedRunDoesNotLeaseRequeue(t *testing.T) {
 		t.Fatalf("accept: %d %s", code, accept)
 	}
 	runID := field(t, accept, "id")
-	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+runID+"/result", rover, map[string]any{"status": "succeeded", "message": "done"}); code != http.StatusNoContent {
+	result := map[string]any{"status": "succeeded", "message": "done", "operation_status": "done"}
+	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+runID+"/result", rover, result); code != http.StatusNoContent {
 		t.Fatalf("result: %d %s", code, b)
+	}
+	if code, b := do(t, owner, "PATCH", ts.URL+"/v1/operations/"+operation, "", map[string]string{"status": "in_progress"}); code != http.StatusOK {
+		t.Fatalf("reopen operation: %d %s", code, b)
+	}
+	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+runID+"/result", rover, result); code != http.StatusNoContent {
+		t.Fatalf("replay result: %d %s", code, b)
+	}
+	_, detail := do(t, owner, "GET", ts.URL+"/v1/operations/"+operation, "", nil)
+	var got struct {
+		Operation struct {
+			Status string `json:"status"`
+		} `json:"operation"`
+	}
+	if err := json.Unmarshal(detail, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Operation.Status != "in_progress" {
+		t.Fatalf("replayed result changed operation status to %q", got.Operation.Status)
 	}
 
 	pid, ok := parseUUID(runID)
@@ -1902,8 +1981,8 @@ func TestFinalizedRunAllowsStatusBlocksCancelAndHeartbeat(t *testing.T) {
 	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+runID+"/result", rover, map[string]any{"status": "succeeded", "message": "done"}); code != http.StatusNoContent {
 		t.Fatalf("result: %d %s", code, b)
 	}
-	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+runID+"/result", rover, map[string]any{"status": "failed", "message": "again"}); code != http.StatusConflict {
-		t.Fatalf("second result = %d, want 409 (%s)", code, b)
+	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+runID+"/result", rover, map[string]any{"status": "failed", "message": "again"}); code != http.StatusNoContent {
+		t.Fatalf("second result = %d, want 204 (%s)", code, b)
 	}
 	if code, b := do(t, &http.Client{}, "PUT", ts.URL+"/v1/runs/"+runID+"/heartbeat", rover, nil); code != http.StatusNotFound && code != http.StatusConflict {
 		t.Fatalf("heartbeat after finalize = %d, want 404/409 (%s)", code, b)

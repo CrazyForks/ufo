@@ -3,8 +3,8 @@
 <p align="center"><strong>An open-source zero-human ops platform</strong> 🦾🩶</p>
 
 <p align="center">
-  Connect AI sessions into a zero-human ops loop: keep context, route work,
-  and hand off across runs!
+  Orchestrate AI sessions into a zero-human ops loop: retain context, route
+  work, and hand off across runs!
 </p>
 
 <p align="center">
@@ -12,7 +12,7 @@
   <a href="https://github.com/fengsi/ufo/releases"><img alt="Release" src="https://img.shields.io/github/v/release/fengsi/ufo?style=flat-square"></a>
   <a href="https://crates.io/crates/ufo-cli"><img alt="crates.io" src="https://img.shields.io/crates/v/ufo-cli?style=flat-square"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/fengsi/ufo?style=flat-square"></a>
-  <a href="CHANGELOG.md"><img alt="Status" src="https://img.shields.io/badge/status-beta-blue?style=flat-square"></a>
+  <img alt="Status" src="https://img.shields.io/badge/status-beta-blue?style=flat-square">
   <a href="apps/api/go.mod"><img alt="Go" src="https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go&style=flat-square"></a>
   <a href="apps/web/package.json"><img alt="Node" src="https://img.shields.io/badge/Node-20.9%2B-5FA04E?logo=node.js&style=flat-square"></a>
   <a href="apps/rover/Cargo.toml"><img alt="Rust" src="https://img.shields.io/badge/Rust-2024-B7410E?logo=rust&style=flat-square"></a>
@@ -32,9 +32,9 @@ fleet](.github/assets/banner.png)
 
 ## What is UFO?
 
-UFO connects AI sessions into a zero-human ops loop for complex work, not just
-coding. Work lands on the **board**, context keeps compounding, and each run
-can hand off cleanly to the next while workspaces and credentials stay on
+UFO orchestrates AI sessions into a zero-human ops loop for complex work, not
+just coding. Work lands on the **board**, context keeps compounding, and each
+run can hand off cleanly to the next while workspaces and credentials stay on
 machines you control.
 
 Three layers:
@@ -54,9 +54,9 @@ fleet when needed; the product direction is zero-human ops.
 
 ## Why UFO?
 
-Most agent setups still live across separate sessions: context is split
-between chat tabs, terminals, local worktrees, and human notes. Each run can
-work well, but handoffs lack one shared operational picture.
+Agent workflows are fragmented: context is scattered across chat tabs,
+terminals, local worktrees, and human notes. Individual runs can work well,
+but handoffs lack a unified operational picture.
 
 | Standalone AI sessions | UFO |
 | --- | --- |
@@ -81,9 +81,9 @@ same trust boundary.
   required cloud.
 - **Isolated worktrees.** Each run gets its own checkout; apply, branch, or
   refresh from source when ready.
-- **Autonomous legs.** **Routines** re-pulse after **done**; optional
-  auto-commit branch for unattended re-pulse loops (stall / fail-closed
-  guards).
+- **Autonomous legs.** **Routines** re-pulse after **done** to drive the next
+  leg; optional auto-commit branch for unattended re-pulse loops (stall /
+  fail-closed guards).
 - **Skills.** Reusable packs (`SKILL.md`) on the fleet, bound to operations or
   **crews**; materialised into the worktree for the pilot.
 - **Crews & membership.** Fleets, roles, email invites, crews (pilots +
@@ -146,7 +146,7 @@ local AI CLIs on `PATH`.
 ### 4. Put a pilot on PATH
 
 Install at least one supported CLI and ensure it's on `PATH` (e.g. `claude`,
-`codex`, `grok`, `copilot`, ...). The rover only runs pilots it can find.
+`codex`, `grok`, ...). The rover only runs pilots it can find.
 
 ### 5. Dispatch the first operation
 
@@ -254,9 +254,9 @@ flowchart TD
     rover --> pilot["Pilot CLI<br/>Claude / Codex / Grok"]
 ```
 
-**Trust note:** anyone in a fleet can dispatch work to that fleet's rovers.
-Pilots run as the OS user that started the rover. Dedicated account or host
-for serious fleets. See [SECURITY.md](SECURITY.md).
+**Trust note:** Anyone in a fleet can dispatch work to that fleet's rovers.
+Pilots run with the privileges of the OS user that started the rover. Use a
+dedicated account or host for serious fleets. See [SECURITY.md](SECURITY.md).
 
 ---
 
@@ -270,7 +270,14 @@ Copy [`.env.example`](.env.example) to `.env` for overrides.
 | `UFO_HUB_DATABASE_URL` | local Docker Postgres | api |
 | `UFO_HUB_JWT_PRIVATE_KEY` | required in production | api |
 | `UFO_HUB_JWT_ALLOW_EPHEMERAL` | set `1` for local-only | api |
+| `UFO_HUB_MIN_ROVER_VERSION` | current release | api |
+| `UFO_HUB_MAX_ROVER_VERSION` | unset | api |
 | `UFO_ROVER_FORGE_TOKEN` | unset | rover (forge ship) |
+
+Rover version bounds use semver. Invalid bounds, or a maximum below the
+effective minimum, stop the Hub at startup. Rovers wait for a reachable,
+compatible Hub and recheck compatibility after reconnecting; upgrade with
+`ufo rover upgrade` when the Hub requires a newer rover.
 
 `UFO_ROVER_FORGE_TOKEN` is the default env name for a forge credential on the
 rover host (GitHub PAT, GitLab token, etc.). Integrations can point at another

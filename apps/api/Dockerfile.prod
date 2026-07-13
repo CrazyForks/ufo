@@ -17,7 +17,10 @@ RUN go mod download
 COPY . .
 
 # Compile the static binary
-RUN CGO_ENABLED=0 go build -ldflags="-w -s" -o /ufo-api ./cmd/api
+ARG UFO_VERSION=
+RUN CGO_ENABLED=0 go build \
+    -ldflags="-w -s -X ufo/apps/api/internal/server.hubReleaseVersion=${UFO_VERSION}" \
+    -o /ufo-api ./cmd/api
 
 # Final minimal run stage
 FROM ${API_RUNTIME_IMAGE}

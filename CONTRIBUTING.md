@@ -39,7 +39,7 @@ Equivalent manual commands:
 
 ```bash
 # api
-(cd apps/api && go build ./... && go vet ./... && go test ./...)
+(cd apps/api && test -z "$(gofmt -l .)" && go build ./... && go vet ./... && go test ./...)
 
 # web
 (cd apps/web && npm ci && npm run lint && npm run build)

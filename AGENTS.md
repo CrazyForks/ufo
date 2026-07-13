@@ -17,8 +17,9 @@ Violate any of these and the task is not done:
    touched, then report outcomes. Do not claim success without running
    them. Prefer one call when several surfaces changed:
    `scripts/verify.sh` (or `scripts/verify.sh api web rover` ...).
-   - API Go: `GOCACHE="${TMPDIR:-/tmp}/ufo-gocache" go test` on packages
-     you changed (widen to `./...` when shared).
+   - API Go: `gofmt -l` clean, then
+     `GOCACHE="${TMPDIR:-/tmp}/ufo-gocache" go test` on packages you
+     changed (widen to `./...` when shared).
    - Rover: `cargo fmt --check`, `cargo clippy -- -D warnings`, and
      `cargo test` for relevant tests (full suite when forge/main/tests
      change).
