@@ -28,12 +28,12 @@ One call (recommended):
 scripts/verify.sh
 ```
 
-Suites: `diff`, `api`, `web`, `rover`, `openapi` (default all of
-those). Optional: `sqlc` (regenerate and fail if dirty). Examples:
+Suites (default all): `diff`, `docs`, `api`, `web`, `rover`, `openapi`.
+Optional: `sqlc` (regenerate and fail if dirty). Examples:
 `scripts/verify.sh api web`, `scripts/verify.sh rover`.
 
-Skip the web production build with `UFO_CHECK_SKIP_WEB_BUILD=1` when you
-only need typecheck.
+Skip the web production build with `UFO_CHECK_SKIP_WEB_BUILD=1` when you only
+need typecheck.
 
 Equivalent manual commands:
 
@@ -48,16 +48,15 @@ Equivalent manual commands:
 (cd apps/rover && cargo fmt --check && cargo clippy -- -D warnings && cargo test && cargo build)
 
 # protocol (if you changed an endpoint)
-npx --yes @redocly/cli@2.36.0 lint apps/api/internal/spec/openapi.yaml
+npx --yes @redocly/cli@2.40.0 lint apps/api/internal/spec/openapi.yaml
 ```
 
 CI runs the same class of checks on protected branches.
 
 Keep related generated and documentation changes in the same pull request:
 
-- SQL changes: add a migration under
-  `apps/api/internal/migrate/migrations/`, run
-  `go generate ./internal/migrate` (updates `migrations.sum`), edit
+- SQL changes: add a migration under `apps/api/internal/migrate/migrations/`,
+  run `go generate ./internal/migrate` (updates `migrations.sum`), edit
   `apps/api/internal/db/queries/*.sql`, run `sqlc generate`, and commit the
   generated `apps/api/internal/db` files and `migrations.sum`.
 - API changes: update `apps/api/internal/spec/openapi.yaml` and lint it.
@@ -79,10 +78,9 @@ Keep related generated and documentation changes in the same pull request:
 
 - **Commits:** use [Gitmoji](https://gitmoji.dev) followed by a concise,
   imperative summary, for example `✨ Add operation labels`.
-- **Database:** add migrations under
-  `apps/api/internal/migrate/migrations/`; `go generate ./internal/migrate`;
-  edit queries; `sqlc generate`; commit SQL, `migrations.sum`, and generated
-  `apps/api/internal/db` changes.
+- **Database:** add migrations under `apps/api/internal/migrate/migrations/`;
+  `go generate ./internal/migrate`; edit queries; `sqlc generate`; commit SQL,
+  `migrations.sum`, and generated `apps/api/internal/db` changes.
 - **API contract:** if you add or change an endpoint, update
   [`apps/api/internal/spec/openapi.yaml`](apps/api/internal/spec/openapi.yaml)
   in the same pull request.

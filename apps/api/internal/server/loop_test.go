@@ -2,6 +2,8 @@ package server
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -28,14 +30,61 @@ func TestIsTerminalOperationStatus(t *testing.T) {
 	}
 }
 
-func TestRePulseOnCloseConfigDefault(t *testing.T) {
-	cfg := routineOperationConfigFromMetadata(db.Routine{Metadata: []byte(`{"operation":{}}`)})
-	if !cfg.RePulseOnClose || !cfg.SkipIfActive {
-		t.Fatalf("defaults: re_pulse=%v skip=%v", cfg.RePulseOnClose, cfg.SkipIfActive)
+func TestRoutineContinuesOnSuccess(t *testing.T) {
+	if routineContinuesOnSuccess(db.Routine{Metadata: []byte(`{}`)}) {
+		t.Fatal("empty loop policy should run once")
 	}
-	cfg = routineOperationConfigFromMetadata(db.Routine{Metadata: []byte(`{"operation":{"pulse":{"re_pulse_on_close":false}}}`)})
-	if cfg.RePulseOnClose {
-		t.Fatal("expected re_pulse_on_close false")
+	if !routineContinuesOnSuccess(db.Routine{Metadata: []byte(`{"loop":{"continue_on_success":true}}`)}) {
+		t.Fatal("enabled loop policy should continue")
+	}
+}
+
+func TestRoutinePulseMetadata(t *testing.T) {
+	w := httptest.NewRecorder()
+	raw, next, ok := routinePulseMetadataFromRequest(w, nil)
+	if !ok || next.Valid {
+		t.Fatalf("on-demand pulse: ok=%v next=%v body=%s", ok, next.Valid, w.Body)
+	}
+	var pulse map[string]any
+	if err := json.Unmarshal(raw, &pulse); err != nil {
+		t.Fatalf("decode pulse: %v", err)
+	}
+	if pulse["schedule"] != nil {
+		t.Fatalf("normalized pulse = %#v", pulse)
+	}
+
+	w = httptest.NewRecorder()
+	raw, next, ok = routinePulseMetadataFromRequest(
+		w,
+		json.RawMessage(`{"schedule":{"cron":"@daily","enabled":false}}`),
+	)
+	if !ok || next.Valid || !strings.Contains(string(raw), `"cron":"@daily"`) {
+		t.Fatalf("paused schedule: ok=%v next=%v raw=%s body=%s", ok, next.Valid, raw, w.Body)
+	}
+
+	w = httptest.NewRecorder()
+	if _, _, ok := routinePulseMetadataFromRequest(w, json.RawMessage(`{"schedule":{"cron":"@daily","enabled":"yes"}}`)); ok || w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid schedule: ok=%v status=%d", ok, w.Code)
+	}
+}
+
+func TestRoutineLoopMetadata(t *testing.T) {
+	w := httptest.NewRecorder()
+	raw, ok := routineLoopMetadataFromRequest(w, nil)
+	if !ok {
+		t.Fatalf("default loop: %s", w.Body)
+	}
+	var loop map[string]any
+	if err := json.Unmarshal(raw, &loop); err != nil {
+		t.Fatalf("decode loop: %v", err)
+	}
+	if loop["continue_on_success"] != false {
+		t.Fatalf("default loop = %#v", loop)
+	}
+
+	w = httptest.NewRecorder()
+	if _, ok := routineLoopMetadataFromRequest(w, json.RawMessage(`{"continue_on_success":"yes"}`)); ok || w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid loop: ok=%v status=%d", ok, w.Code)
 	}
 }
 
@@ -127,14 +176,14 @@ func TestSourceActionHadChanges(t *testing.T) {
 	}
 }
 
-func TestSourceActionWantsRePulse(t *testing.T) {
-	if sourceActionWantsRePulse([]byte(`{}`)) {
+func TestSourceActionIsAutoCommit(t *testing.T) {
+	if sourceActionIsAutoCommit([]byte(`{}`)) {
 		t.Fatal("empty metadata")
 	}
-	if !sourceActionWantsRePulse([]byte(`{"re_pulse_on_success":true}`)) {
+	if !sourceActionIsAutoCommit([]byte(`{"auto_commit":true}`)) {
 		t.Fatal("want true")
 	}
-	if sourceActionWantsRePulse([]byte(`{"re_pulse_on_success":false}`)) {
+	if sourceActionIsAutoCommit([]byte(`{"auto_commit":false}`)) {
 		t.Fatal("want false")
 	}
 }
@@ -159,11 +208,11 @@ func TestAutoCommitMadeProgressPrefersTipFlags(t *testing.T) {
 }
 
 func TestAutoCommitPostSuccessAction(t *testing.T) {
-	if got := autoCommitPostSuccessAction(true, 0, true, true); got != "repulse" {
-		t.Fatalf("progress+repulse+ship = %q, want repulse", got)
+	if got := autoCommitPostSuccessAction(true, 0, true, true); got != "continue_loop" {
+		t.Fatalf("progress+Loop+ship = %q, want continue_loop", got)
 	}
-	if got := autoCommitPostSuccessAction(true, 0, true, false); got != "repulse" {
-		t.Fatalf("progress+repulse = %q, want repulse", got)
+	if got := autoCommitPostSuccessAction(true, 0, true, false); got != "continue_loop" {
+		t.Fatalf("progress+Loop = %q, want continue_loop", got)
 	}
 	if got := autoCommitPostSuccessAction(true, 0, false, true); got != "ship_oneshot" {
 		t.Fatalf("progress+oneshot ship = %q, want ship_oneshot", got)
@@ -171,11 +220,11 @@ func TestAutoCommitPostSuccessAction(t *testing.T) {
 	if got := autoCommitPostSuccessAction(false, maxLoopEmptyStreak, true, false); got != "ship_or_pause" {
 		t.Fatalf("empty streak = %q, want ship_or_pause", got)
 	}
-	if got := autoCommitPostSuccessAction(false, 1, true, false); got != "repulse" {
-		t.Fatalf("partial empty = %q, want repulse", got)
+	if got := autoCommitPostSuccessAction(false, 1, true, false); got != "continue_loop" {
+		t.Fatalf("partial empty = %q, want continue_loop", got)
 	}
 	if got := autoCommitPostSuccessAction(true, 0, false, false); got != "none" {
-		t.Fatalf("no repulse no ship = %q, want none", got)
+		t.Fatalf("no Loop no ship = %q, want none", got)
 	}
 }
 
@@ -237,7 +286,6 @@ func TestAutoCommitSourceActionStampsChecksShape(t *testing.T) {
 	))
 	meta := metadataBytes(map[string]json.RawMessage{
 		"auto_commit":              jsonRaw(true),
-		"re_pulse_on_success":      jsonRaw(true),
 		"drop_worktree_on_success": jsonRaw(true),
 		"checks_commands":          jsonRaw(cmds),
 		"checks_timeout_seconds":   jsonRaw(timeout),
@@ -247,8 +295,8 @@ func TestAutoCommitSourceActionStampsChecksShape(t *testing.T) {
 	if len(gotCmds) != 1 || gotCmds[0] != "go test ./..." || gotTimeout != 90 {
 		t.Fatalf("stamped checks = %v timeout=%d", gotCmds, gotTimeout)
 	}
-	if !sourceActionWantsRePulse(meta) {
-		t.Fatal("auto-commit metadata must set re_pulse_on_success for failed-check requeue")
+	if !sourceActionIsAutoCommit(meta) {
+		t.Fatal("auto-commit metadata must identify the action")
 	}
 }
 

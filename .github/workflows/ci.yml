@@ -57,6 +57,7 @@ jobs:
       - name: Install & check
         working-directory: apps/web
         run: |
+          node ../../scripts/check-doc-wrap.mjs
           npm ci
           npm run lint
           npm run build
@@ -112,7 +113,7 @@ jobs:
         with:
           node-version: "26"
       - name: Lint spec
-        run: npx --yes @redocly/cli@2.36.0 lint apps/api/internal/spec/openapi.yaml
+        run: npx --yes @redocly/cli@2.40.0 lint apps/api/internal/spec/openapi.yaml
 
   release-scripts:
     name: Release Scripts

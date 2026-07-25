@@ -45,14 +45,14 @@ export type Label = { id: string; name: string; color: string; created_at: strin
 export type SkillFile = { path: string; content: string; size_bytes: number; created_at: string; updated_at: string };
 export type Skill = { id: string; name: string; slug: string; description: string; archived: boolean; files: SkillFile[]; created_at: string; updated_at: string };
 export type AssigneeType = "pilot" | "user" | "crew";
-export type RoutineTriggerType = "manual" | "schedule";
 export type RoutineMetadata = {
-  trigger?: { kind?: RoutineTriggerType; cron?: string; enabled?: boolean };
+  pulse?: {
+    schedule?: { cron?: string; enabled?: boolean };
+  };
+  loop?: { continue_on_success?: boolean };
   operation?: {
-    pulse?: {
+    dispatch?: {
       start_immediately?: boolean;
-      skip_if_active?: boolean;
-      re_pulse_on_close?: boolean;
     };
     auto_commit?: {
       branch?: string;

@@ -6,6 +6,7 @@
 #   scripts/verify.sh api web      # selected suites
 #   scripts/verify.sh rover
 #   scripts/verify.sh openapi
+#   scripts/verify.sh docs
 #   scripts/verify.sh diff
 #   scripts/verify.sh sqlc         # regenerate sqlc; fail if generated tree dirty
 #   scripts/verify.sh list
@@ -28,6 +29,11 @@ run_diff() {
   step "git diff --check"
   git diff --check
   git diff --cached --check
+}
+
+run_docs() {
+  step "docs: Markdown prose wraps at 78 source characters"
+  node scripts/check-doc-wrap.mjs
 }
 
 run_api() {
@@ -68,7 +74,7 @@ run_rover() {
 
 run_openapi() {
   step "openapi lint"
-  npx --yes @redocly/cli@2.36.0 lint apps/api/internal/spec/openapi.yaml
+  npx --yes @redocly/cli@2.40.0 lint apps/api/internal/spec/openapi.yaml
 }
 
 run_sqlc() {
@@ -85,7 +91,7 @@ usage() {
   sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
 }
 
-ALL="diff api web rover openapi"
+ALL="diff docs api web rover openapi"
 
 if [ "$#" -eq 0 ]; then
   set -- $ALL
@@ -102,7 +108,7 @@ for arg in "$@"; do
         "run_$s"
       done
       ;;
-    diff | api | web | rover | openapi | sqlc)
+    diff | docs | api | web | rover | openapi | sqlc)
       "run_$arg"
       ;;
     *)

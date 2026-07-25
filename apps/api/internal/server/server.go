@@ -193,7 +193,7 @@ func clientIP(r *http.Request, trustProxy bool) string {
 }
 
 const (
-	currentRoverVersion     = "0.7.3"
+	currentRoverVersion     = "0.7.5"
 	minProtocolRoverVersion = "0.7.3"
 	roverVersionHeader      = "X-UFO-Rover-Version"
 	maxRoverUnits           = 100
@@ -2060,10 +2060,15 @@ const (
 	operationMetadataSubOperationsEnabled = "sub_operations_enabled"
 	operationMetadataWorktreeName         = "worktree_name"
 	operationMetadataMissionMove          = "mission_move"
+	operationMetadataMissionLearning      = "mission_learning"
 	metadataContext                       = "context"
+	metadataLearning                      = "learning"
 	metadataWorktreeEnabled               = "worktree_enabled"
-	routineMetadataTrigger                = "trigger"
+	routineMetadataPulse                  = "pulse"
+	routineMetadataLoop                   = "loop"
 	routineMetadataOperation              = "operation"
+	maxMissionLearningEntries             = 50
+	maxMissionLearningContextBytes        = 16 * 1024
 )
 
 var worktreeSummarySkip = map[string]bool{
@@ -2235,31 +2240,33 @@ func nestedMetadataMap(raw []byte, key string) map[string]json.RawMessage {
 	return child
 }
 
-func routineTriggerCron(r db.Routine) string {
-	var cron string
-	if raw, ok := nestedMetadataMap(r.Metadata, routineMetadataTrigger)["cron"]; ok {
-		_ = json.Unmarshal(raw, &cron)
+func routineScheduleFingerprint(raw []byte) (cron string, enabled, configured bool) {
+	pulse := nestedMetadataMap(raw, routineMetadataPulse)
+	rawSchedule, configured := pulse["schedule"]
+	if !configured {
+		return "", false, false
 	}
-	return strings.TrimSpace(cron)
-}
-
-func routineTriggerFingerprint(raw []byte) (kind, cron string, enabled bool) {
-	m := nestedMetadataMap(raw, routineMetadataTrigger)
-	kind = "manual"
+	var schedule map[string]json.RawMessage
+	if json.Unmarshal(rawSchedule, &schedule) != nil || schedule == nil {
+		return "", false, false
+	}
 	enabled = true
-	if rawKind, ok := m["kind"]; ok {
-		var v string
-		if err := json.Unmarshal(rawKind, &v); err == nil && strings.TrimSpace(v) != "" {
-			kind = strings.TrimSpace(v)
-		}
-	}
-	if rawCron, ok := m["cron"]; ok {
+	if rawCron, ok := schedule["cron"]; ok {
 		_ = json.Unmarshal(rawCron, &cron)
 	}
-	if rawEnabled, ok := m["enabled"]; ok {
+	if rawEnabled, ok := schedule["enabled"]; ok {
 		_ = json.Unmarshal(rawEnabled, &enabled)
 	}
-	return kind, strings.TrimSpace(cron), enabled
+	return strings.TrimSpace(cron), enabled, true
+}
+
+func routineContinuesOnSuccess(r db.Routine) bool {
+	raw, ok := nestedMetadataMap(r.Metadata, routineMetadataLoop)["continue_on_success"]
+	if !ok {
+		return false
+	}
+	var enabled bool
+	return json.Unmarshal(raw, &enabled) == nil && enabled
 }
 
 type routineAssigneeRef struct {
@@ -2269,8 +2276,6 @@ type routineAssigneeRef struct {
 
 type routineOperationConfig struct {
 	StartImmediately      bool
-	SkipIfActive          bool
-	RePulseOnClose        bool
 	AutoCommitBranch      string
 	DropWorktreeOnCommit  bool
 	CreatePullRequest     bool
@@ -2321,25 +2326,17 @@ func parseAutoCommitBranchValue(branch string) string {
 func routineOperationConfigFromMetadata(r db.Routine) routineOperationConfig {
 	m := nestedMetadataMap(r.Metadata, routineMetadataOperation)
 	cfg := routineOperationConfig{
-		StartImmediately: true, SkipIfActive: true, RePulseOnClose: true,
+		StartImmediately:     true,
 		DropWorktreeOnCommit: true, CreatePullRequest: false,
 		PullRequestBaseBranch: defaultPullRequestBaseBranch,
 	}
-	if raw, ok := m["pulse"]; ok {
-		var pulse struct {
+	if raw, ok := m["dispatch"]; ok {
+		var dispatch struct {
 			StartImmediately *bool `json:"start_immediately"`
-			SkipIfActive     *bool `json:"skip_if_active"`
-			RePulseOnClose   *bool `json:"re_pulse_on_close"`
 		}
-		if err := json.Unmarshal(raw, &pulse); err == nil {
-			if pulse.StartImmediately != nil {
-				cfg.StartImmediately = *pulse.StartImmediately
-			}
-			if pulse.SkipIfActive != nil {
-				cfg.SkipIfActive = *pulse.SkipIfActive
-			}
-			if pulse.RePulseOnClose != nil {
-				cfg.RePulseOnClose = *pulse.RePulseOnClose
+		if err := json.Unmarshal(raw, &dispatch); err == nil {
+			if dispatch.StartImmediately != nil {
+				cfg.StartImmediately = *dispatch.StartImmediately
 			}
 		}
 	}
@@ -3406,8 +3403,24 @@ func activeRunConflict(err error) bool {
 }
 
 func (s *Server) setOperationStatus(ctx context.Context, q *db.Queries, op db.Operation, status string) error {
+	if status == "done" && q == s.q && s.pool != nil {
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback(ctx)
+		if err := s.setOperationStatus(ctx, s.q.WithTx(tx), op, status); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
 	if err := q.SetOperationStatus(ctx, db.SetOperationStatusParams{ID: op.ID, FleetID: op.FleetID, Status: status}); err != nil {
 		return err
+	}
+	if status == "done" {
+		if err := s.promoteOperationMissionLearning(ctx, q, op); err != nil {
+			return err
+		}
 	}
 	if !op.MainOperationID.Valid || status == "done" || status == "canceled" {
 		return nil
@@ -3417,6 +3430,161 @@ func (s *Server) setOperationStatus(ctx context.Context, q *db.Queries, op db.Op
 		return nil
 	}
 	return q.SetOperationStatus(ctx, db.SetOperationStatusParams{ID: mainOperation.ID, FleetID: mainOperation.FleetID, Status: "in_progress"})
+}
+
+type missionLearningArtifact struct {
+	Kind    string `json:"kind"`
+	Path    string `json:"path"`
+	Summary string `json:"summary,omitempty"`
+}
+
+type missionLearning struct {
+	Summary   string                    `json:"summary"`
+	Artifacts []missionLearningArtifact `json:"artifacts,omitempty"`
+	Pilot     string                    `json:"pilot,omitempty"`
+	RunID     string                    `json:"run_id,omitempty"`
+}
+
+type missionLearningEntry struct {
+	OperationID    string                    `json:"operation_id"`
+	OperationCode  string                    `json:"operation_code"`
+	OperationTitle string                    `json:"operation_title"`
+	Summary        string                    `json:"summary"`
+	Artifacts      []missionLearningArtifact `json:"artifacts,omitempty"`
+	Pilot          string                    `json:"pilot,omitempty"`
+	CapturedAt     time.Time                 `json:"captured_at"`
+}
+
+func missionLearningEntries(metadata []byte) map[string]missionLearningEntry {
+	raw, ok := metadataMap(metadata)[metadataLearning]
+	if !ok {
+		return nil
+	}
+	var learning struct {
+		Entries map[string]missionLearningEntry `json:"entries"`
+	}
+	if json.Unmarshal(raw, &learning) != nil || len(learning.Entries) == 0 {
+		return nil
+	}
+	return learning.Entries
+}
+
+func pruneMissionLearningEntries(entries map[string]missionLearningEntry) map[string]missionLearningEntry {
+	if len(entries) <= maxMissionLearningEntries {
+		return entries
+	}
+	list := make([]missionLearningEntry, 0, len(entries))
+	for _, entry := range entries {
+		list = append(list, entry)
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].CapturedAt.Before(list[j].CapturedAt) })
+	list = list[len(list)-maxMissionLearningEntries:]
+	out := make(map[string]missionLearningEntry, len(list))
+	for _, entry := range list {
+		if entry.OperationID == "" {
+			continue
+		}
+		out[entry.OperationID] = entry
+	}
+	return out
+}
+
+func missionLearningMetadata(entries map[string]missionLearningEntry) json.RawMessage {
+	if len(entries) == 0 {
+		return json.RawMessage("null")
+	}
+	return jsonRaw(map[string]any{"entries": entries})
+}
+
+func (s *Server) pruneMissionLearningIfNeeded(ctx context.Context, q *db.Queries, missionID int64) error {
+	mission, err := q.GetMission(ctx, missionID)
+	if err != nil {
+		return err
+	}
+	entries := missionLearningEntries(mission.Metadata)
+	if len(entries) <= maxMissionLearningEntries {
+		return nil
+	}
+	pruned := pruneMissionLearningEntries(entries)
+	return q.MergeMissionMetadata(ctx, db.MergeMissionMetadataParams{
+		ID: missionID, Metadata: metadataBytes(map[string]json.RawMessage{
+			metadataLearning: missionLearningMetadata(pruned),
+		}),
+	})
+}
+
+func parseMissionLearningPatch(w http.ResponseWriter, raw json.RawMessage) (clearAll bool, deleteKeys []string, ok bool) {
+	if len(raw) == 0 || strings.TrimSpace(string(raw)) == "null" {
+		return true, nil, true
+	}
+	var body struct {
+		Entries map[string]json.RawMessage `json:"entries"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil || body.Entries == nil {
+		httpError(w, http.StatusBadRequest, "learning must be null or {entries:{...}}")
+		return false, nil, false
+	}
+	if len(body.Entries) == 0 {
+		httpError(w, http.StatusBadRequest, "learning.entries must include at least one key to delete")
+		return false, nil, false
+	}
+	keys := make([]string, 0, len(body.Entries))
+	for key, v := range body.Entries {
+		if strings.TrimSpace(string(v)) != "null" {
+			httpError(w, http.StatusBadRequest, "mission learning entries are server-managed; use null to delete")
+			return false, nil, false
+		}
+		keys = append(keys, key)
+	}
+	return false, keys, true
+}
+
+func (s *Server) promoteOperationMissionLearning(ctx context.Context, q *db.Queries, op db.Operation) error {
+	fresh, err := q.GetOperation(ctx, db.GetOperationParams{ID: op.ID, FleetID: op.FleetID})
+	if err != nil {
+		return err
+	}
+	op = fresh
+	raw, ok := metadataMap(op.Metadata)[operationMetadataMissionLearning]
+	if !ok || string(raw) == "null" {
+		return nil
+	}
+	var learning missionLearning
+	if json.Unmarshal(raw, &learning) != nil || strings.TrimSpace(learning.Summary) == "" {
+		return nil
+	}
+	mission, err := q.GetMission(ctx, op.MissionID)
+	if err != nil {
+		return err
+	}
+	operationID := uuidStr(op.PublicID)
+	entry := missionLearningEntry{
+		OperationID: operationID, OperationCode: fmt.Sprintf("%s-%d", mission.Key, op.Sequence),
+		OperationTitle: op.Title, Summary: learning.Summary, Artifacts: learning.Artifacts,
+		Pilot: learning.Pilot, CapturedAt: time.Now().UTC(),
+	}
+	entryJSON, err := json.Marshal(entry)
+	if err != nil {
+		return err
+	}
+	promoted, err := q.PromoteMissionLearning(ctx, db.PromoteMissionLearningParams{
+		OperationID: op.ID, FleetID: op.FleetID, Candidate: raw,
+		OperationKey: operationID, Entry: entryJSON, MissionID: mission.ID,
+	})
+	if err != nil {
+		return err
+	}
+	if !promoted {
+		return nil
+	}
+	if err := s.pruneMissionLearningIfNeeded(ctx, q, mission.ID); err != nil {
+		return err
+	}
+	_, _ = q.CreateComment(ctx, db.CreateCommentParams{
+		OperationID: op.ID, AuthorType: "system",
+		Body: "Added reusable learning to mission " + mission.Key + ".",
+	})
+	return nil
 }
 
 func applyStatusToDTO(op *db.Operation, status string) {
@@ -3516,6 +3684,33 @@ func (s *Server) patchOperation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if raw, ok := patch["mission_id"]; ok {
+		missionPublicID, ok := jsonStringValue(w, raw, "mission_id")
+		if !ok {
+			return
+		}
+		if !s.patchOperationMission(w, ctx, qtx, &op, wid, missionPublicID) {
+			return
+		}
+	}
+
+	if raw, ok := patch["title"]; ok {
+		title, ok := jsonStringValue(w, raw, "title")
+		if !ok {
+			return
+		}
+		title = strings.TrimSpace(title)
+		if title == "" {
+			httpError(w, http.StatusBadRequest, "title is required")
+			return
+		}
+		if err := qtx.SetOperationTitle(ctx, db.SetOperationTitleParams{ID: op.ID, FleetID: wid, Title: title}); err != nil {
+			serverError(w, err)
+			return
+		}
+		op.Title = title
+	}
+
 	if raw, ok := patch["status"]; ok {
 		status, ok := jsonStringValue(w, raw, "status")
 		if !ok {
@@ -3567,33 +3762,6 @@ func (s *Server) patchOperation(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		op.RequiredTags, op.ExcludedTags = required, excluded
-	}
-
-	if raw, ok := patch["title"]; ok {
-		title, ok := jsonStringValue(w, raw, "title")
-		if !ok {
-			return
-		}
-		title = strings.TrimSpace(title)
-		if title == "" {
-			httpError(w, http.StatusBadRequest, "title is required")
-			return
-		}
-		if err := qtx.SetOperationTitle(ctx, db.SetOperationTitleParams{ID: op.ID, FleetID: wid, Title: title}); err != nil {
-			serverError(w, err)
-			return
-		}
-		op.Title = title
-	}
-
-	if raw, ok := patch["mission_id"]; ok {
-		missionPublicID, ok := jsonStringValue(w, raw, "mission_id")
-		if !ok {
-			return
-		}
-		if !s.patchOperationMission(w, ctx, qtx, &op, wid, missionPublicID) {
-			return
-		}
 	}
 
 	if raw, ok := patch["body"]; ok {
@@ -3731,7 +3899,7 @@ func (s *Server) patchOperation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if isTerminalOperationStatus(updated.Status) && !isTerminalOperationStatus(prevStatus) {
-		s.maybeRePulseOnClose(ctx, updated, updated.Status)
+		s.maybeContinueRoutineLoop(ctx, updated, updated.Status)
 	}
 	writeJSON(w, http.StatusOK, s.operationDTO(ctx, updated))
 }
@@ -4077,7 +4245,11 @@ func (s *Server) routineMetadataFromRequest(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return nil, pgtype.Timestamptz{}, false
 	}
-	trigger, nextPulseAt, ok := routineTriggerMetadataFromRequest(w, m[routineMetadataTrigger])
+	pulse, nextPulseAt, ok := routinePulseMetadataFromRequest(w, m[routineMetadataPulse])
+	if !ok {
+		return nil, pgtype.Timestamptz{}, false
+	}
+	loop, ok := routineLoopMetadataFromRequest(w, m[routineMetadataLoop])
 	if !ok {
 		return nil, pgtype.Timestamptz{}, false
 	}
@@ -4085,63 +4257,69 @@ func (s *Server) routineMetadataFromRequest(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return nil, pgtype.Timestamptz{}, false
 	}
-	m[routineMetadataTrigger] = trigger
+	m[routineMetadataPulse] = pulse
+	m[routineMetadataLoop] = loop
 	m[routineMetadataOperation] = operation
 	return metadataBytes(m), nextPulseAt, true
 }
 
-func routineTriggerMetadataFromRequest(w http.ResponseWriter, raw json.RawMessage) (json.RawMessage, pgtype.Timestamptz, bool) {
-	m, ok := objectMapFromRaw(w, raw, "metadata.trigger")
+func routinePulseMetadataFromRequest(w http.ResponseWriter, raw json.RawMessage) (json.RawMessage, pgtype.Timestamptz, bool) {
+	m, ok := objectMapFromRaw(w, raw, "metadata.pulse")
 	if !ok {
 		return nil, pgtype.Timestamptz{}, false
 	}
-	triggerKind := "manual"
-	if rawKind, ok := m["kind"]; ok {
-		var v string
-		if err := json.Unmarshal(rawKind, &v); err != nil {
-			httpError(w, http.StatusBadRequest, "metadata.trigger.kind must be a string")
-			return nil, pgtype.Timestamptz{}, false
-		}
-		if v = strings.TrimSpace(v); v != "" {
-			triggerKind = v
-		}
-	}
-	m["kind"] = jsonRaw(triggerKind)
-	enabled := true
-	if rawEnabled, ok := m["enabled"]; ok {
-		if err := json.Unmarshal(rawEnabled, &enabled); err != nil {
-			httpError(w, http.StatusBadRequest, "metadata.trigger.enabled must be a boolean")
-			return nil, pgtype.Timestamptz{}, false
-		}
-	}
-	m["enabled"] = jsonRaw(enabled)
-	switch triggerKind {
-	case "manual":
-		delete(m, "cron")
+	rawSchedule, configured := m["schedule"]
+	if !configured || strings.TrimSpace(string(rawSchedule)) == "null" {
+		delete(m, "schedule")
 		return json.RawMessage(metadataBytes(m)), pgtype.Timestamptz{}, true
-	case "schedule":
-		var cron string
-		if rawCron, ok := m["cron"]; ok {
-			if err := json.Unmarshal(rawCron, &cron); err != nil {
-				httpError(w, http.StatusBadRequest, "metadata.trigger.cron must be a string")
-				return nil, pgtype.Timestamptz{}, false
-			}
-		}
-		cron = strings.TrimSpace(cron)
-		if _, ok := nextCronTime(cron, time.Now().UTC()); !ok {
-			httpError(w, http.StatusBadRequest, "invalid cron")
-			return nil, pgtype.Timestamptz{}, false
-		}
-		m["cron"] = jsonRaw(cron)
-		if !enabled {
-			return json.RawMessage(metadataBytes(m)), pgtype.Timestamptz{}, true
-		}
-		next, _ := nextCronTime(cron, time.Now().UTC())
-		return json.RawMessage(metadataBytes(m)), pgtype.Timestamptz{Time: next, Valid: true}, true
-	default:
-		httpError(w, http.StatusBadRequest, "invalid metadata.trigger.kind")
+	}
+	schedule, ok := objectMapFromRaw(w, rawSchedule, "metadata.pulse.schedule")
+	if !ok {
 		return nil, pgtype.Timestamptz{}, false
 	}
+	enabled := true
+	if rawEnabled, ok := schedule["enabled"]; ok {
+		if err := json.Unmarshal(rawEnabled, &enabled); err != nil {
+			httpError(w, http.StatusBadRequest, "metadata.pulse.schedule.enabled must be a boolean")
+			return nil, pgtype.Timestamptz{}, false
+		}
+	}
+	schedule["enabled"] = jsonRaw(enabled)
+	var cron string
+	if rawCron, ok := schedule["cron"]; ok {
+		if err := json.Unmarshal(rawCron, &cron); err != nil {
+			httpError(w, http.StatusBadRequest, "metadata.pulse.schedule.cron must be a string")
+			return nil, pgtype.Timestamptz{}, false
+		}
+	}
+	cron = strings.TrimSpace(cron)
+	if _, ok := nextCronTime(cron, time.Now().UTC()); !ok {
+		httpError(w, http.StatusBadRequest, "invalid cron")
+		return nil, pgtype.Timestamptz{}, false
+	}
+	schedule["cron"] = jsonRaw(cron)
+	m["schedule"] = json.RawMessage(metadataBytes(schedule))
+	if !enabled {
+		return json.RawMessage(metadataBytes(m)), pgtype.Timestamptz{}, true
+	}
+	next, _ := nextCronTime(cron, time.Now().UTC())
+	return json.RawMessage(metadataBytes(m)), pgtype.Timestamptz{Time: next, Valid: true}, true
+}
+
+func routineLoopMetadataFromRequest(w http.ResponseWriter, raw json.RawMessage) (json.RawMessage, bool) {
+	m, ok := objectMapFromRaw(w, raw, "metadata.loop")
+	if !ok {
+		return nil, false
+	}
+	continueOnSuccess := false
+	if rawContinue, ok := m["continue_on_success"]; ok {
+		if err := json.Unmarshal(rawContinue, &continueOnSuccess); err != nil {
+			httpError(w, http.StatusBadRequest, "metadata.loop.continue_on_success must be a boolean")
+			return nil, false
+		}
+	}
+	m["continue_on_success"] = jsonRaw(continueOnSuccess)
+	return json.RawMessage(metadataBytes(m)), true
 }
 
 func normalizeOptionalBranchField(w http.ResponseWriter, obj map[string]json.RawMessage, key, fieldPath string, allowTemplate bool) bool {
@@ -4178,42 +4356,20 @@ func (s *Server) routineOperationMetadataFromRequest(w http.ResponseWriter, ctx 
 		return nil, false
 	}
 	startNow := true
-	skipIfActive := true
-	rePulseOnClose := true
-	if rawPulse, ok := m["pulse"]; ok && strings.TrimSpace(string(rawPulse)) != "null" {
-		pulse, ok := objectMapFromRaw(w, rawPulse, "metadata.operation.pulse")
+	if rawDispatch, ok := m["dispatch"]; ok && strings.TrimSpace(string(rawDispatch)) != "null" {
+		dispatch, ok := objectMapFromRaw(w, rawDispatch, "metadata.operation.dispatch")
 		if !ok {
 			return nil, false
 		}
-		if rawStart, ok := pulse["start_immediately"]; ok {
+		if rawStart, ok := dispatch["start_immediately"]; ok {
 			if err := json.Unmarshal(rawStart, &startNow); err != nil {
-				httpError(w, http.StatusBadRequest, "metadata.operation.pulse.start_immediately must be a boolean")
+				httpError(w, http.StatusBadRequest, "metadata.operation.dispatch.start_immediately must be a boolean")
 				return nil, false
 			}
 		}
-		if rawSkip, ok := pulse["skip_if_active"]; ok {
-			if err := json.Unmarshal(rawSkip, &skipIfActive); err != nil {
-				httpError(w, http.StatusBadRequest, "metadata.operation.pulse.skip_if_active must be a boolean")
-				return nil, false
-			}
-		}
-		if rawRe, ok := pulse["re_pulse_on_close"]; ok {
-			if err := json.Unmarshal(rawRe, &rePulseOnClose); err != nil {
-				httpError(w, http.StatusBadRequest, "metadata.operation.pulse.re_pulse_on_close must be a boolean")
-				return nil, false
-			}
-		}
-		pulse["start_immediately"] = jsonRaw(startNow)
-		pulse["skip_if_active"] = jsonRaw(skipIfActive)
-		pulse["re_pulse_on_close"] = jsonRaw(rePulseOnClose)
-		m["pulse"] = json.RawMessage(metadataBytes(pulse))
-	} else {
-		m["pulse"] = jsonRaw(map[string]any{
-			"start_immediately": startNow,
-			"skip_if_active":    skipIfActive,
-			"re_pulse_on_close": rePulseOnClose,
-		})
 	}
+	delete(m, "pulse")
+	m["dispatch"] = jsonRaw(map[string]any{"start_immediately": startNow})
 	if rawAC, ok := m["auto_commit"]; ok && strings.TrimSpace(string(rawAC)) != "null" {
 		ac, ok := objectMapFromRaw(w, rawAC, "metadata.operation.auto_commit")
 		if !ok {
@@ -4491,9 +4647,9 @@ func (s *Server) updateRoutine(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	oldKind, oldCron, oldEnabled := routineTriggerFingerprint(routine.Metadata)
-	newKind, newCron, newEnabled := routineTriggerFingerprint(metadata)
-	if oldKind == newKind && oldCron == newCron && oldEnabled == newEnabled {
+	oldCron, oldEnabled, oldConfigured := routineScheduleFingerprint(routine.Metadata)
+	newCron, newEnabled, newConfigured := routineScheduleFingerprint(metadata)
+	if oldConfigured == newConfigured && oldCron == newCron && oldEnabled == newEnabled {
 		nextPulseAt = routine.NextPulseAt
 	}
 	operationMetadata, ok := operationMetadataFromRequest(w, req.OperationMetadata)
@@ -4662,9 +4818,9 @@ func (s *Server) getPulse(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.pulseDTOs(r.Context(), []db.Pulse{pulse})[0])
 }
 
-func (s *Server) executeRoutinePulse(ctx context.Context, routine db.Routine, createdByUserID int64, triggerKind string, extraMeta map[string]json.RawMessage) (db.Operation, db.Pulse, error) {
+func (s *Server) executeRoutinePulse(ctx context.Context, routine db.Routine, createdByUserID int64, pulseSource string, extraMeta map[string]json.RawMessage) (db.Operation, db.Pulse, error) {
 	now := time.Now().UTC()
-	triggerKind = strings.TrimSpace(triggerKind)
+	pulseSource = strings.TrimSpace(pulseSource)
 	worker, tx, err := s.transactional(ctx)
 	if err != nil {
 		return db.Operation{}, db.Pulse{}, err
@@ -4688,16 +4844,16 @@ func (s *Server) executeRoutinePulse(ctx context.Context, routine db.Routine, cr
 		return db.Operation{}, db.Pulse{}, err
 	}
 	routine = locked
-	if triggerKind == "schedule" {
-		_, _, enabled := routineTriggerFingerprint(routine.Metadata)
-		if !enabled {
+	if pulseSource == "schedule" {
+		_, enabled, configured := routineScheduleFingerprint(routine.Metadata)
+		if !configured || !enabled {
 			return db.Operation{}, db.Pulse{}, nil
 		}
 		if !routine.NextPulseAt.Valid || routine.NextPulseAt.Time.After(now) {
 			return db.Operation{}, db.Pulse{}, nil
 		}
 	}
-	if triggerKind == "loop_close" {
+	if pulseSource == "loop" {
 		prevPub := ""
 		if extraMeta != nil {
 			if raw, ok := extraMeta["source_operation_id"]; ok {
@@ -4707,7 +4863,7 @@ func (s *Server) executeRoutinePulse(ctx context.Context, routine db.Routine, cr
 		if prevPub != "" {
 			if pid, ok := parseUUID(prevPub); ok {
 				if prev, err := qtx.GetOperationByPublicID(ctx, pid); err == nil && prev.FleetID == routine.FleetID {
-					if _, err := qtx.ClaimLoopRePulse(ctx, db.ClaimLoopRePulseParams{ID: prev.ID, FleetID: prev.FleetID}); err != nil {
+					if _, err := qtx.ClaimLoopContinuation(ctx, db.ClaimLoopContinuationParams{ID: prev.ID, FleetID: prev.FleetID}); err != nil {
 						return db.Operation{}, db.Pulse{}, nil
 					}
 				}
@@ -4716,7 +4872,7 @@ func (s *Server) executeRoutinePulse(ctx context.Context, routine db.Routine, cr
 	}
 
 	pulseMeta := map[string]json.RawMessage{
-		"trigger": jsonRaw(map[string]any{"kind": triggerKind}),
+		"source": jsonRaw(pulseSource),
 	}
 	for k, v := range extraMeta {
 		pulseMeta[k] = v
@@ -4734,8 +4890,8 @@ func (s *Server) executeRoutinePulse(ctx context.Context, routine db.Routine, cr
 
 	advanceSchedule := func() error {
 		nextPulseAt := routine.NextPulseAt
-		if triggerKind == "schedule" {
-			cron := routineTriggerCron(routine)
+		if pulseSource == "schedule" {
+			cron, _, _ := routineScheduleFingerprint(routine.Metadata)
 			next, ok := nextCronTime(cron, now)
 			if !ok {
 				return fmt.Errorf("routine %d has invalid cron %q", routine.ID, cron)
@@ -4750,41 +4906,38 @@ func (s *Server) executeRoutinePulse(ctx context.Context, routine db.Routine, cr
 		})
 	}
 
-	cfg := routineOperationConfigFromMetadata(routine)
-	if cfg.SkipIfActive {
-		open, err := qtx.CountOpenLoopOperationsForRoutine(ctx, db.CountOpenLoopOperationsForRoutineParams{
-			FleetID:         routine.FleetID,
-			RoutinePublicID: []byte(uuidStr(routine.PublicID)),
+	open, err := qtx.CountOpenLoopOperationsForRoutine(ctx, db.CountOpenLoopOperationsForRoutineParams{
+		FleetID:         routine.FleetID,
+		RoutinePublicID: []byte(uuidStr(routine.PublicID)),
+	})
+	if err != nil {
+		return db.Operation{}, db.Pulse{}, err
+	}
+	if open > 0 {
+		skipped, err := qtx.FinishPulse(ctx, db.FinishPulseParams{
+			OperationID: pgtype.Int8{},
+			Status:      "skipped",
+			Metadata: metadataBytes(mergeMetadataMaps(pulseMeta, map[string]json.RawMessage{
+				"skip_reason": jsonRaw("open_operation"),
+				"open_count":  jsonRaw(open),
+			})),
+			FinishedAt: pgtype.Timestamptz{Time: now, Valid: true},
+			ID:         pulse.ID,
+			FleetID:    routine.FleetID,
 		})
 		if err != nil {
 			return db.Operation{}, db.Pulse{}, err
 		}
-		if open > 0 {
-			skipped, err := qtx.FinishPulse(ctx, db.FinishPulseParams{
-				OperationID: pgtype.Int8{},
-				Status:      "skipped",
-				Metadata: metadataBytes(mergeMetadataMaps(pulseMeta, map[string]json.RawMessage{
-					"skip_reason": jsonRaw("open_operation"),
-					"open_count":  jsonRaw(open),
-				})),
-				FinishedAt: pgtype.Timestamptz{Time: now, Valid: true},
-				ID:         pulse.ID,
-				FleetID:    routine.FleetID,
-			})
-			if err != nil {
-				return db.Operation{}, db.Pulse{}, err
-			}
-			if err := advanceSchedule(); err != nil {
-				return db.Operation{}, db.Pulse{}, err
-			}
-			if err := commit(); err != nil {
-				return db.Operation{}, db.Pulse{}, err
-			}
-			return db.Operation{}, skipped, nil
+		if err := advanceSchedule(); err != nil {
+			return db.Operation{}, db.Pulse{}, err
 		}
+		if err := commit(); err != nil {
+			return db.Operation{}, db.Pulse{}, err
+		}
+		return db.Operation{}, skipped, nil
 	}
 
-	op, err := s.createOperationFromRoutine(ctx, qtx, routine.FleetID, routine, createdByUserID, pulse, triggerKind)
+	op, err := s.createOperationFromRoutine(ctx, qtx, routine.FleetID, routine, createdByUserID, pulse, pulseSource)
 	if err != nil {
 		failed, ferr := qtx.FinishPulse(ctx, db.FinishPulseParams{
 			OperationID: pgtype.Int8{},
@@ -4803,7 +4956,7 @@ func (s *Server) executeRoutinePulse(ctx context.Context, routine db.Routine, cr
 		if cerr := commit(); cerr != nil {
 			return db.Operation{}, db.Pulse{}, errors.Join(err, cerr)
 		}
-		if triggerKind == "schedule" {
+		if pulseSource == "schedule" {
 			s.notifyMembers(ctx, routine.FleetID, 0, "routine_pulse_failed", "action_required",
 				"Routine pulse failed: "+routine.Title, err.Error())
 		}
@@ -4830,7 +4983,7 @@ func (s *Server) executeRoutinePulse(ctx context.Context, routine db.Routine, cr
 	return op, pulse, nil
 }
 
-func (s *Server) createOperationFromRoutine(ctx context.Context, q *db.Queries, wid int64, routine db.Routine, createdByUserID int64, pulse db.Pulse, triggerKind string) (db.Operation, error) {
+func (s *Server) createOperationFromRoutine(ctx context.Context, q *db.Queries, wid int64, routine db.Routine, createdByUserID int64, pulse db.Pulse, pulseSource string) (db.Operation, error) {
 	sequence, err := q.BumpMissionSequence(ctx, db.BumpMissionSequenceParams{ID: routine.MissionID, FleetID: wid})
 	if err != nil {
 		return db.Operation{}, err
@@ -4891,7 +5044,7 @@ func (s *Server) createOperationFromRoutine(ctx context.Context, q *db.Queries, 
 			_ = q.SetOperationMetadata(ctx, db.SetOperationMetadataParams{ID: op.ID, FleetID: wid, Metadata: op.Metadata})
 		}
 	}
-	source := strings.TrimSpace(triggerKind)
+	source := strings.TrimSpace(pulseSource)
 	if source == "" {
 		source = "manual"
 	}
@@ -4993,16 +5146,16 @@ func isTerminalOperationStatus(status string) bool {
 	return status == "done" || status == "canceled"
 }
 
-func (s *Server) maybeRePulseOnClose(ctx context.Context, op db.Operation, newStatus string) {
-	if !isTerminalOperationStatus(newStatus) {
+func (s *Server) maybeContinueRoutineLoop(ctx context.Context, op db.Operation, newStatus string) {
+	if newStatus != "done" {
 		return
 	}
-	if newStatus == "done" && !op.MainOperationID.Valid {
+	if !op.MainOperationID.Valid {
 		if s.maybeQueueAutoCommitOnClose(ctx, op) {
 			return
 		}
 	}
-	s.rePulseOperation(ctx, op)
+	s.continueRoutineLoop(ctx, op)
 }
 
 func (s *Server) loopRoutine(ctx context.Context, op db.Operation) (db.Routine, bool) {
@@ -5256,7 +5409,6 @@ func (s *Server) maybeQueueAutoCommitOnClose(ctx context.Context, op db.Operatio
 	}
 	metaMap := map[string]json.RawMessage{
 		"auto_commit":              jsonRaw(true),
-		"re_pulse_on_success":      jsonRaw(true),
 		"drop_worktree_on_success": jsonRaw(s.operationDropWorktreeOnCommit(ctx, op)),
 	}
 	if cmds, timeout := s.operationChecks(ctx, op); len(cmds) > 0 {
@@ -5307,25 +5459,20 @@ func (s *Server) failAutoCommitQueue(ctx context.Context, op db.Operation, branc
 		"Auto-commit blocked: "+op.Title, reason)
 }
 
-func (s *Server) rePulseOperation(ctx context.Context, op db.Operation) {
+func (s *Server) continueRoutineLoop(ctx context.Context, op db.Operation) {
 	routine, ok := s.loopRoutine(ctx, op)
 	if !ok {
 		return
 	}
-	cfg := routineOperationConfigFromMetadata(routine)
-	if !cfg.RePulseOnClose {
+	if !routineContinuesOnSuccess(routine) {
 		return
 	}
-	triggerKind, _, _ := routineTriggerFingerprint(routine.Metadata)
-	if triggerKind == "schedule" {
-		return
-	}
-	if blocked, key, err := s.rePulseBudgetBlocks(ctx, routine); err != nil {
+	if blocked, key, err := s.routineLoopBudgetBlocks(ctx, routine); err != nil {
 		return
 	} else if blocked {
 		s.notifyMembers(ctx, routine.FleetID, op.ID, "routine_pulse_failed", "action_required",
-			"Routine re-pulse blocked by budget: "+routine.Title,
-			fmt.Sprintf("Automatic re-pulse after operation closed was blocked by spend budget (%s).", key))
+			"Routine loop blocked by budget: "+routine.Title,
+			fmt.Sprintf("The next loop operation was blocked by spend budget (%s).", key))
 		return
 	}
 	createdBy := int64(0)
@@ -5333,7 +5480,7 @@ func (s *Server) rePulseOperation(ctx context.Context, op db.Operation) {
 		createdBy = routine.CreatedBy.Int64
 	}
 	extra := map[string]json.RawMessage{
-		"source":              jsonRaw("loop_close"),
+		"source":              jsonRaw("loop"),
 		"source_operation_id": jsonRaw(uuidStr(op.PublicID)),
 	}
 	if streak := loopMetadataInt(op.Metadata, "empty_streak"); streak > 0 {
@@ -5353,17 +5500,17 @@ func (s *Server) rePulseOperation(ctx context.Context, op db.Operation) {
 	} else if s.operationAutoCommitBranch(ctx, op) != "" {
 		extra["iteration"] = jsonRaw(1)
 	}
-	_, pulse, err := s.executeRoutinePulse(ctx, routine, createdBy, "loop_close", extra)
+	_, pulse, err := s.executeRoutinePulse(ctx, routine, createdBy, "loop", extra)
 	if err != nil {
 		s.notifyMembers(ctx, routine.FleetID, op.ID, "routine_pulse_failed", "action_required",
-			"Routine re-pulse failed: "+routine.Title,
-			fmt.Sprintf("Automatic re-pulse after operation closed failed: %v", err))
+			"Routine loop failed: "+routine.Title,
+			fmt.Sprintf("The next loop operation could not be created: %v", err))
 		return
 	}
 	if pulse.ID != 0 && pulse.Status == "failed" {
 		s.notifyMembers(ctx, routine.FleetID, op.ID, "routine_pulse_failed", "action_required",
-			"Routine re-pulse failed: "+routine.Title,
-			"Automatic re-pulse after operation closed finished with status failed.")
+			"Routine loop failed: "+routine.Title,
+			"The next loop operation finished with status failed.")
 	}
 }
 
@@ -5816,8 +5963,8 @@ func (s *Server) completeSourceAction(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.sourceActionDTOs(ctx, []db.SourceAction{action})[0])
 }
 
-func sourceActionWantsRePulse(meta []byte) bool {
-	raw, ok := metadataMap(meta)["re_pulse_on_success"]
+func sourceActionIsAutoCommit(meta []byte) bool {
+	raw, ok := metadataMap(meta)["auto_commit"]
 	if !ok {
 		return false
 	}
@@ -5919,28 +6066,28 @@ func mergeOperationLoopMetadata(meta []byte, patch map[string]any) []byte {
 	return metadataBytes(m)
 }
 
-func (s *Server) operationRePulseOnClose(ctx context.Context, op db.Operation) bool {
+func (s *Server) operationContinuesLoop(ctx context.Context, op db.Operation) bool {
 	if routine, ok := s.loopRoutine(ctx, op); ok {
-		return routineOperationConfigFromMetadata(routine).RePulseOnClose
+		return routineContinuesOnSuccess(routine)
 	}
-	return true
+	return false
 }
 
-func autoCommitPostSuccessAction(progress bool, emptyStreak int, rePulse, wantsShip bool) string {
+func autoCommitPostSuccessAction(progress bool, emptyStreak int, continueLoop, wantsShip bool) string {
 	if !progress && emptyStreak >= maxLoopEmptyStreak {
 		return "ship_or_pause"
 	}
-	if progress && wantsShip && !rePulse {
+	if progress && wantsShip && !continueLoop {
 		return "ship_oneshot"
 	}
-	if rePulse {
-		return "repulse"
+	if continueLoop {
+		return "continue_loop"
 	}
 	return "none"
 }
 
 func (s *Server) afterAutoCommitSourceAction(ctx context.Context, action db.SourceAction) {
-	if action.Kind != "commit_to_branch" || !sourceActionWantsRePulse(action.Metadata) {
+	if action.Kind != "commit_to_branch" || !sourceActionIsAutoCommit(action.Metadata) {
 		return
 	}
 	op, err := s.q.GetOperation(ctx, db.GetOperationParams{ID: action.OperationID, FleetID: action.FleetID})
@@ -5975,7 +6122,7 @@ func (s *Server) afterAutoCommitSourceAction(ctx context.Context, action db.Sour
 		if op2, err := s.q.GetOperation(ctx, db.GetOperationParams{ID: op.ID, FleetID: op.FleetID}); err == nil {
 			op = op2
 		}
-		rePulse := s.operationRePulseOnClose(ctx, op)
+		continueLoop := s.operationContinuesLoop(ctx, op)
 		wantsShip := s.operationWantsForgeShip(ctx, op)
 		note := fmt.Sprintf("Auto-committed to branch %s", action.BranchName)
 		if sha := strings.TrimSpace(action.CommitSha); sha != "" {
@@ -5985,7 +6132,7 @@ func (s *Server) afterAutoCommitSourceAction(ctx context.Context, action db.Sour
 				note += " @" + sha
 			}
 		}
-		switch autoCommitPostSuccessAction(progress, streak, rePulse, wantsShip) {
+		switch autoCommitPostSuccessAction(progress, streak, continueLoop, wantsShip) {
 		case "ship_or_pause":
 			_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
 				OperationID: op.ID, AuthorType: "system",
@@ -5994,13 +6141,13 @@ func (s *Server) afterAutoCommitSourceAction(ctx context.Context, action db.Sour
 			if s.maybeQueueForgeShip(ctx, op, action.BranchName, action.CommitSha) {
 				_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
 					OperationID: op.ID, AuthorType: "system",
-					Body: "No-progress threshold reached; queuing forge ship instead of re-pulse.",
+					Body: "No-progress threshold reached; queuing forge ship instead of continuing the Loop.",
 				})
 				return
 			}
 			_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
 				OperationID: op.ID, AuthorType: "system",
-				Body: "Unattended loop paused after consecutive no-progress rounds; no further re-pulse.",
+				Body: "Unattended Loop paused after consecutive no-progress rounds.",
 			})
 			s.notifyMembers(ctx, action.FleetID, op.ID, "source_action_failed", "action_required",
 				"Unattended loop stalled: "+op.Title,
@@ -6014,7 +6161,7 @@ func (s *Server) afterAutoCommitSourceAction(ctx context.Context, action db.Sour
 			if s.maybeQueueForgeShip(ctx, op, action.BranchName, action.CommitSha) {
 				_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
 					OperationID: op.ID, AuthorType: "system",
-					Body: "Queuing forge ship onto the PR base (one-shot land; re-pulse is off).",
+					Body: "Queuing forge ship onto the PR base (one-shot land; Loop is off).",
 				})
 				return
 			}
@@ -6023,7 +6170,7 @@ func (s *Server) afterAutoCommitSourceAction(ctx context.Context, action db.Sour
 				Body: "Could not queue forge ship after auto-commit; not starting a loop iteration.",
 			})
 			return
-		case "repulse":
+		case "continue_loop":
 			if progress {
 				_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
 					OperationID: op.ID, AuthorType: "system",
@@ -6035,7 +6182,7 @@ func (s *Server) afterAutoCommitSourceAction(ctx context.Context, action db.Sour
 					Body: fmt.Sprintf("Auto-commit to branch %s made no branch progress (no-progress %d/%d).", action.BranchName, streak, maxLoopEmptyStreak),
 				})
 			}
-			s.rePulseOperation(ctx, op)
+			s.continueRoutineLoop(ctx, op)
 			return
 		default:
 			_, _ = s.q.CreateComment(ctx, db.CreateCommentParams{
@@ -6187,7 +6334,7 @@ func normalizeSkillSlug(name, slug string) string {
 	return strings.Trim(b.String(), "-")
 }
 
-func normalizeSkillPath(raw string) (string, bool) {
+func normalizeRepoRelativePath(raw string) (string, bool) {
 	if strings.Contains(raw, "\x00") || strings.Contains(raw, "\\") {
 		return "", false
 	}
@@ -6221,7 +6368,7 @@ func normalizeSkillInput(w http.ResponseWriter, req skillReq) (name, slug, descr
 	hasRoot := false
 	totalBytes := 0
 	for _, f := range req.Files {
-		p, ok := normalizeSkillPath(f.Path)
+		p, ok := normalizeRepoRelativePath(f.Path)
 		if !ok {
 			httpError(w, http.StatusBadRequest, "file paths must stay inside the skill root")
 			return "", "", "", nil, false
@@ -8310,6 +8457,9 @@ func effectiveContextFromMetadata(operationMetadata, missionMetadata, fleetMetad
 	if v, ok := metadataString(missionMetadata, metadataContext); ok && strings.TrimSpace(v) != "" {
 		layers = append(layers, layer{"Mission (cross-operation)", strings.TrimSpace(v)})
 	}
+	if v := missionLearningContext(missionMetadata); v != "" {
+		layers = append(layers, layer{"Mission learning (from completed operations)", v})
+	}
 	if v, ok := metadataString(operationMetadata, metadataContext); ok && strings.TrimSpace(v) != "" {
 		layers = append(layers, layer{"Operation (most specific)", strings.TrimSpace(v)})
 	}
@@ -8324,6 +8474,56 @@ func effectiveContextFromMetadata(operationMetadata, missionMetadata, fleetMetad
 		fmt.Fprintf(&b, "--- %s ---\n%s\n", l.label, l.text)
 	}
 	return strings.TrimSpace(b.String())
+}
+
+func missionLearningContext(metadata []byte) string {
+	all := missionLearningEntries(metadata)
+	if len(all) == 0 {
+		return ""
+	}
+	entries := make([]missionLearningEntry, 0, len(all))
+	for _, entry := range all {
+		if strings.TrimSpace(entry.Summary) != "" {
+			entries = append(entries, entry)
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].CapturedAt.Before(entries[j].CapturedAt) })
+	if len(entries) > maxMissionLearningEntries {
+		entries = entries[len(entries)-maxMissionLearningEntries:]
+	}
+	rendered := make([]string, len(entries))
+	for i, entry := range entries {
+		rendered[i] = renderMissionLearningEntry(entry)
+	}
+	start, total := len(rendered), 0
+	for i := len(rendered) - 1; i >= 0; i-- {
+		total += len(rendered[i])
+		if total > maxMissionLearningContextBytes && i != len(rendered)-1 {
+			break
+		}
+		start = i
+	}
+	var b strings.Builder
+	if start > 0 {
+		fmt.Fprintf(&b, "(%d older learning entries omitted to fit context)\n", start)
+	}
+	for i := start; i < len(rendered); i++ {
+		b.WriteString(rendered[i])
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func renderMissionLearningEntry(entry missionLearningEntry) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "- [%s] %s\n", entry.OperationCode, strings.TrimSpace(entry.Summary))
+	for _, artifact := range entry.Artifacts {
+		fmt.Fprintf(&b, "  - %s: `%s`", artifact.Kind, artifact.Path)
+		if artifact.Summary != "" {
+			fmt.Fprintf(&b, " — %s", artifact.Summary)
+		}
+		b.WriteByte('\n')
+	}
+	return b.String()
 }
 
 func (s *Server) operationWorktreeName(ctx context.Context, op db.Operation) (string, error) {
@@ -8547,7 +8747,7 @@ func (s *Server) applyRunCompletion(ctx context.Context, wid int64, run db.Run, 
 	}
 	if isTerminalOperationStatus(operationStatus) && !isTerminalOperationStatus(prevStatus) {
 		if fresh, err := s.q.GetOperation(ctx, db.GetOperationParams{ID: op.ID, FleetID: wid}); err == nil {
-			s.maybeRePulseOnClose(ctx, fresh, operationStatus)
+			s.maybeContinueRoutineLoop(ctx, fresh, operationStatus)
 		}
 	}
 	settled := true
@@ -8610,7 +8810,7 @@ func (s *Server) markReviewedSubOperationsDone(ctx context.Context, wid, mainOpe
 			}
 			if isTerminalOperationStatus("done") && !isTerminalOperationStatus(prev) {
 				if fresh, err := s.q.GetOperation(ctx, db.GetOperationParams{ID: subOperation.ID, FleetID: wid}); err == nil {
-					s.maybeRePulseOnClose(ctx, fresh, "done")
+					s.maybeContinueRoutineLoop(ctx, fresh, "done")
 				}
 			}
 		}
@@ -8639,10 +8839,46 @@ type runResultReq struct {
 	Message               string                     `json:"message"`
 	NeedsInput            bool                       `json:"needs_input"`
 	OperationStatus       string                     `json:"operation_status"`
+	MissionLearning       *missionLearning           `json:"mission_learning"`
 	Operations            []operationReq             `json:"operations"`
 	SubOperations         []subOperationReq          `json:"sub_operations"`
 	SubOperationsFeedback []subOperationsFeedbackReq `json:"sub_operations_feedback"`
 	Usage                 *runUsagePayload           `json:"usage"`
+}
+
+func normalizeMissionLearning(w http.ResponseWriter, input *missionLearning) (*missionLearning, bool) {
+	if input == nil {
+		return nil, true
+	}
+	summary := strings.TrimSpace(input.Summary)
+	if summary == "" || len([]byte(summary)) > 8*1024 {
+		httpError(w, http.StatusBadRequest, "mission_learning.summary must be 1-8192 bytes")
+		return nil, false
+	}
+	if len(input.Artifacts) > 8 {
+		httpError(w, http.StatusBadRequest, "mission_learning has too many artifacts")
+		return nil, false
+	}
+	artifacts := make([]missionLearningArtifact, 0, len(input.Artifacts))
+	for _, artifact := range input.Artifacts {
+		kind := strings.TrimSpace(artifact.Kind)
+		if kind != "doc" && kind != "skill" {
+			httpError(w, http.StatusBadRequest, "mission_learning artifact kind must be doc or skill")
+			return nil, false
+		}
+		p, ok := normalizeRepoRelativePath(artifact.Path)
+		if !ok || len([]byte(p)) > 512 {
+			httpError(w, http.StatusBadRequest, "mission_learning artifact path must be a relative repository path")
+			return nil, false
+		}
+		artifactSummary := strings.TrimSpace(artifact.Summary)
+		if len([]byte(artifactSummary)) > 1024 {
+			httpError(w, http.StatusBadRequest, "mission_learning artifact summary is too large")
+			return nil, false
+		}
+		artifacts = append(artifacts, missionLearningArtifact{Kind: kind, Path: p, Summary: artifactSummary})
+	}
+	return &missionLearning{Summary: summary, Artifacts: artifacts}, true
 }
 
 func (s *Server) runResult(w http.ResponseWriter, r *http.Request) {
@@ -8657,6 +8893,10 @@ func (s *Server) runResult(w http.ResponseWriter, r *http.Request) {
 	status := strings.TrimSpace(req.Status)
 	if status != "succeeded" && status != "failed" {
 		httpError(w, http.StatusBadRequest, "status must be succeeded or failed")
+		return
+	}
+	learning, ok := normalizeMissionLearning(w, req.MissionLearning)
+	if !ok {
 		return
 	}
 	ctx := r.Context()
@@ -8700,6 +8940,17 @@ func (s *Server) runResult(w http.ResponseWriter, r *http.Request) {
 			ID: run.OperationID, FleetID: wid, PilotSessionID: optText(req.SessionID),
 			PilotSessionKind: optText(run.Pilot), PilotSessionRoverID: run.RoverID,
 		})
+	}
+	if learning != nil {
+		learning.Pilot = run.Pilot
+		learning.RunID = uuidStr(run.PublicID)
+		if err := worker.q.MergeOperationMetadata(ctx, db.MergeOperationMetadataParams{
+			Metadata: metadataBytes(map[string]json.RawMessage{operationMetadataMissionLearning: jsonRaw(learning)}),
+			ID:       run.OperationID, FleetID: wid,
+		}); err != nil {
+			serverError(w, err)
+			return
+		}
 	}
 	if strings.TrimSpace(req.Message) != "" {
 		_, _ = worker.q.CreateComment(ctx, db.CreateCommentParams{
@@ -9120,7 +9371,7 @@ func (s *Server) appendUnattendedLoopPrompt(ctx context.Context, q *db.Queries, 
 	var b strings.Builder
 	b.WriteString(prompt)
 	b.WriteString("\n\n--- Unattended loop ---\n")
-	fmt.Fprintf(&b, "This operation is part of an unattended re-pulse loop.\n")
+	fmt.Fprintf(&b, "This operation is part of an unattended Routine Loop.\n")
 	if isMain {
 		fmt.Fprintf(&b, "Auto-commit head (where this main worktree lands as a single commit): %q.\n", autoCommitBranch)
 	} else {
@@ -9531,6 +9782,10 @@ func (s *Server) createMission(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
+		if _, hasLearning := metadataMap(metadata)[metadataLearning]; hasLearning {
+			httpError(w, http.StatusBadRequest, "mission learning is server-managed")
+			return
+		}
 	}
 	m, err := s.q.CreateMission(r.Context(), db.CreateMissionParams{FleetID: wid, Name: req.Name, Key: key, Metadata: metadata})
 	if err != nil {
@@ -9543,7 +9798,7 @@ func (s *Server) createMission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.ForgeIDs != nil {
-		if !s.replaceMissionForges(w, r, m, *req.ForgeIDs) {
+		if !s.replaceMissionForges(w, r, s.q, m, *req.ForgeIDs) {
 			return
 		}
 	}
@@ -9572,15 +9827,67 @@ func (s *Server) updateMission(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "name and an alphanumeric key are required")
 		return
 	}
-	metadata := mission.Metadata
+	metadataPatch := metadataBytes(nil)
+	var (
+		learningChange     bool
+		learningClearAll   bool
+		learningDeleteKeys []string
+	)
 	if len(req.Metadata) > 0 {
 		var ok bool
-		metadata, ok = jsonObjectBytes(w, req.Metadata, "metadata")
+		metadataPatch, ok = jsonObjectBytes(w, req.Metadata, "metadata")
 		if !ok {
 			return
 		}
+		patch := metadataMap(metadataPatch)
+		learningRaw, hasLearning := patch[metadataLearning]
+		delete(patch, metadataLearning)
+		if hasLearning {
+			if !isOwnerOrAdmin(s.memberRole(r, mission.FleetID)) {
+				httpError(w, http.StatusForbidden, "only owners/admins can change mission learning")
+				return
+			}
+			learningClearAll, learningDeleteKeys, ok = parseMissionLearningPatch(w, learningRaw)
+			if !ok {
+				return
+			}
+			learningChange = true
+		}
+		metadataPatch = metadataBytes(patch)
 	}
-	m, err := s.q.UpdateMission(r.Context(), db.UpdateMissionParams{ID: mission.ID, FleetID: mission.FleetID, Name: req.Name, Key: key, Metadata: metadata})
+	ctx := r.Context()
+	needTx := learningChange || req.ForgeIDs != nil
+	q := s.q
+	var tx pgx.Tx
+	if needTx {
+		worker, began, err := s.transactional(ctx)
+		if err != nil {
+			serverError(w, err)
+			return
+		}
+		if began != nil {
+			tx = began
+			defer tx.Rollback(ctx)
+		}
+		q = worker.q
+	}
+	if learningChange {
+		if learningClearAll {
+			if err := q.ClearMissionLearning(ctx, db.ClearMissionLearningParams{ID: mission.ID, FleetID: mission.FleetID}); err != nil {
+				serverError(w, err)
+				return
+			}
+		} else if err := q.DeleteMissionLearningEntries(ctx, db.DeleteMissionLearningEntriesParams{
+			ID: mission.ID, FleetID: mission.FleetID, Keys: learningDeleteKeys,
+		}); err != nil {
+			serverError(w, err)
+			return
+		}
+	}
+	m, err := q.UpdateMission(ctx, db.UpdateMissionParams{
+		ID: mission.ID, FleetID: mission.FleetID, Name: req.Name, Key: key,
+		MetadataPatch: metadataPatch,
+	})
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -9595,14 +9902,20 @@ func (s *Server) updateMission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.ForgeIDs != nil {
-		if !s.replaceMissionForges(w, r, m, *req.ForgeIDs) {
+		if !s.replaceMissionForges(w, r, q, m, *req.ForgeIDs) {
+			return
+		}
+	}
+	if tx != nil {
+		if err := tx.Commit(ctx); err != nil {
+			serverError(w, err)
 			return
 		}
 	}
 	writeJSON(w, http.StatusOK, s.missionDTO(r.Context(), m))
 }
 
-func (s *Server) replaceMissionForges(w http.ResponseWriter, r *http.Request, mission db.Mission, forgeIDs []string) bool {
+func (s *Server) replaceMissionForges(w http.ResponseWriter, r *http.Request, q *db.Queries, mission db.Mission, forgeIDs []string) bool {
 	if !s.requireOwnerOrAdmin(w, r, mission.FleetID) {
 		return false
 	}
@@ -9627,7 +9940,7 @@ func (s *Server) replaceMissionForges(w http.ResponseWriter, r *http.Request, mi
 			httpError(w, http.StatusBadRequest, "invalid forge_id")
 			return false
 		}
-		row, err := s.q.GetForgeByPublicID(ctx, db.GetForgeByPublicIDParams{
+		row, err := q.GetForgeByPublicID(ctx, db.GetForgeByPublicIDParams{
 			PublicID: pid, FleetID: mission.FleetID,
 		})
 		if err != nil {
@@ -9640,12 +9953,12 @@ func (s *Server) replaceMissionForges(w http.ResponseWriter, r *http.Request, mi
 		}
 		internal = append(internal, row.ID)
 	}
-	if err := s.q.ClearMissionForges(ctx, mission.ID); err != nil {
+	if err := q.ClearMissionForges(ctx, mission.ID); err != nil {
 		serverError(w, err)
 		return false
 	}
 	for _, forgeID := range internal {
-		if err := s.q.InsertMissionForge(ctx, db.InsertMissionForgeParams{
+		if err := q.InsertMissionForge(ctx, db.InsertMissionForgeParams{
 			MissionID: mission.ID, ForgeID: forgeID,
 		}); err != nil {
 			serverError(w, err)

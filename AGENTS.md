@@ -14,31 +14,31 @@ Violate any of these and the task is not done:
    mis-operate without it, and keep it one short line. Strip comments you
    added while coding before finishing.
 2. **Verify before done:** run the real commands for every surface you
-   touched, then report outcomes. Do not claim success without running
-   them. Prefer one call when several surfaces changed:
-   `scripts/verify.sh` (or `scripts/verify.sh api web rover` ...).
+   touched, then report outcomes. Do not claim success without running them.
+   Prefer one call when several surfaces changed: `scripts/verify.sh` (or
+   `scripts/verify.sh api web rover` ...).
    - API Go: `gofmt -l` clean, then
-     `GOCACHE="${TMPDIR:-/tmp}/ufo-gocache" go test` on packages you
-     changed (widen to `./...` when shared).
+     `GOCACHE="${TMPDIR:-/tmp}/ufo-gocache" go test` on packages you changed
+     (widen to `./...` when shared).
    - Rover: `cargo fmt --check`, `cargo clippy -- -D warnings`, and
      `cargo test` for relevant tests (full suite when forge/main/tests
      change).
    - Web: `npm run lint` (tsc) from `apps/web`.
    - Also `git diff --check` when you edited files.
-3. **Finish the shape:** nested config and multi-field designs are
-   implemented end-to-end in one change (API parse, stamp, readers, UI,
-   i18n, tests). No one-field stubs unless the user cut scope.
-4. **No legacy theater for unshipped work:** no dual-read, no migrate-on-
-   write of removed keys, no error text that documents deleted fields.
-   Pre-release: only the current shape exists.
-5. **Tests and fixtures use product vocabulary only.** No private
-   nicknames, ad-hoc branch names from chat, or non-product labels in
-   tests, sample metadata, or committed prompts.
-6. **Do not start Hub or rover, and do not invent credentials,** unless
-   the user asks. The user owns runtime enrollment and secrets.
-7. **Do not second-guess the user's runtime** (binary version, token
-   state, process uptime) after they already stated it. Fix code or act
-   on the stated state.
+3. **Finish the shape:** nested config and multi-field designs are implemented
+   end-to-end in one change (API parse, stamp, readers, UI, i18n, tests). No
+   one-field stubs unless the user cut scope.
+4. **No legacy theater for unshipped work:** no dual-read, no migrate-on-write
+   of removed keys, no error text that documents deleted fields. Pre-release:
+   only the current shape exists.
+5. **Tests and fixtures use product vocabulary only.** No private nicknames,
+   ad-hoc branch names from chat, or non-product labels in tests, sample
+   metadata, or committed prompts.
+6. **Do not start Hub or rover, and do not invent credentials,** unless the
+   user asks. The user owns runtime enrollment and secrets.
+7. **Do not second-guess the user's runtime** (binary version, token state,
+   process uptime) after they already stated it. Fix code or act on the stated
+   state.
 
 ## Operating Posture
 
@@ -63,16 +63,15 @@ Violate any of these and the task is not done:
 
 ## Database & Migrations
 
-- Schema changes: add a new file under
-  `apps/api/internal/migrate/migrations/` (e.g.
-  `9527_issue_lifetime_peon_badge.sql`).
-  Do not rewrite applied migrations (DB `schema_migrations` checksums) or
-  edit SQL without regenerating `migrations/migrations.sum`
-  (`go generate ./internal/migrate` from `apps/api`).
-- After any edit to `apps/api/internal/db/queries/` or schema SQL sqlc
-  loads, run `sqlc generate` from the repo root and commit the generated
-  files under `apps/api/internal/db/` (except `queries/`) in the same
-  change. Never hand-edit those generated files.
+- Schema changes: add a new file under `apps/api/internal/migrate/migrations/`
+  (e.g. `9527_issue_lifetime_peon_badge.sql`). Do not rewrite applied
+  migrations (DB `schema_migrations` checksums) or edit SQL without
+  regenerating `migrations/migrations.sum` (`go generate ./internal/migrate`
+  from `apps/api`).
+- After any edit to `apps/api/internal/db/queries/` or schema SQL sqlc loads,
+  run `sqlc generate` from the repo root and commit the generated files under
+  `apps/api/internal/db/` (except `queries/`) in the same change. Never
+  hand-edit those generated files.
 - Timestamps are `timestamptz`, stored UTC; the UI handles local display.
 - Timestamp column order: `created_at`, `updated_at`, then domain `*_at`
   (`started_at`, `finished_at`, `heartbeat_at`).
@@ -97,8 +96,8 @@ Violate any of these and the task is not done:
   avoid generic names like `hub` that collide with the domain.
 - No duplicate APIs per UI location when the resource is global.
 - When adding or changing HTTP endpoints, update
-  `apps/api/internal/spec/openapi.yaml` in the same change and lint it
-  (see CONTRIBUTING.md).
+  `apps/api/internal/spec/openapi.yaml` in the same change and lint it (see
+  CONTRIBUTING.md).
 
 ## Auth, Tenancy & Capacity
 
@@ -126,8 +125,8 @@ Violate any of these and the task is not done:
 - For a pilot-referenced rover-local file: validate the path is inside the
   operation directory, enforce size/type/count limits, upload it as an asset,
   and rewrite the message to the asset URL before posting.
-- Don't inline attached bytes into pilot prompts. Pass asset URLs/metadata
-  and let the rover fetch.
+- Don't inline attached bytes into pilot prompts. Pass asset URLs/metadata and
+  let the rover fetch.
 - Object-store keys use public UUIDs, UTC dates, and shards. No filenames
   (those live in DB metadata/columns):
   - `v1/fleets/{fleet_id}/uploads/{YYYY}/{MM}/{DD}/{asset_shard}/{asset_id}`

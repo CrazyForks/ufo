@@ -5,11 +5,28 @@ All notable changes to UFO are recorded here.
 > **Public beta:** before 1.0, contracts may still evolve. Prefer tagged
 > releases; release notes call out anything that needs a careful upgrade.
 
+## [0.7.5] - 2026-07-25
+
+Public beta feature release. Separates Pulse starts from Loop continuation and
+adds Mission learning. Rover CLI **0.7.5+**.
+
+### Routines
+
+- Manual and scheduled Pulses are now independent from Loop continuation.
+- The Routines UI now uses a compact list and focused editor.
+
+### Mission Learning
+
+- Completed operations can add reusable learning and doc or skill paths to
+  their Mission and future operation prompts.
+- Mission learning and metadata updates are race-safe.
+- Stored learning is capped at the newest 50 entries per mission. Owners and
+  admins can clear learning or delete individual entries from the Missions UI.
+
 ## [0.7.3] - 2026-07-12
 
 Public beta maintenance release. Improves forge ship recovery, forge-action
-lease renewal, and Hub/Rover version compatibility. Upgrade Hub and Rover
-together; Rover CLI **0.7.3+**.
+lease renewal, and Hub/Rover version compatibility. Rover CLI **0.7.3+**.
 
 ### Forges
 - After ship failure, discover a unique open PR/MR on the auto-commit head
@@ -20,9 +37,9 @@ together; Rover CLI **0.7.3+**.
   after finalization).
 
 ### Hub & Rover
-- Hub enforces a rover version floor; invalid min/max rover version env
-  aborts Hub startup. Rover requires Hub version 0.7.3+ from `/healthz`
-  and waits for a reachable, compatible Hub before accepting work.
+- Hub enforces a rover version floor; invalid min/max rover version env aborts
+  Hub startup. Rover requires Hub version 0.7.3+ from `/healthz` and waits for
+  a reachable, compatible Hub before accepting work.
 - Hub `/healthz` `version` is product semver (release stamp or
   `0.7.3+dev.<sha>` on source builds).
 
@@ -49,7 +66,7 @@ for forges; start fresh or migrate a 0.6.x Hub DB manually. Rover CLI
 - Operation detail shows richer pull-request chips (number, branches, CI /
   status when available).
 
-### Unattended loops & ship
+### Unattended Loops & Ship
 - Routines can auto-commit, re-pulse, and optionally ship (open a PR, wait for
   CI, merge to a ship base such as `orbit`, or integrate without a PR).
 - Continuous loops keep iterating on progress; ship is opt-in and aimed at
@@ -63,7 +80,7 @@ for forges; start fresh or migrate a 0.6.x Hub DB manually. Rover CLI
 
 Public beta patch release. Rover CLI **0.6.2+**.
 
-### Pilots & rovers
+### Pilots & Rovers
 - Added CodeBuddy Code as a built-in pilot.
 
 ### CI
@@ -77,7 +94,7 @@ English, Simplified Chinese, and Traditional Chinese UI. Prefer a fresh local
 Hub DB when coming from 0.5.x unless you migrate the pre-release schema
 manually. Rover CLI **0.6.1+**.
 
-### Accounts & onboarding
+### Accounts & Onboarding
 - Email/password signup now validates input earlier, creates a personal fleet,
   and opens the board on a seeded **Launch Bay** mission.
 - New group fleets also start with a **Launch Bay** mission.
@@ -86,15 +103,15 @@ manually. Rover CLI **0.6.1+**.
 - Invite links can prefill the signup email, and the web app gives clearer
   feedback when auth or startup checks fail.
 
-### Skills & repo context
+### Skills & Repo Context
 - Fleet owners and admins can manage reusable skills and attach them to crews
   or operations.
 - Pilots receive the selected skills when they accept work, making repeated
   team practices easier to reuse.
-- Pilot prompts can include repo context from `.ufo/context/repo.md` so
-  pilots start with the project rules that live beside the code.
+- Pilot prompts can include repo context from `.ufo/context/repo.md` so pilots
+  start with the project rules that live beside the code.
 
-### Usage & budgets
+### Usage & Budgets
 - Run history can now show reported tokens, duration, cost, provider, and
   model for completed work.
 - Fleet and mission pages include week and month usage summaries.
@@ -103,7 +120,7 @@ manually. Rover CLI **0.6.1+**.
 - UFO notifies the fleet once per budget period when a cap stops new work.
 - Budget controls now live on Hub resources instead of rover process settings.
 
-### Routines & loops
+### Routines & Loops
 - Routines can continue into follow-up operations automatically when
   configured for a loop.
 - Follow-up operations keep a visible link to the previous operation, so loop
@@ -115,13 +132,13 @@ manually. Rover CLI **0.6.1+**.
 - Captain and unattended-loop prompts now split, consolidate, and verify loop
   work more consistently between iterations.
 
-### Pilot handoff & rover
+### Pilot Handoff & Rover
 - If a pilot needs input, UFO can try another available pilot before asking a
   human to review the operation.
 - The CLI now gives clearer branch and worktree status after automated
   updates.
-- Successful unattended-loop commits can clean up their operation
-  worktrees automatically.
+- Successful unattended-loop commits can clean up their operation worktrees
+  automatically.
 - Fixed the outpost TUI home screen so dense rover, unit, operation, and event
   lists stay inside the terminal frame instead of scrolling the banner away.
 
@@ -144,14 +161,14 @@ Public beta feature release. Advances the database schema and API surface
 (profiles, mission moves, pulses, and related Hub work). Prefer a fresh local
 Hub DB when coming from 0.3.x. Rover CLI **0.5.0+**.
 
-### Profiles & mutual fleets
+### Profiles & Mutual Fleets
 - Split signed-in **Me** updates from public **user profiles**
   (`GET /v1/users/{id}`), with profile links from mentions, the board, crews,
   and signals.
 - Added **mutual fleets** on user profiles (fleets the viewer shares with that
   user) without exposing unrelated memberships.
 
-### Missions, operations & context
+### Missions, Operations & Context
 - Allowed moving a **main operation** (and its sub-operations) to another
   mission in the **same fleet**: new per-mission sequences, cleared pilot
   sessions so the next run is not a stale resume, system communications, and
@@ -165,11 +182,11 @@ Hub DB when coming from 0.3.x. Rover CLI **0.5.0+**.
   paths, and status updates so cancel, heartbeat, and requeue respect terminal
   runs.
 
-### Pulses & routines
+### Pulses & Routines
 - Added first-class **pulses** for routine execution history (schema, list/get
   APIs, and change notifications) alongside routine pulse creation.
 
-### Rover enrollment & outpost
+### Rover Enrollment & Outpost
 - Aligned flags for single and multi-rover enrollment: `--hub`, `--code`,
   `--name`, `--units` / `UFO_ROVER_UNITS`, and `--tags` (comma-separated; `:`
   allowed inside a tag). Multi-rover enrollment uses repeatable `--config`
@@ -186,7 +203,7 @@ Hub DB when coming from 0.3.x. Rover CLI **0.5.0+**.
 - Standardized ready-for-operation wording in docs and status copy (away from
   "listening" as the product verb).
 
-### Protocol & deploy
+### Protocol & Deploy
 - Expanded the OpenAPI contract for users, operations, assets, routines,
   pulses, labels, mission stats, and run status patches; kept list filters on
   GET query parameters and fleet identity on bodies or resource paths.
@@ -211,7 +228,7 @@ Public beta release. This release substantially reshapes the database schema,
 API surface, rover protocol, and storage model; back up 0.2.x data before
 upgrading, and expect to reset dev databases or migrate them manually.
 
-### Accounts, tenancy & API
+### Accounts, Tenancy & API
 - Replaced browser session cookies with httpOnly `ufo_access` JWT cookies and
   EdDSA signing, with production controls for secure cookies, token lifetime,
   issuer, audience, and signing keys.
@@ -228,7 +245,7 @@ upgrading, and expect to reset dev databases or migrate them manually.
 - Reworked sqlc queries to list columns explicitly, use named arguments, avoid
   `SELECT *`, and keep timestamp columns in the project order convention.
 
-### Assets & attachments
+### Assets & Attachments
 - Added first-class assets for real files/blobs, with local filesystem,
   S3-compatible, and Google Cloud Storage backends behind one asset-store
   abstraction.
@@ -254,7 +271,7 @@ upgrading, and expect to reset dev databases or migrate them manually.
 - Added asset-aware operation creation, comments, routines, and pilot accept
   prompts without inlining file bytes into prompts.
 
-### Routines & operations
+### Routines & Operations
 - Added reusable routines with fleet, mission, body, metadata, operation
   metadata, scheduled pulse timestamps, manual pulses, and scheduled operation
   creation.
@@ -270,7 +287,7 @@ upgrading, and expect to reset dev databases or migrate them manually.
 - Improved comments with create/update/delete routes and paged comment
   previews for dense operation detail screens.
 
-### Source worktrees & rover execution
+### Source Worktrees & Rover Execution
 - Made source-aware rover execution the default when the rover starts inside a
   git checkout: operations run in detached per-operation worktrees under the
   outpost instead of editing the running checkout.
@@ -327,7 +344,7 @@ upgrading, and expect to reset dev databases or migrate them manually.
   status icons, better Markdown asset rendering, and operation selection
   actions.
 
-### Release, CI & docs
+### Release, CI & Docs
 - Added GitHub release automation for rover archives, checksums, Homebrew tap
   formula generation, and API/web container image publishing.
 - Added production API and web Dockerfiles and release images for
@@ -348,24 +365,24 @@ upgrading, and expect to reset dev databases or migrate them manually.
 
 Cleanup release.
 
-### Real-time & reliability
+### Real-Time & Reliability
 - Added tuning knobs for rover presence and run heartbeats.
 
-### Protocol & development
+### Protocol & Development
 - Cleaned up the API contract and web types, and trimmed internal queries.
 
 ## [0.2.0] - 2026-06-22
 
 Second public preview release.
 
-### Operations board
+### Operations Board
 - Refined board filters with pilot-kind assignee filtering and queued/working
   active-work counts.
 - Polished the operation detail layout, communications view, property rail,
   sidebar collapse, run controls, and date controls.
 - Updated board and detail flows for the `/v1` Hub API paths.
 
-### Pilots, crews & rovers
+### Pilots, Crews & Rovers
 - Added built-in Antigravity, Cursor Agent, GitHub Copilot, Amp Code,
   OpenCode, OpenClaw, Hermes, Pi, Kimi, and Kiro pilots.
 - Pilot management now uses built-in pilot kinds advertised by rovers; assign
@@ -380,7 +397,7 @@ Second public preview release.
 - Hardened crew administration: only owners/admins can create, rename, delete,
   or staff shared crews, and crew roles are limited to captain/member.
 
-### API, real-time & release
+### API, Real-Time & Release
 - Renamed public configuration to `UFO_HUB_*` / `UFO_ROVER_*`; update old
   `.env` files and rover launch commands from 0.1.x.
 - Expanded the hand-maintained OpenAPI contract for the new board,
@@ -394,14 +411,14 @@ Second public preview release.
 
 First public preview release.
 
-### Accounts & tenancy
+### Accounts & Tenancy
 - Email/password auth with cookie sessions.
 - **Fleets** (tenants) scope every entity; personal and group fleets.
 - Members, roles (owner / admin / member), and email invitations.
 - Owner/admin authorization protects membership, invitation, rover, and
   credential administration.
 
-### Operations board
+### Operations Board
 - Default drag-and-drop **Kanban** board across statuses (backlog, todo,
   in_progress, in_review, done, blocked, canceled), plus **List** and
   **Lanes** views.
@@ -416,7 +433,7 @@ First public preview release.
 - **Signals** surface review handoffs, failures, and requests for input to
   every human in the fleet.
 
-### Pilots, crews & rovers
+### Pilots, Crews & Rovers
 - **Pilots** are first-class entities backed by local AI CLIs, and are
   groupable into **crews** (pilots + humans).
 - Humans can be assignees or crew members, but pilots are the ones that drive
@@ -430,17 +447,17 @@ First public preview release.
 - A rover host can hold many fleet enrollments; pilot capability tags plus
   operation allow/deny tags are matched during dispatch.
 
-### Conversations & review handoff
+### Conversations & Review Handoff
 - Pilots work in resumable sessions, post results as comments, and hand off to
   **In Review** on success. A human reply resumes the session.
 - Pilots can request input or set the operation status via reply sentinels.
 - Per-run typed telemetry timeline, final messages, session metadata, and diff
   artifacts.
 
-### Real-time & reliability
+### Real-Time & Reliability
 - WebSocket UI streaming and rover long-poll, both backed by PostgreSQL
-  `LISTEN/NOTIFY`, operations, runs, rover presence/tags, and signals
-  update without client polling or an extra broker.
+  `LISTEN/NOTIFY`, operations, runs, rover presence/tags, and signals update
+  without client polling or an extra broker.
 - Orphaned-run lease sweeper requeues silent runs.
 - Database-enforced single active run per operation prevents duplicate pilot
   dispatch.
@@ -449,7 +466,7 @@ First public preview release.
 - Stateless API instances coordinate migration and run accepts through
   PostgreSQL locking.
 
-### Protocol & development
+### Protocol & Development
 - Hand-maintained OpenAPI contract for the API.
 - Docker Compose development stack with automatically rebuilt API and web
   services; the rover runs on the host.

@@ -691,12 +691,57 @@ VALUES (sqlc.arg(fleet_id), sqlc.arg(name), sqlc.arg(key), sqlc.arg(metadata))
 RETURNING id, public_id, fleet_id, name, key, next_sequence, metadata, created_at, updated_at;
 
 -- name: UpdateMission :one
-UPDATE missions SET name = sqlc.arg(name), key = sqlc.arg(key), metadata = sqlc.arg(metadata)
+UPDATE missions
+SET name = sqlc.arg(name),
+    key = sqlc.arg(key),
+    metadata = jsonb_strip_nulls(metadata || sqlc.arg(metadata_patch)::jsonb)
 WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id)
 RETURNING id, public_id, fleet_id, name, key, next_sequence, metadata, created_at, updated_at;
 
 -- name: MergeMissionMetadata :exec
 UPDATE missions SET metadata = metadata || sqlc.arg(metadata)::jsonb WHERE id = sqlc.arg(id);
+
+-- name: PromoteMissionLearning :one
+WITH consumed AS (
+    UPDATE operations
+    SET metadata = operations.metadata - 'mission_learning'
+    WHERE operations.id = sqlc.arg(operation_id)
+      AND operations.fleet_id = sqlc.arg(fleet_id)
+      AND operations.mission_id = sqlc.arg(mission_id)
+      AND operations.metadata->'mission_learning' = sqlc.arg(candidate)::jsonb
+    RETURNING operations.mission_id
+),
+updated AS (
+    UPDATE missions
+    SET metadata = missions.metadata || jsonb_build_object(
+        'learning',
+        COALESCE(missions.metadata->'learning', '{}'::jsonb) || jsonb_build_object(
+            'entries',
+            COALESCE(missions.metadata->'learning'->'entries', '{}'::jsonb) ||
+                jsonb_build_object(sqlc.arg(operation_key)::text, sqlc.arg(entry)::jsonb)
+        )
+    )
+    FROM consumed
+    WHERE missions.id = consumed.mission_id
+      AND missions.id = sqlc.arg(mission_id)
+      AND missions.fleet_id = sqlc.arg(fleet_id)
+    RETURNING TRUE
+)
+SELECT EXISTS(SELECT 1 FROM updated) AS promoted;
+
+-- name: ClearMissionLearning :exec
+UPDATE missions SET metadata = metadata - 'learning'
+WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id);
+
+-- name: DeleteMissionLearningEntries :exec
+UPDATE missions
+SET metadata = jsonb_set(
+    metadata,
+    '{learning,entries}',
+    COALESCE(metadata->'learning'->'entries', '{}'::jsonb) - sqlc.arg(keys)::text[]
+)
+WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id)
+  AND metadata ? 'learning';
 
 -- name: BumpMissionSequence :one
 UPDATE missions SET next_sequence = next_sequence + 1
@@ -1405,7 +1450,7 @@ WHERE o.fleet_id = sqlc.arg(fleet_id)
         AND sa.fleet_id = o.fleet_id
         AND sa.status IN ('queued', 'accepted')
         AND sa.kind IN ('commit_to_branch', 'create_source_branch')
-        AND COALESCE(sa.metadata ->> 're_pulse_on_success', 'false') = 'true'
+        AND COALESCE(sa.metadata ->> 'auto_commit', 'false') = 'true'
     )
     OR EXISTS (
       SELECT 1
@@ -1416,13 +1461,13 @@ WHERE o.fleet_id = sqlc.arg(fleet_id)
     )
   );
 
--- name: ClaimLoopRePulse :one
+-- name: ClaimLoopContinuation :one
 UPDATE operations
-SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{loop,re_pulsed}', 'true'::jsonb, true),
+SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{loop,continued}', 'true'::jsonb, true),
     updated_at = now()
 WHERE id = sqlc.arg(id)
   AND fleet_id = sqlc.arg(fleet_id)
-  AND COALESCE(metadata -> 'loop' ->> 're_pulsed', 'false') <> 'true'
+  AND COALESCE(metadata -> 'loop' ->> 'continued', 'false') <> 'true'
 RETURNING id;
 
 -- ====================== operation relations ========================

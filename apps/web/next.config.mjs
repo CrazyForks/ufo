@@ -2,6 +2,9 @@
 const nextConfig = {
   reactStrictMode: true,
   output: "standalone",
+  experimental: {
+    useTypeScriptCli: true,
+  },
   // Browser calls /api/v1/*; asset URLs are canonical /v1/*.
   // Next forwards both to the Hub.
   async rewrites() {

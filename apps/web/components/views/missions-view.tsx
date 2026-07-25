@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, ChevronRight, GitBranch, GitPullRequest, Pencil, Plus, Wallet } from "lucide-react";
+import { BookOpen, ChevronDown, ChevronRight, GitBranch, GitPullRequest, Pencil, Plus, Trash2, Wallet } from "lucide-react";
 import { useApp } from "@/components/app-provider";
 import { BudgetEditor, budgetFromMetadata } from "@/components/budget-editor";
 import { MissionUsagePanel } from "@/components/usage-summary";
@@ -30,7 +30,7 @@ export function MissionsView() {
 
   return (
     <div className="h-full min-h-0 overflow-y-auto">
-      <div className="mx-auto max-w-3xl space-y-3 p-4 pb-8">
+      <div className="mx-auto max-w-6xl space-y-3 p-4 pb-8">
         <Card>
           <CardHeader className="px-4 py-3">
             <CardTitle className="flex items-center gap-2 text-base"><SECTION_ICONS.missions className="size-4" /> {t("missions.title")}</CardTitle>
@@ -63,6 +63,29 @@ function worktreeValue(metadata: Record<string, unknown> | undefined): boolean |
   return typeof metadata?.worktree_enabled === "boolean" ? metadata.worktree_enabled : undefined;
 }
 
+type MissionLearningEntry = {
+  operation_id: string;
+  operation_code: string;
+  operation_title: string;
+  summary: string;
+  artifacts?: { kind: "doc" | "skill"; path: string; summary?: string }[];
+  captured_at: string;
+};
+
+function missionLearningEntries(metadata: Record<string, unknown> | undefined): MissionLearningEntry[] {
+  const learning = metadata?.learning;
+  if (!learning || typeof learning !== "object" || Array.isArray(learning)) return [];
+  const entries = (learning as Record<string, unknown>).entries;
+  if (!entries || typeof entries !== "object" || Array.isArray(entries)) return [];
+  return Object.values(entries)
+    .filter((entry): entry is MissionLearningEntry => (
+      !!entry && typeof entry === "object" && !Array.isArray(entry) &&
+      typeof (entry as Record<string, unknown>).operation_id === "string" &&
+      typeof (entry as Record<string, unknown>).summary === "string"
+    ))
+    .sort((a, b) => b.captured_at.localeCompare(a.captured_at));
+}
+
 function MissionRow({ mission, count }: { mission: Mission; count: number }) {
   const app = useApp();
   const t = useT();
@@ -77,6 +100,7 @@ function MissionRow({ mission, count }: { mission: Mission; count: number }) {
   const hasBudget = budgetFromMetadata(mission.metadata) != null;
   const forgeIds = mission.forge_ids ?? [];
   const boundForges = app.forges.filter((f) => forgeIds.includes(f.id));
+  const learningEntries = missionLearningEntries(mission.metadata);
 
   function openEditor() {
     setName(mission.name);
@@ -111,6 +135,7 @@ function MissionRow({ mission, count }: { mission: Mission; count: number }) {
               aria-label={boundForges.map((f) => f.key).join(", ")}
             />
           )}
+          {learningEntries.length > 0 && <BookOpen className="size-3 shrink-0 text-muted-foreground" aria-label={t("missions.learning")} />}
         </button>
         <span className="flex shrink-0 items-center gap-2">
           <span className="text-xs text-muted-foreground">{t("missions.operationsCount", { count })}</span>
@@ -130,6 +155,59 @@ function MissionRow({ mission, count }: { mission: Mission; count: number }) {
             </div>
             <Textarea value={context} onChange={(e) => setContext(e.target.value)} placeholder={t("missions.contextEditPlaceholder")} className="min-h-16 resize-y text-sm" />
           </form>
+
+          {learningEntries.length > 0 && (
+            <div className="space-y-2 border-t border-border pt-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                  <BookOpen className="size-3.5" /> {t("missions.learning")}
+                </div>
+                {canEditBudget && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 px-1.5 text-[11px] text-muted-foreground hover:text-destructive"
+                    onClick={() => void app.deleteMissionLearning(mission.id)}
+                  >
+                    {t("missions.learningClear")}
+                  </Button>
+                )}
+              </div>
+              <p className="text-[11px] text-muted-foreground">{t("missions.learningHint")}</p>
+              <div className="divide-y divide-border/60">
+                {learningEntries.map((entry) => (
+                  <div key={entry.operation_id} className="space-y-1 py-2 text-xs">
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{entry.operation_code}</span>
+                      <span className="min-w-0 flex-1 truncate font-medium">{entry.operation_title}</span>
+                      {canEditBudget && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          className="size-6 shrink-0 text-muted-foreground hover:text-destructive"
+                          aria-label={t("missions.learningDelete")}
+                          title={t("missions.learningDelete")}
+                          onClick={() => void app.deleteMissionLearning(mission.id, entry.operation_id)}
+                        >
+                          <Trash2 className="size-3.5" />
+                        </Button>
+                      )}
+                    </div>
+                    <p className="whitespace-pre-wrap leading-relaxed">{entry.summary}</p>
+                    {entry.artifacts?.map((artifact) => (
+                      <div key={`${artifact.kind}:${artifact.path}`} className="flex min-w-0 items-baseline gap-1.5 text-[11px] text-muted-foreground">
+                        <span className="shrink-0">{t(artifact.kind === "skill" ? "missions.learningSkill" : "missions.learningDoc")}</span>
+                        <span className="truncate font-mono" title={artifact.path}>{artifact.path}</span>
+                        {artifact.summary && <span className="min-w-0 truncate">· {artifact.summary}</span>}
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="space-y-1.5 border-t border-border pt-2">
             <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">

@@ -212,7 +212,7 @@ func (s *Server) sumUsage(ctx context.Context, scope budgetScope, id int64, win 
 	}
 }
 
-func (s *Server) rePulseBudgetBlocks(ctx context.Context, routine db.Routine) (blocked bool, periodKey string, err error) {
+func (s *Server) routineLoopBudgetBlocks(ctx context.Context, routine db.Routine) (blocked bool, periodKey string, err error) {
 	fleet, err := s.q.GetFleetByID(ctx, routine.FleetID)
 	if err != nil {
 		return false, "", err

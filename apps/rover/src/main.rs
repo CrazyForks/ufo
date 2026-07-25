@@ -5669,47 +5669,87 @@ const SUB_OPERATIONS_SENTINEL: &str = "@@UFO_SUB_OPERATIONS@@";
 const SUB_OPERATIONS_INSTRUCTION: &str = "If this operation splits cleanly into independent, non-overlapping pieces that can run in parallel, do the planning/research first, then end your reply with a line containing exactly @@UFO_SUB_OPERATIONS@@ followed by a JSON array of objects {\"title\": string, \"body\": string, \"assignee\": optional pilot kind}. Each piece must touch different files/areas so they merge cleanly. Omit this entirely if the work is not worth splitting.";
 const SUB_OPERATIONS_FEEDBACK_SENTINEL: &str = "@@UFO_SUB_OPERATIONS_FEEDBACK@@";
 const SUB_OPERATIONS_FEEDBACK_INSTRUCTION: &str = "When reconciling sub-operations, if an existing sub-operation needs rework or clarification, do not create a replacement sub-operation. End your reply with @@UFO_SUB_OPERATIONS_FEEDBACK@@ followed by a JSON array of objects {\"operation_id\": string, \"body\": string}. UFO will post each body back to that same sub-operation and resume its pilot. Ask the human only after the captain and sub-operation pilot cannot resolve it.";
+const MISSION_LEARNING_SENTINEL: &str = "@@UFO_MISSION_LEARNING@@";
+const MISSION_LEARNING_INSTRUCTION: &str = "Before finishing, extract only durable knowledge that will help future operations in this mission. When the right home is a shared repository document or reusable skill file, update that file during this run. If there is meaningful mission-wide learning, add one final line containing @@UFO_MISSION_LEARNING@@ followed by a single-line JSON object {\"summary\": string, \"artifacts\": optional array of {\"kind\": \"doc\" or \"skill\", \"path\": repository-relative path, \"summary\": optional string}}. Omit it when nothing durable changed.";
+
+const BLOCK_SENTINELS: [&str; 4] = [
+    OPERATIONS_SENTINEL,
+    SUB_OPERATIONS_SENTINEL,
+    SUB_OPERATIONS_FEEDBACK_SENTINEL,
+    MISSION_LEARNING_SENTINEL,
+];
+
+fn next_directive_offset(rest: &str) -> usize {
+    BLOCK_SENTINELS
+        .iter()
+        .filter_map(|s| rest.find(s))
+        .min()
+        .unwrap_or(rest.len())
+}
+
+fn parse_directive_array(msg: &str, sentinel: &str) -> Option<serde_json::Value> {
+    let i = msg.find(sentinel)?;
+    let rest = &msg[i + sentinel.len()..];
+    let payload = rest[..next_directive_offset(rest)].trim();
+    let v: serde_json::Value = serde_json::from_str(payload).ok()?;
+    v.is_array().then_some(v)
+}
+
+fn strip_directive(msg: &str, sentinel: &str) -> String {
+    match msg.find(sentinel) {
+        Some(i) => {
+            let rest = &msg[i + sentinel.len()..];
+            let end = i + sentinel.len() + next_directive_offset(rest);
+            format!("{}{}", &msg[..i], &msg[end..]).trim().to_string()
+        }
+        None => msg.to_string(),
+    }
+}
 
 fn parse_operations(msg: &str) -> Option<serde_json::Value> {
-    let i = msg.find(OPERATIONS_SENTINEL)?;
-    let rest = msg[i + OPERATIONS_SENTINEL.len()..].trim();
-    let v: serde_json::Value = serde_json::from_str(rest).ok()?;
-    v.is_array().then_some(v)
+    parse_directive_array(msg, OPERATIONS_SENTINEL)
 }
 
 fn strip_operations(msg: &str) -> String {
-    match msg.find(OPERATIONS_SENTINEL) {
-        Some(i) => msg[..i].trim().to_string(),
-        None => msg.to_string(),
-    }
+    strip_directive(msg, OPERATIONS_SENTINEL)
 }
 
 fn parse_sub_operations(msg: &str) -> Option<serde_json::Value> {
-    let i = msg.find(SUB_OPERATIONS_SENTINEL)?;
-    let rest = msg[i + SUB_OPERATIONS_SENTINEL.len()..].trim();
-    let v: serde_json::Value = serde_json::from_str(rest).ok()?;
-    v.is_array().then_some(v)
+    parse_directive_array(msg, SUB_OPERATIONS_SENTINEL)
 }
 
 fn strip_sub_operations(msg: &str) -> String {
-    match msg.find(SUB_OPERATIONS_SENTINEL) {
-        Some(i) => msg[..i].trim().to_string(),
-        None => msg.to_string(),
-    }
+    strip_directive(msg, SUB_OPERATIONS_SENTINEL)
 }
 
 fn parse_sub_operations_feedback(msg: &str) -> Option<serde_json::Value> {
-    let i = msg.find(SUB_OPERATIONS_FEEDBACK_SENTINEL)?;
-    let rest = msg[i + SUB_OPERATIONS_FEEDBACK_SENTINEL.len()..].trim();
-    let v: serde_json::Value = serde_json::from_str(rest).ok()?;
-    v.is_array().then_some(v)
+    parse_directive_array(msg, SUB_OPERATIONS_FEEDBACK_SENTINEL)
 }
 
 fn strip_sub_operations_feedback(msg: &str) -> String {
-    match msg.find(SUB_OPERATIONS_FEEDBACK_SENTINEL) {
-        Some(i) => msg[..i].trim().to_string(),
-        None => msg.to_string(),
-    }
+    strip_directive(msg, SUB_OPERATIONS_FEEDBACK_SENTINEL)
+}
+
+fn parse_mission_learning(msg: &str) -> Option<serde_json::Value> {
+    let i = msg.find(MISSION_LEARNING_SENTINEL)?;
+    let line = msg[i + MISSION_LEARNING_SENTINEL.len()..]
+        .trim_start()
+        .lines()
+        .next()?
+        .trim();
+    let value: serde_json::Value = serde_json::from_str(line).ok()?;
+    value.is_object().then_some(value)
+}
+
+fn strip_mission_learning(msg: &str) -> String {
+    let Some(i) = msg.find(MISSION_LEARNING_SENTINEL) else {
+        return msg.to_string();
+    };
+    let rest = &msg[i + MISSION_LEARNING_SENTINEL.len()..];
+    let end = rest
+        .find('\n')
+        .map_or(msg.len(), |n| i + MISSION_LEARNING_SENTINEL.len() + n + 1);
+    format!("{}{}", &msg[..i], &msg[end..]).trim().to_string()
 }
 
 fn parse_status(msg: &str) -> Option<String> {
@@ -5773,7 +5813,7 @@ async fn execute_run(
     }
     prompt = prepend_repo_context(operation_directory, prompt)?;
     let mut cli_prompt = format!(
-        "{prompt}\n\n{WORK_DIRECTORY_INSTRUCTION}\n{NEEDS_INPUT_INSTRUCTION}\n{STATUS_INSTRUCTION}\n{OPERATIONS_INSTRUCTION}"
+        "{prompt}\n\n{WORK_DIRECTORY_INSTRUCTION}\n{NEEDS_INPUT_INSTRUCTION}\n{STATUS_INSTRUCTION}\n{OPERATIONS_INSTRUCTION}\n{MISSION_LEARNING_INSTRUCTION}"
     );
     if run.can_propose_sub_operations {
         cli_prompt.push('\n');
@@ -5880,6 +5920,10 @@ async fn execute_run(
     if sub_operations_feedback.is_some() {
         message = strip_sub_operations_feedback(&message);
     }
+    let mission_learning = parse_mission_learning(&message);
+    if mission_learning.is_some() {
+        message = strip_mission_learning(&message);
+    }
     message = upload_referenced_files(
         client,
         hub,
@@ -5924,6 +5968,7 @@ async fn execute_run(
         &message,
         needs_input,
         &operation_status,
+        mission_learning.as_ref(),
         operations.as_ref(),
         sub_operations.as_ref(),
         sub_operations_feedback.as_ref(),
@@ -7511,6 +7556,7 @@ async fn post_result(
     message: &str,
     needs_input: bool,
     operation_status: &str,
+    mission_learning: Option<&serde_json::Value>,
     operations: Option<&serde_json::Value>,
     sub_operations: Option<&serde_json::Value>,
     sub_operations_feedback: Option<&serde_json::Value>,
@@ -7525,6 +7571,9 @@ async fn post_result(
     });
     if let Some(s) = operations {
         body["operations"] = s.clone();
+    }
+    if let Some(learning) = mission_learning {
+        body["mission_learning"] = learning.clone();
     }
     if let Some(s) = sub_operations {
         body["sub_operations"] = s.clone();

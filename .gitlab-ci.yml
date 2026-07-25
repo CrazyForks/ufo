@@ -33,6 +33,7 @@ workflow:
   image: node:26-alpine
   script:
     - cd apps/web
+    - node ../../scripts/check-doc-wrap.mjs
     - npm ci
     - npm run lint
     - npm run build
@@ -111,4 +112,4 @@ workflow:
   stage: check
   image: node:26-alpine
   script:
-    - npx --yes @redocly/cli@2.36.0 lint apps/api/internal/spec/openapi.yaml
+    - npx --yes @redocly/cli@2.40.0 lint apps/api/internal/spec/openapi.yaml

@@ -18,7 +18,7 @@ export function IntegrationsView() {
 
   return (
     <div className="h-full min-h-0 overflow-y-auto">
-      <div className="mx-auto max-w-3xl space-y-3 p-4 pb-8">
+      <div className="mx-auto max-w-6xl space-y-3 p-4 pb-8">
         <Card>
           <CardHeader className="px-4 py-3">
             <CardTitle className="flex items-center gap-2 text-base">

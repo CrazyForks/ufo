@@ -62,7 +62,7 @@ export function MembersView() {
 
   return (
     <div className="h-full min-h-0 overflow-y-auto">
-    <div className="mx-auto max-w-3xl space-y-4 p-4 pb-8">
+    <div className="mx-auto max-w-6xl space-y-4 p-4 pb-8">
       <Card>
         <CardHeader><CardTitle className="flex items-center gap-2 text-base"><SECTION_ICONS.members className="size-4" /> {t("members.title")}</CardTitle></CardHeader>
         <CardContent className="space-y-1">

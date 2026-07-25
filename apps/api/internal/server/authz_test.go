@@ -1888,6 +1888,330 @@ func TestHumanContinuationDoneStopsInReview(t *testing.T) {
 	finish("done", "done")
 }
 
+func TestMissionLearningPromotesOnDoneAndIsInherited(t *testing.T) {
+	ts := newTestServer(t)
+	owner := signup(t, ts, "mission-learning")
+	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Learning"})
+	fleetID := field(t, fb, "id")
+	_, tb := do(t, owner, "POST", ts.URL+"/v1/enrollment-codes", "", map[string]any{"fleet_id": fleetID, "name": "r"})
+	_, eb := do(t, &http.Client{}, "POST", ts.URL+"/v1/rovers", field(t, tb, "code"), map[string]any{"name": "r", "auto_tags": []string{"pilot:claude"}})
+	rover := field(t, eb, "token")
+	_, mb := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fleetID, "name": "Product", "key": "UFO"})
+	missionID := field(t, mb, "id")
+	_, ob := do(t, owner, "POST", ts.URL+"/v1/operations", "", map[string]any{
+		"fleet_id": fleetID, "title": "Build parser", "mission_id": missionID,
+		"assignee_type": "pilot", "assignee_id": "claude",
+	})
+	operationID := field(t, ob, "id")
+
+	code, accept := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
+	if code != http.StatusOK {
+		t.Fatalf("accept: %d %s", code, accept)
+	}
+	runID := field(t, accept, "id")
+	result := map[string]any{
+		"status": "succeeded", "message": "ready",
+		"mission_learning": map[string]any{
+			"summary": "Reuse the parser for all command payloads.",
+			"artifacts": []map[string]string{{
+				"kind": "doc", "path": "docs/parser.md", "summary": "Shared parser contract.",
+			}},
+		},
+	}
+	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+runID+"/result", rover, result); code != http.StatusNoContent {
+		t.Fatalf("result: %d %s", code, b)
+	}
+	if _, b := do(t, owner, "GET", ts.URL+"/v1/missions/"+missionID, "", nil); strings.Contains(string(b), "Reuse the parser") {
+		t.Fatalf("learning promoted before done: %s", b)
+	}
+	if code, b := do(t, owner, "PATCH", ts.URL+"/v1/operations/"+operationID, "", map[string]string{"status": "done"}); code != http.StatusOK {
+		t.Fatalf("mark done: %d %s", code, b)
+	}
+	if _, b := do(t, owner, "GET", ts.URL+"/v1/missions/"+missionID, "", nil); !strings.Contains(string(b), "Reuse the parser") || !strings.Contains(string(b), "docs/parser.md") {
+		t.Fatalf("mission missing promoted learning: %s", b)
+	}
+	if code, b := do(t, owner, "PATCH", ts.URL+"/v1/missions/"+missionID, "", map[string]any{
+		"name": "Product", "key": "UFO", "metadata": map[string]any{
+			"context": "Keep parser behavior consistent.",
+		},
+	}); code != http.StatusOK {
+		t.Fatalf("patch mission context: %d %s", code, b)
+	}
+	if _, b := do(t, owner, "GET", ts.URL+"/v1/missions/"+missionID, "", nil); !strings.Contains(string(b), "Reuse the parser") || !strings.Contains(string(b), "Keep parser behavior consistent.") {
+		t.Fatalf("mission metadata patch lost learning: %s", b)
+	}
+
+	_, nextBody := do(t, owner, "POST", ts.URL+"/v1/operations", "", map[string]any{
+		"fleet_id": fleetID, "title": "Use parser", "mission_id": missionID,
+		"assignee_type": "pilot", "assignee_id": "claude",
+	})
+	nextOperationID := field(t, nextBody, "id")
+	code, nextAccept := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
+	if code != http.StatusOK {
+		t.Fatalf("accept next: %d %s", code, nextAccept)
+	}
+	if prompt := field(t, nextAccept, "prompt"); !strings.Contains(prompt, "Mission learning") || !strings.Contains(prompt, "Reuse the parser") {
+		t.Fatalf("next operation prompt missing learning: %q", prompt)
+	}
+	if field(t, nextAccept, "operation_id") != nextOperationID {
+		t.Fatalf("accepted wrong operation: %s", nextAccept)
+	}
+
+	if code, b := do(t, owner, "PATCH", ts.URL+"/v1/missions/"+missionID, "", map[string]any{
+		"name": "Product", "key": "UFO", "metadata": map[string]any{
+			"learning": map[string]any{"entries": map[string]any{operationID: nil}},
+		},
+	}); code != http.StatusOK {
+		t.Fatalf("delete learning entry: %d %s", code, b)
+	}
+	if _, b := do(t, owner, "GET", ts.URL+"/v1/missions/"+missionID, "", nil); strings.Contains(string(b), "Reuse the parser") {
+		t.Fatalf("learning entry not deleted: %s", b)
+	}
+}
+
+func TestMissionLearningPromotesOnRunDone(t *testing.T) {
+	ts := newTestServer(t)
+	owner := signup(t, ts, "mission-learning-run-done")
+	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Learning Run"})
+	fleetID := field(t, fb, "id")
+	_, tb := do(t, owner, "POST", ts.URL+"/v1/enrollment-codes", "", map[string]any{"fleet_id": fleetID, "name": "r"})
+	_, eb := do(t, &http.Client{}, "POST", ts.URL+"/v1/rovers", field(t, tb, "code"), map[string]any{"name": "r", "auto_tags": []string{"pilot:claude"}})
+	rover := field(t, eb, "token")
+	_, mb := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fleetID, "name": "Product", "key": "UFO"})
+	missionID := field(t, mb, "id")
+	_, ob := do(t, owner, "POST", ts.URL+"/v1/operations", "", map[string]any{
+		"fleet_id": fleetID, "title": "Build parser", "mission_id": missionID,
+		"assignee_type": "pilot", "assignee_id": "claude",
+	})
+	operationID := field(t, ob, "id")
+
+	code, accept := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
+	if code != http.StatusOK {
+		t.Fatalf("accept: %d %s", code, accept)
+	}
+	runID := field(t, accept, "id")
+	result := map[string]any{
+		"status": "succeeded", "message": "ready", "operation_status": "done",
+		"mission_learning": map[string]any{
+			"summary": "Promote on run completion without human status patch.",
+			"artifacts": []map[string]string{{
+				"kind": "skill", "path": "skills/parser/SKILL.md",
+			}},
+		},
+	}
+	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+runID+"/result", rover, result); code != http.StatusNoContent {
+		t.Fatalf("result: %d %s", code, b)
+	}
+	_, detail := do(t, owner, "GET", ts.URL+"/v1/operations/"+operationID, "", nil)
+	var got struct {
+		Operation struct {
+			Status string `json:"status"`
+		} `json:"operation"`
+	}
+	if err := json.Unmarshal(detail, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Operation.Status != "done" {
+		t.Fatalf("operation status after run result = %q, want done", got.Operation.Status)
+	}
+	if _, b := do(t, owner, "GET", ts.URL+"/v1/missions/"+missionID, "", nil); !strings.Contains(string(b), "Promote on run completion") || !strings.Contains(string(b), "skills/parser/SKILL.md") {
+		t.Fatalf("mission missing learning from run-done path: %s", b)
+	}
+	if code, b := do(t, owner, "PATCH", ts.URL+"/v1/missions/"+missionID, "", map[string]any{
+		"name": "Product", "key": "UFO", "metadata": map[string]any{"learning": nil},
+	}); code != http.StatusOK {
+		t.Fatalf("clear learning: %d %s", code, b)
+	}
+	if _, b := do(t, owner, "GET", ts.URL+"/v1/missions/"+missionID, "", nil); strings.Contains(string(b), "Promote on run completion") {
+		t.Fatalf("learning not cleared: %s", b)
+	}
+}
+
+func TestMissionCreateRejectsLearning(t *testing.T) {
+	ts := newTestServer(t)
+	owner := signup(t, ts, "mission-create-learning")
+	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Learning Create"})
+	fleetID := field(t, fb, "id")
+	code, b := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]any{
+		"fleet_id": fleetID, "name": "Product", "key": "UFO",
+		"metadata": map[string]any{
+			"context": "ok",
+			"learning": map[string]any{
+				"entries": map[string]any{
+					"forged": map[string]any{"operation_id": "forged", "summary": strings.Repeat("x", 100)},
+				},
+			},
+		},
+	})
+	if code != http.StatusBadRequest || !strings.Contains(string(b), "server-managed") {
+		t.Fatalf("create with learning: %d %s", code, b)
+	}
+	code, b = do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]any{
+		"fleet_id": fleetID, "name": "Product", "key": "UFO",
+		"metadata": map[string]any{"context": "ok"},
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("create without learning: %d %s", code, b)
+	}
+	if strings.Contains(string(b), `"learning"`) {
+		t.Fatalf("created mission has learning: %s", b)
+	}
+}
+
+func TestMissionLearningClearRollsBackOnInvalidForge(t *testing.T) {
+	ts := newTestServer(t)
+	owner := signup(t, ts, "mission-learning-forge")
+	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Learning Forge"})
+	fleetID := field(t, fb, "id")
+	_, tb := do(t, owner, "POST", ts.URL+"/v1/enrollment-codes", "", map[string]any{"fleet_id": fleetID, "name": "r"})
+	_, eb := do(t, &http.Client{}, "POST", ts.URL+"/v1/rovers", field(t, tb, "code"), map[string]any{"name": "r", "auto_tags": []string{"pilot:claude"}})
+	rover := field(t, eb, "token")
+	_, mb := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fleetID, "name": "Product", "key": "UFO"})
+	missionID := field(t, mb, "id")
+	_, ob := do(t, owner, "POST", ts.URL+"/v1/operations", "", map[string]any{
+		"fleet_id": fleetID, "title": "Build parser", "mission_id": missionID,
+		"assignee_type": "pilot", "assignee_id": "claude",
+	})
+	_ = field(t, ob, "id")
+	code, accept := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
+	if code != http.StatusOK {
+		t.Fatalf("accept: %d %s", code, accept)
+	}
+	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+field(t, accept, "id")+"/result", rover, map[string]any{
+		"status": "succeeded", "message": "ready", "operation_status": "done",
+		"mission_learning": map[string]any{"summary": "Must survive invalid forge_ids."},
+	}); code != http.StatusNoContent {
+		t.Fatalf("result: %d %s", code, b)
+	}
+	if code, b := do(t, owner, "PATCH", ts.URL+"/v1/missions/"+missionID, "", map[string]any{
+		"name": "Product", "key": "UFO",
+		"forge_ids": []string{"00000000-0000-4000-8000-000000000001"},
+		"metadata":  map[string]any{"learning": nil},
+	}); code != http.StatusBadRequest {
+		t.Fatalf("expected invalid forge: %d %s", code, b)
+	}
+	if _, b := do(t, owner, "GET", ts.URL+"/v1/missions/"+missionID, "", nil); !strings.Contains(string(b), "Must survive invalid forge_ids") {
+		t.Fatalf("learning cleared despite invalid forge: %s", b)
+	}
+}
+
+func TestMissionLearningClearRollsBackOnConflict(t *testing.T) {
+	ts := newTestServer(t)
+	owner := signup(t, ts, "mission-learning-conflict")
+	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Learning Conflict"})
+	fleetID := field(t, fb, "id")
+	_, tb := do(t, owner, "POST", ts.URL+"/v1/enrollment-codes", "", map[string]any{"fleet_id": fleetID, "name": "r"})
+	_, eb := do(t, &http.Client{}, "POST", ts.URL+"/v1/rovers", field(t, tb, "code"), map[string]any{"name": "r", "auto_tags": []string{"pilot:claude"}})
+	rover := field(t, eb, "token")
+	_, mb := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fleetID, "name": "Product", "key": "UFO"})
+	missionID := field(t, mb, "id")
+	_, _ = do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fleetID, "name": "Other", "key": "OTHER"})
+	_, ob := do(t, owner, "POST", ts.URL+"/v1/operations", "", map[string]any{
+		"fleet_id": fleetID, "title": "Build parser", "mission_id": missionID,
+		"assignee_type": "pilot", "assignee_id": "claude",
+	})
+	_ = field(t, ob, "id")
+	code, accept := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
+	if code != http.StatusOK {
+		t.Fatalf("accept: %d %s", code, accept)
+	}
+	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+field(t, accept, "id")+"/result", rover, map[string]any{
+		"status": "succeeded", "message": "ready", "operation_status": "done",
+		"mission_learning": map[string]any{"summary": "Must survive failed key rename."},
+	}); code != http.StatusNoContent {
+		t.Fatalf("result: %d %s", code, b)
+	}
+	if _, b := do(t, owner, "GET", ts.URL+"/v1/missions/"+missionID, "", nil); !strings.Contains(string(b), "Must survive failed key rename") {
+		t.Fatalf("learning missing before conflict: %s", b)
+	}
+	if code, b := do(t, owner, "PATCH", ts.URL+"/v1/missions/"+missionID, "", map[string]any{
+		"name": "Product", "key": "OTHER",
+		"metadata": map[string]any{"learning": nil},
+	}); code != http.StatusConflict {
+		t.Fatalf("expected key conflict: %d %s", code, b)
+	}
+	if _, b := do(t, owner, "GET", ts.URL+"/v1/missions/"+missionID, "", nil); !strings.Contains(string(b), "Must survive failed key rename") {
+		t.Fatalf("learning cleared despite failed update: %s", b)
+	}
+}
+
+func TestMissionLearningPromotesPatchedTitle(t *testing.T) {
+	ts := newTestServer(t)
+	owner := signup(t, ts, "mission-learning-title")
+	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Learning Title"})
+	fleetID := field(t, fb, "id")
+	_, tb := do(t, owner, "POST", ts.URL+"/v1/enrollment-codes", "", map[string]any{"fleet_id": fleetID, "name": "r"})
+	_, eb := do(t, &http.Client{}, "POST", ts.URL+"/v1/rovers", field(t, tb, "code"), map[string]any{"name": "r", "auto_tags": []string{"pilot:claude"}})
+	rover := field(t, eb, "token")
+	_, mb := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fleetID, "name": "Product", "key": "UFO"})
+	missionID := field(t, mb, "id")
+	_, ob := do(t, owner, "POST", ts.URL+"/v1/operations", "", map[string]any{
+		"fleet_id": fleetID, "title": "Old title", "mission_id": missionID,
+		"assignee_type": "pilot", "assignee_id": "claude",
+	})
+	operationID := field(t, ob, "id")
+	code, accept := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
+	if code != http.StatusOK {
+		t.Fatalf("accept: %d %s", code, accept)
+	}
+	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+field(t, accept, "id")+"/result", rover, map[string]any{
+		"status": "succeeded", "message": "ready",
+		"mission_learning": map[string]any{"summary": "Reuse the new title."},
+	}); code != http.StatusNoContent {
+		t.Fatalf("result: %d %s", code, b)
+	}
+	if code, b := do(t, owner, "PATCH", ts.URL+"/v1/operations/"+operationID, "", map[string]any{
+		"title": "New title", "status": "done",
+	}); code != http.StatusOK {
+		t.Fatalf("patch title+done: %d %s", code, b)
+	}
+	if _, b := do(t, owner, "GET", ts.URL+"/v1/missions/"+missionID, "", nil); !strings.Contains(string(b), "New title") || strings.Contains(string(b), "Old title") {
+		t.Fatalf("learning stored wrong title: %s", b)
+	}
+}
+
+func TestMissionLearningPromotesToMovedMission(t *testing.T) {
+	ts := newTestServer(t)
+	owner := signup(t, ts, "mission-learning-move")
+	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Learning Move"})
+	fleetID := field(t, fb, "id")
+	_, tb := do(t, owner, "POST", ts.URL+"/v1/enrollment-codes", "", map[string]any{"fleet_id": fleetID, "name": "r"})
+	_, eb := do(t, &http.Client{}, "POST", ts.URL+"/v1/rovers", field(t, tb, "code"), map[string]any{"name": "r", "auto_tags": []string{"pilot:claude"}})
+	rover := field(t, eb, "token")
+	_, m1b := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fleetID, "name": "Source", "key": "SRC"})
+	sourceMission := field(t, m1b, "id")
+	_, m2b := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fleetID, "name": "Target", "key": "DST"})
+	targetMission := field(t, m2b, "id")
+	_, ob := do(t, owner, "POST", ts.URL+"/v1/operations", "", map[string]any{
+		"fleet_id": fleetID, "title": "Build parser", "mission_id": sourceMission,
+		"assignee_type": "pilot", "assignee_id": "claude",
+	})
+	operationID := field(t, ob, "id")
+
+	code, accept := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
+	if code != http.StatusOK {
+		t.Fatalf("accept: %d %s", code, accept)
+	}
+	runID := field(t, accept, "id")
+	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+runID+"/result", rover, map[string]any{
+		"status": "succeeded", "message": "ready",
+		"mission_learning": map[string]any{"summary": "Learning that must follow the move."},
+	}); code != http.StatusNoContent {
+		t.Fatalf("result: %d %s", code, b)
+	}
+	if code, b := do(t, owner, "PATCH", ts.URL+"/v1/operations/"+operationID, "", map[string]any{
+		"status": "done", "mission_id": targetMission,
+	}); code != http.StatusOK {
+		t.Fatalf("patch done+move: %d %s", code, b)
+	}
+	if _, b := do(t, owner, "GET", ts.URL+"/v1/missions/"+targetMission, "", nil); !strings.Contains(string(b), "Learning that must follow the move") {
+		t.Fatalf("target mission missing promoted learning: %s", b)
+	}
+	if _, b := do(t, owner, "GET", ts.URL+"/v1/missions/"+sourceMission, "", nil); strings.Contains(string(b), "Learning that must follow the move") {
+		t.Fatalf("source mission wrongly kept learning: %s", b)
+	}
+}
+
 func TestFinalizedRunDoesNotLeaseRequeue(t *testing.T) {
 	ts, srv := newTestServerWithNotifier(t)
 	owner := signup(t, ts, "finalized-run")
@@ -2215,7 +2539,7 @@ func TestRoutineSchedulePulseCreatesAcceptableOperation(t *testing.T) {
 	code, rb := do(t, owner, "POST", ts.URL+"/v1/routines", "", map[string]any{
 		"fleet_id": fq, "title": "scheduled check", "body": "check it", "mission_id": field(t, mb, "id"),
 		"metadata": map[string]any{
-			"trigger":   map[string]any{"kind": "schedule", "cron": "@hourly"},
+			"pulse":     map[string]any{"schedule": map[string]any{"cron": "@hourly"}},
 			"operation": map[string]any{"assignee": map[string]any{"type": "pilot", "id": "claude"}},
 		},
 		"operation_metadata": map[string]any{"context": "remember fleet context"},
@@ -2266,10 +2590,9 @@ func TestRoutinePulseSkipsWhenLoopOperationOpen(t *testing.T) {
 	code, rb := do(t, owner, "POST", ts.URL+"/v1/routines", "", map[string]any{
 		"fleet_id": fq, "title": "loop", "body": "work", "mission_id": field(t, mb, "id"),
 		"metadata": map[string]any{
-			"trigger": map[string]any{"kind": "manual"},
 			"operation": map[string]any{
 				"assignee": map[string]any{"type": "pilot", "id": "claude"},
-				"pulse":    map[string]any{"start_immediately": true, "skip_if_active": true},
+				"dispatch": map[string]any{"start_immediately": true},
 			},
 		},
 	})
@@ -2298,9 +2621,9 @@ func TestRoutinePulseSkipsWhenLoopOperationOpen(t *testing.T) {
 	}
 }
 
-func TestRoutineRePulseOnOperationClose(t *testing.T) {
+func TestRoutineLoopContinuesOnSuccess(t *testing.T) {
 	ts := newTestServer(t)
-	owner := signup(t, ts, "re-pulse-close")
+	owner := signup(t, ts, "routine-loop-close")
 	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Loop continuous"})
 	fq := field(t, fb, "id")
 	_, tb := do(t, owner, "POST", ts.URL+"/v1/enrollment-codes", "", map[string]any{"fleet_id": fq, "name": "r"})
@@ -2310,10 +2633,10 @@ func TestRoutineRePulseOnOperationClose(t *testing.T) {
 	code, rb := do(t, owner, "POST", ts.URL+"/v1/routines", "", map[string]any{
 		"fleet_id": fq, "title": "continuous", "body": "iterate", "mission_id": field(t, mb, "id"),
 		"metadata": map[string]any{
-			"trigger": map[string]any{"kind": "manual"},
+			"loop": map[string]any{"continue_on_success": true},
 			"operation": map[string]any{
 				"assignee": map[string]any{"type": "pilot", "id": "claude"},
-				"pulse":    map[string]any{"start_immediately": true, "skip_if_active": true, "re_pulse_on_close": true},
+				"dispatch": map[string]any{"start_immediately": true},
 			},
 		},
 	})
@@ -2338,11 +2661,11 @@ func TestRoutineRePulseOnOperationClose(t *testing.T) {
 	}
 	code, accept2 := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
 	if code != http.StatusOK {
-		t.Fatalf("accept after re-pulse = %d %s (want new loop op)", code, accept2)
+		t.Fatalf("accept next Loop operation = %d %s", code, accept2)
 	}
 	op2 := field(t, accept2, "operation_id")
 	if op2 == "" || op2 == op1 {
-		t.Fatalf("expected a new operation after re-pulse, got op1=%q op2=%q accept=%s", op1, op2, accept2)
+		t.Fatalf("expected a new Loop operation, got op1=%q op2=%q accept=%s", op1, op2, accept2)
 	}
 	code, detail2 := do(t, owner, "GET", ts.URL+"/v1/operations/"+op2, "", nil)
 	if code != http.StatusOK {
@@ -2350,7 +2673,7 @@ func TestRoutineRePulseOnOperationClose(t *testing.T) {
 	}
 	if !strings.Contains(string(detail2), op1) && !strings.Contains(string(detail2), "Continues from") && !strings.Contains(string(detail2), "relates") {
 		if !strings.Contains(string(detail2), "previous_operation_id") && !strings.Contains(strings.ToLower(string(detail2)), "continues") {
-			t.Fatalf("expected continuity link/comment on re-pulsed op: %s", detail2)
+			t.Fatalf("expected continuity link/comment on next Loop operation: %s", detail2)
 		}
 	}
 	code, skip := do(t, owner, "POST", ts.URL+"/v1/pulses", "", map[string]string{"routine_id": routine})
@@ -2359,7 +2682,7 @@ func TestRoutineRePulseOnOperationClose(t *testing.T) {
 	}
 }
 
-func TestRoutineAutoCommitDefersRePulseUntilCommitSucceeds(t *testing.T) {
+func TestRoutineAutoCommitDefersLoopUntilCommitSucceeds(t *testing.T) {
 	ts := newTestServer(t)
 	owner := signup(t, ts, "auto-commit-loop")
 	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Loop"})
@@ -2371,10 +2694,10 @@ func TestRoutineAutoCommitDefersRePulseUntilCommitSucceeds(t *testing.T) {
 	code, rb := do(t, owner, "POST", ts.URL+"/v1/routines", "", map[string]any{
 		"fleet_id": fq, "title": "loop", "body": "iterate continuously", "mission_id": field(t, mb, "id"),
 		"metadata": map[string]any{
-			"trigger": map[string]any{"kind": "manual"},
+			"loop": map[string]any{"continue_on_success": true},
 			"operation": map[string]any{
 				"assignee":    map[string]any{"type": "pilot", "id": "claude"},
-				"pulse":       map[string]any{"start_immediately": true, "skip_if_active": true, "re_pulse_on_close": true},
+				"dispatch":    map[string]any{"start_immediately": true},
 				"auto_commit": map[string]any{"branch": "feature/auto"},
 			},
 		},
@@ -2459,12 +2782,12 @@ func TestRoutineAutoCommitDefersRePulseUntilCommitSucceeds(t *testing.T) {
 	if detailBody.SourceActions[0].Status != "queued" && detailBody.SourceActions[0].Status != "accepted" {
 		t.Fatalf("auto-commit status = %q", detailBody.SourceActions[0].Status)
 	}
-	if v, _ := detailBody.SourceActions[0].Metadata["re_pulse_on_success"].(bool); !v {
-		t.Fatalf("expected re_pulse_on_success metadata, got %+v", detailBody.SourceActions[0].Metadata)
+	if v, _ := detailBody.SourceActions[0].Metadata["auto_commit"].(bool); !v {
+		t.Fatalf("expected auto_commit metadata, got %+v", detailBody.SourceActions[0].Metadata)
 	}
 	code, acceptPending := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
 	if code == http.StatusOK {
-		t.Fatalf("expected no re-pulse before auto-commit succeeds, got accept %s", acceptPending)
+		t.Fatalf("expected no next Loop operation before auto-commit succeeds, got accept %s", acceptPending)
 	}
 	actionID := detailBody.SourceActions[0].ID
 	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/source-actions/accept", rover, nil); code != http.StatusOK && code != http.StatusNoContent {
@@ -2473,7 +2796,7 @@ func TestRoutineAutoCommitDefersRePulseUntilCommitSucceeds(t *testing.T) {
 	if code, b := do(t, &http.Client{}, "PATCH", ts.URL+"/v1/source-actions/"+actionID, rover, map[string]any{
 		"status": "succeeded", "branch_name": "feature/auto", "commit_sha": "abc123",
 		"message":  "committed loop iteration",
-		"metadata": map[string]any{"had_changes": true, "re_pulse_on_success": true},
+		"metadata": map[string]any{"had_changes": true},
 	}); code != http.StatusOK {
 		t.Fatalf("complete source action = %d %s", code, b)
 	}
@@ -2483,7 +2806,7 @@ func TestRoutineAutoCommitDefersRePulseUntilCommitSucceeds(t *testing.T) {
 	}
 	op2 := field(t, accept2, "operation_id")
 	if op2 == "" || op2 == op1 {
-		t.Fatalf("expected new operation after auto-commit re-pulse, op1=%q op2=%q", op1, op2)
+		t.Fatalf("expected new Loop operation after auto-commit, op1=%q op2=%q", op1, op2)
 	}
 	if got := field(t, accept2, "worktree_base_ref"); got != "feature/auto" {
 		t.Fatalf("next iteration worktree_base_ref = %q, want feature/auto tip", got)
@@ -2574,9 +2897,9 @@ func TestPilotHandoffBeforeHumanReviewOnNeedsInput(t *testing.T) {
 	}
 }
 
-func TestRoutineRePulseDisabledNoAutoPulse(t *testing.T) {
+func TestRoutineLoopDisabledRunsOnce(t *testing.T) {
 	ts := newTestServer(t)
-	owner := signup(t, ts, "re-pulse-off")
+	owner := signup(t, ts, "routine-loop-off")
 	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "One shot"})
 	fq := field(t, fb, "id")
 	_, tb := do(t, owner, "POST", ts.URL+"/v1/enrollment-codes", "", map[string]any{"fleet_id": fq, "name": "r"})
@@ -2585,10 +2908,9 @@ func TestRoutineRePulseDisabledNoAutoPulse(t *testing.T) {
 	code, rb := do(t, owner, "POST", ts.URL+"/v1/routines", "", map[string]any{
 		"fleet_id": fq, "title": "once", "body": "work", "mission_id": field(t, mb, "id"),
 		"metadata": map[string]any{
-			"trigger": map[string]any{"kind": "manual"},
 			"operation": map[string]any{
 				"assignee": map[string]any{"type": "pilot", "id": "claude"},
-				"pulse":    map[string]any{"start_immediately": true, "re_pulse_on_close": false},
+				"dispatch": map[string]any{"start_immediately": true},
 			},
 		},
 	})
@@ -2610,13 +2932,13 @@ func TestRoutineRePulseDisabledNoAutoPulse(t *testing.T) {
 		t.Fatalf("list ops: %v %s", err, list)
 	}
 	if len(ops) != 1 {
-		t.Fatalf("operations after close with re_pulse off = %d, want 1 (%s)", len(ops), list)
+		t.Fatalf("operations with Loop off = %d, want 1 (%s)", len(ops), list)
 	}
 }
 
-func TestRoutineRePulseRespectsSchedulePause(t *testing.T) {
+func TestRoutineLoopContinuesWithPausedSchedule(t *testing.T) {
 	ts := newTestServer(t)
-	owner := signup(t, ts, "re-pulse-pause")
+	owner := signup(t, ts, "routine-loop-pause")
 	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Paused loop"})
 	fq := field(t, fb, "id")
 	_, tb := do(t, owner, "POST", ts.URL+"/v1/enrollment-codes", "", map[string]any{"fleet_id": fq, "name": "r"})
@@ -2625,10 +2947,11 @@ func TestRoutineRePulseRespectsSchedulePause(t *testing.T) {
 	code, rb := do(t, owner, "POST", ts.URL+"/v1/routines", "", map[string]any{
 		"fleet_id": fq, "title": "scheduled loop", "body": "work", "mission_id": field(t, mb, "id"),
 		"metadata": map[string]any{
-			"trigger": map[string]any{"kind": "schedule", "cron": "@hourly", "enabled": true},
+			"pulse": map[string]any{"schedule": map[string]any{"cron": "@hourly", "enabled": false}},
+			"loop":  map[string]any{"continue_on_success": true},
 			"operation": map[string]any{
 				"assignee": map[string]any{"type": "pilot", "id": "claude"},
-				"pulse":    map[string]any{"start_immediately": true, "re_pulse_on_close": true},
+				"dispatch": map[string]any{"start_immediately": true},
 			},
 		},
 	})
@@ -2649,24 +2972,24 @@ func TestRoutineRePulseRespectsSchedulePause(t *testing.T) {
 	if err := json.Unmarshal(list, &ops); err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(ops) != 1 {
-		t.Fatalf("schedule re-pulse on close created ops = %d, want 1 (%s)", len(ops), list)
+	if len(ops) != 2 {
+		t.Fatalf("paused schedule loop operations = %d, want 2 (%s)", len(ops), list)
 	}
 }
 
-func TestRoutineRePulseFailureSignals(t *testing.T) {
+func TestRoutineLoopFailureSignals(t *testing.T) {
 	ts := newTestServer(t)
-	owner := signup(t, ts, "re-pulse-fail")
+	owner := signup(t, ts, "routine-loop-fail")
 	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Fail loop"})
 	fq := field(t, fb, "id")
 	_, mb := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fq, "name": "M", "key": "M"})
 	code, rb := do(t, owner, "POST", ts.URL+"/v1/routines", "", map[string]any{
-		"fleet_id": fq, "title": "will fail re-pulse", "body": "work", "mission_id": field(t, mb, "id"),
+		"fleet_id": fq, "title": "will fail next Loop operation", "body": "work", "mission_id": field(t, mb, "id"),
 		"metadata": map[string]any{
-			"trigger": map[string]any{"kind": "manual"},
+			"loop": map[string]any{"continue_on_success": true},
 			"operation": map[string]any{
 				"assignee": map[string]any{"type": "pilot", "id": "claude"},
-				"pulse":    map[string]any{"start_immediately": false, "re_pulse_on_close": true},
+				"dispatch": map[string]any{"start_immediately": false},
 			},
 		},
 	})
@@ -2680,12 +3003,12 @@ func TestRoutineRePulseFailureSignals(t *testing.T) {
 	}
 	op1 := field(t, first, "operation_id")
 	code, _ = do(t, owner, "PATCH", ts.URL+"/v1/routines/"+routine, "", map[string]any{
-		"mission_id": field(t, mb, "id"), "title": "will fail re-pulse", "body": "work",
+		"mission_id": field(t, mb, "id"), "title": "will fail next Loop operation", "body": "work",
 		"metadata": map[string]any{
-			"trigger": map[string]any{"kind": "manual"},
+			"loop": map[string]any{"continue_on_success": true},
 			"operation": map[string]any{
 				"assignee": map[string]any{"type": "user", "id": "00000000-0000-4000-8000-000000000099"},
-				"pulse":    map[string]any{"start_immediately": false, "re_pulse_on_close": true},
+				"dispatch": map[string]any{"start_immediately": false},
 			},
 		},
 	})
@@ -2698,7 +3021,7 @@ func TestRoutineRePulseFailureSignals(t *testing.T) {
 			t.Fatalf("connect: %v", err)
 		}
 		defer conn.Close(ctx)
-		meta := `{"trigger":{"kind":"manual"},"operation":{"assignee":{"type":"user","id":"00000000-0000-4000-8000-000000000099"},"pulse":{"start_immediately":false,"re_pulse_on_close":true,"skip_if_active":true}}}`
+		meta := `{"pulse":{},"loop":{"continue_on_success":true},"operation":{"assignee":{"type":"user","id":"00000000-0000-4000-8000-000000000099"},"dispatch":{"start_immediately":false}}}`
 		if _, err := conn.Exec(ctx, `UPDATE routines SET metadata = $1::jsonb WHERE public_id = $2`, meta, routine); err != nil {
 			t.Fatalf("corrupt metadata: %v", err)
 		}
@@ -2708,7 +3031,7 @@ func TestRoutineRePulseFailureSignals(t *testing.T) {
 	}
 	_, sigs := do(t, owner, "GET", testFleetFilteredURL(ts.URL, fq, "/signals"), "", nil)
 	if !strings.Contains(string(sigs), "routine_pulse_failed") {
-		t.Fatalf("expected routine_pulse_failed signal after re-pulse failure, got %s", sigs)
+		t.Fatalf("expected routine_pulse_failed signal after Loop failure, got %s", sigs)
 	}
 }
 
@@ -2721,7 +3044,7 @@ func TestRoutineSchedulePauseClearsNextPulse(t *testing.T) {
 	code, rb := do(t, owner, "POST", ts.URL+"/v1/routines", "", map[string]any{
 		"fleet_id": fq, "title": "hourly", "body": "work", "mission_id": field(t, mb, "id"),
 		"metadata": map[string]any{
-			"trigger":   map[string]any{"kind": "schedule", "cron": "@hourly", "enabled": true},
+			"pulse":     map[string]any{"schedule": map[string]any{"cron": "@hourly", "enabled": true}},
 			"operation": map[string]any{"assignee": map[string]any{"type": "pilot", "id": "claude"}},
 		},
 	})
@@ -2735,7 +3058,7 @@ func TestRoutineSchedulePauseClearsNextPulse(t *testing.T) {
 	code, paused := do(t, owner, "PATCH", ts.URL+"/v1/routines/"+routine, "", map[string]any{
 		"mission_id": field(t, mb, "id"), "title": "hourly", "body": "work",
 		"metadata": map[string]any{
-			"trigger":   map[string]any{"kind": "schedule", "cron": "@hourly", "enabled": false},
+			"pulse":     map[string]any{"schedule": map[string]any{"cron": "@hourly", "enabled": false}},
 			"operation": map[string]any{"assignee": map[string]any{"type": "pilot", "id": "claude"}},
 		},
 	})

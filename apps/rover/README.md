@@ -10,9 +10,9 @@
 ![UFO orchestrating a unified fleet](https://raw.githubusercontent.com/fengsi/ufo/main/.github/assets/banner.png)
 
 `ufo-cli` is the host-side rover for UFO. It enrolls a local machine into a
-UFO fleet, accepts queued operations, lets the assigned pilot drive
-the rover in an isolated per-operation work directory, streams telemetry back
-to the Hub, and keeps resulting diffs attached to the operation.
+UFO fleet, accepts queued operations, lets the assigned pilot drive the rover
+in an isolated per-operation work directory, streams telemetry back to the
+Hub, and keeps resulting diffs attached to the operation.
 
 UFO is in public beta. Release notes call out upgrade caveats for each tagged
 release, and APIs, configuration, database schema, storage paths, and the
@@ -33,7 +33,7 @@ The installer puts `ufo` in `~/.local/bin` by default. Override with
 `UFO_ROVER_INSTALL_DIR=/usr/local/bin`, or pin a release with:
 
 ```bash
-curl -fsSL https://getufo.dev/install.sh | UFO_ROVER_VERSION=v0.7.3 sh
+curl -fsSL https://getufo.dev/install.sh | UFO_ROVER_VERSION=v0.7.5 sh
 ```
 
 Homebrew (macOS, Linux):
@@ -98,10 +98,10 @@ Rovers panel and pass it with `UFO_ROVER_ENROLLMENT_CODE=<code> ufo rover
 enroll`.
 
 `ufo rover enroll` and `ufo rover start` open the live rover TUI when stdout
-is an interactive terminal. They still run the rover loop: each
-enrollment stays ready for operation. Use `ufo rover enroll --headless` on
-first run, or `ufo rover start --headless` later, for CI, launchd/systemd, or
-old log-oriented output.
+is an interactive terminal. They still run the rover loop: each enrollment
+stays ready for operation. Use `ufo rover enroll --headless` on first run, or
+`ufo rover start --headless` later, for CI, launchd/systemd, or old
+log-oriented output.
 
 Use `ufo rover enroll --auto-upgrade`, `ufo rover start --auto-upgrade`, or
 `UFO_ROVER_AUTO_UPGRADE=1` to install and restart automatically when the Hub
@@ -184,8 +184,8 @@ hosts.
 ### Forge ship (optional)
 
 When a fleet forge is configured (Hub **Integrations**), the rover can push
-branches and open, sync, or merge pull requests. Export the token env named
-on that forge connection (default **`UFO_ROVER_FORGE_TOKEN`**) in the process
+branches and open, sync, or merge pull requests. Export the token env named on
+that forge connection (default **`UFO_ROVER_FORGE_TOKEN`**) in the process
 that runs `ufo rover start`. The Hub stores only the env name; the secret
 stays on this host.
 

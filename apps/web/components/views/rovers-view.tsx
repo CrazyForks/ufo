@@ -256,7 +256,7 @@ export function RoversView() {
   };
 
   return (
-    <div className="mx-auto flex h-full max-w-3xl flex-col p-4">
+    <div className="mx-auto flex h-full max-w-6xl flex-col p-4">
       <Dialog open={activePending != null} onOpenChange={(open) => { if (!open) setActivePendingID(null); }}>
         <DialogContent
           onPointerDownOutside={(e) => e.preventDefault()}

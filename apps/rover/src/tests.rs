@@ -697,6 +697,43 @@ fn sub_operations_feedback_sentinel_is_parsed_and_stripped() {
 }
 
 #[test]
+fn mission_learning_sentinel_is_parsed_and_stripped() {
+    let msg = "Finished.\n@@UFO_MISSION_LEARNING@@ {\"summary\":\"Reuse the parser.\",\"artifacts\":[{\"kind\":\"doc\",\"path\":\"docs/parser.md\"}]}\n@@UFO_STATUS:done@@";
+    let learning = parse_mission_learning(msg).expect("mission learning parse");
+    assert_eq!(learning["summary"], "Reuse the parser.");
+    assert_eq!(
+        strip_mission_learning(msg),
+        "Finished.\n@@UFO_STATUS:done@@"
+    );
+    assert!(parse_mission_learning("x\n@@UFO_MISSION_LEARNING@@ not json").is_none());
+}
+
+#[test]
+fn co_occurring_directives_parse_and_strip_independently() {
+    let msg = "Done.\n@@UFO_OPERATIONS@@ [{\"title\":\"A\",\"body\":\"b\"}]\n@@UFO_MISSION_LEARNING@@ {\"summary\":\"Reuse it.\"}";
+    assert_eq!(parse_operations(msg).unwrap().as_array().unwrap().len(), 1);
+    assert_eq!(
+        parse_mission_learning(msg).expect("learning")["summary"],
+        "Reuse it."
+    );
+    let stripped = strip_mission_learning(&strip_operations(msg));
+    assert_eq!(stripped, "Done.");
+    let reversed = "Done.\n@@UFO_MISSION_LEARNING@@ {\"summary\":\"Reuse it.\"}\n@@UFO_SUB_OPERATIONS@@ [{\"title\":\"A\",\"body\":\"b\"}]";
+    assert_eq!(
+        parse_sub_operations(reversed)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        parse_mission_learning(reversed).expect("learning")["summary"],
+        "Reuse it."
+    );
+}
+
+#[test]
 fn status_sentinel_without_closer_is_parsed_and_stripped() {
     let msg = "Almost there.\n@@UFO_STATUS:done";
 

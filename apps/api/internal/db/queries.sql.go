@@ -664,23 +664,23 @@ func (q *Queries) CancelRun(ctx context.Context, arg CancelRunParams) (Run, erro
 	return i, err
 }
 
-const claimLoopRePulse = `-- name: ClaimLoopRePulse :one
+const claimLoopContinuation = `-- name: ClaimLoopContinuation :one
 UPDATE operations
-SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{loop,re_pulsed}', 'true'::jsonb, true),
+SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{loop,continued}', 'true'::jsonb, true),
     updated_at = now()
 WHERE id = $1
   AND fleet_id = $2
-  AND COALESCE(metadata -> 'loop' ->> 're_pulsed', 'false') <> 'true'
+  AND COALESCE(metadata -> 'loop' ->> 'continued', 'false') <> 'true'
 RETURNING id
 `
 
-type ClaimLoopRePulseParams struct {
+type ClaimLoopContinuationParams struct {
 	ID      int64 `json:"id"`
 	FleetID int64 `json:"fleet_id"`
 }
 
-func (q *Queries) ClaimLoopRePulse(ctx context.Context, arg ClaimLoopRePulseParams) (int64, error) {
-	row := q.db.QueryRow(ctx, claimLoopRePulse, arg.ID, arg.FleetID)
+func (q *Queries) ClaimLoopContinuation(ctx context.Context, arg ClaimLoopContinuationParams) (int64, error) {
+	row := q.db.QueryRow(ctx, claimLoopContinuation, arg.ID, arg.FleetID)
 	var id int64
 	err := row.Scan(&id)
 	return id, err
@@ -692,6 +692,21 @@ DELETE FROM mission_forges WHERE mission_id = $1
 
 func (q *Queries) ClearMissionForges(ctx context.Context, missionID int64) error {
 	_, err := q.db.Exec(ctx, clearMissionForges, missionID)
+	return err
+}
+
+const clearMissionLearning = `-- name: ClearMissionLearning :exec
+UPDATE missions SET metadata = metadata - 'learning'
+WHERE id = $1 AND fleet_id = $2
+`
+
+type ClearMissionLearningParams struct {
+	ID      int64 `json:"id"`
+	FleetID int64 `json:"fleet_id"`
+}
+
+func (q *Queries) ClearMissionLearning(ctx context.Context, arg ClearMissionLearningParams) error {
+	_, err := q.db.Exec(ctx, clearMissionLearning, arg.ID, arg.FleetID)
 	return err
 }
 
@@ -955,7 +970,7 @@ WHERE o.fleet_id = $1
         AND sa.fleet_id = o.fleet_id
         AND sa.status IN ('queued', 'accepted')
         AND sa.kind IN ('commit_to_branch', 'create_source_branch')
-        AND COALESCE(sa.metadata ->> 're_pulse_on_success', 'false') = 'true'
+        AND COALESCE(sa.metadata ->> 'auto_commit', 'false') = 'true'
     )
     OR EXISTS (
       SELECT 1
@@ -2309,6 +2324,28 @@ type DeleteLabelParams struct {
 
 func (q *Queries) DeleteLabel(ctx context.Context, arg DeleteLabelParams) error {
 	_, err := q.db.Exec(ctx, deleteLabel, arg.ID, arg.FleetID)
+	return err
+}
+
+const deleteMissionLearningEntries = `-- name: DeleteMissionLearningEntries :exec
+UPDATE missions
+SET metadata = jsonb_set(
+    metadata,
+    '{learning,entries}',
+    COALESCE(metadata->'learning'->'entries', '{}'::jsonb) - $1::text[]
+)
+WHERE id = $2 AND fleet_id = $3
+  AND metadata ? 'learning'
+`
+
+type DeleteMissionLearningEntriesParams struct {
+	Keys    []string `json:"keys"`
+	ID      int64    `json:"id"`
+	FleetID int64    `json:"fleet_id"`
+}
+
+func (q *Queries) DeleteMissionLearningEntries(ctx context.Context, arg DeleteMissionLearningEntriesParams) error {
+	_, err := q.db.Exec(ctx, deleteMissionLearningEntries, arg.Keys, arg.ID, arg.FleetID)
 	return err
 }
 
@@ -6869,6 +6906,58 @@ func (q *Queries) OperationHasActiveRun(ctx context.Context, operationID int64) 
 	return exists, err
 }
 
+const promoteMissionLearning = `-- name: PromoteMissionLearning :one
+WITH consumed AS (
+    UPDATE operations
+    SET metadata = operations.metadata - 'mission_learning'
+    WHERE operations.id = $1
+      AND operations.fleet_id = $2
+      AND operations.mission_id = $3
+      AND operations.metadata->'mission_learning' = $4::jsonb
+    RETURNING operations.mission_id
+),
+updated AS (
+    UPDATE missions
+    SET metadata = missions.metadata || jsonb_build_object(
+        'learning',
+        COALESCE(missions.metadata->'learning', '{}'::jsonb) || jsonb_build_object(
+            'entries',
+            COALESCE(missions.metadata->'learning'->'entries', '{}'::jsonb) ||
+                jsonb_build_object($5::text, $6::jsonb)
+        )
+    )
+    FROM consumed
+    WHERE missions.id = consumed.mission_id
+      AND missions.id = $3
+      AND missions.fleet_id = $2
+    RETURNING TRUE
+)
+SELECT EXISTS(SELECT 1 FROM updated) AS promoted
+`
+
+type PromoteMissionLearningParams struct {
+	OperationID  int64  `json:"operation_id"`
+	FleetID      int64  `json:"fleet_id"`
+	MissionID    int64  `json:"mission_id"`
+	Candidate    []byte `json:"candidate"`
+	OperationKey string `json:"operation_key"`
+	Entry        []byte `json:"entry"`
+}
+
+func (q *Queries) PromoteMissionLearning(ctx context.Context, arg PromoteMissionLearningParams) (bool, error) {
+	row := q.db.QueryRow(ctx, promoteMissionLearning,
+		arg.OperationID,
+		arg.FleetID,
+		arg.MissionID,
+		arg.Candidate,
+		arg.OperationKey,
+		arg.Entry,
+	)
+	var promoted bool
+	err := row.Scan(&promoted)
+	return promoted, err
+}
+
 const publicIDsForCrews = `-- name: PublicIDsForCrews :many
 SELECT id, public_id FROM crews WHERE id = ANY($1::bigint[])
 `
@@ -8430,24 +8519,27 @@ func (q *Queries) UpdateMemberRole(ctx context.Context, arg UpdateMemberRolePara
 }
 
 const updateMission = `-- name: UpdateMission :one
-UPDATE missions SET name = $1, key = $2, metadata = $3
+UPDATE missions
+SET name = $1,
+    key = $2,
+    metadata = jsonb_strip_nulls(metadata || $3::jsonb)
 WHERE id = $4 AND fleet_id = $5
 RETURNING id, public_id, fleet_id, name, key, next_sequence, metadata, created_at, updated_at
 `
 
 type UpdateMissionParams struct {
-	Name     string `json:"name"`
-	Key      string `json:"key"`
-	Metadata []byte `json:"metadata"`
-	ID       int64  `json:"id"`
-	FleetID  int64  `json:"fleet_id"`
+	Name          string `json:"name"`
+	Key           string `json:"key"`
+	MetadataPatch []byte `json:"metadata_patch"`
+	ID            int64  `json:"id"`
+	FleetID       int64  `json:"fleet_id"`
 }
 
 func (q *Queries) UpdateMission(ctx context.Context, arg UpdateMissionParams) (Mission, error) {
 	row := q.db.QueryRow(ctx, updateMission,
 		arg.Name,
 		arg.Key,
-		arg.Metadata,
+		arg.MetadataPatch,
 		arg.ID,
 		arg.FleetID,
 	)

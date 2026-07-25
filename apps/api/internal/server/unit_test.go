@@ -3,6 +3,8 @@ package server
 import (
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -493,7 +495,7 @@ func TestEffectiveWorktreeEnabledFromMetadata(t *testing.T) {
 
 func TestEffectiveContextFromMetadata(t *testing.T) {
 	fleetContext := []byte(`{"context":"fleet root"}`)
-	missionContext := []byte(`{"context":"mission root"}`)
+	missionContext := []byte(`{"context":"mission root","learning":{"entries":{"op":{"operation_id":"op","operation_code":"UFO-53","operation_title":"Finish parser","summary":"Reuse the parser.","artifacts":[{"kind":"doc","path":"docs/parser.md"}],"captured_at":"2026-06-06T18:18:18Z"}}}}`)
 	operationContext := []byte(`{"context":"operation root"}`)
 
 	gotFleet := effectiveContextFromMetadata(nil, nil, fleetContext)
@@ -519,6 +521,7 @@ func TestEffectiveContextFromMetadata(t *testing.T) {
 	for _, want := range []string{
 		"Fleet (global)", "fleet root",
 		"Mission (cross-operation)", "mission root",
+		"Mission learning (from completed operations)", "UFO-53", "Reuse the parser.", "docs/parser.md",
 		"Operation (most specific)", "operation root",
 	} {
 		if !strings.Contains(gotAll, want) {
@@ -527,9 +530,101 @@ func TestEffectiveContextFromMetadata(t *testing.T) {
 	}
 	iFleet := strings.Index(gotAll, "Fleet (global)")
 	iMission := strings.Index(gotAll, "Mission (cross-operation)")
+	iLearning := strings.Index(gotAll, "Mission learning (from completed operations)")
 	iOp := strings.Index(gotAll, "Operation (most specific)")
-	if !(iFleet < iMission && iMission < iOp) {
-		t.Fatalf("expected fleet → mission → operation order: %q", gotAll)
+	if !(iFleet < iMission && iMission < iLearning && iLearning < iOp) {
+		t.Fatalf("expected fleet → mission → learning → operation order: %q", gotAll)
+	}
+}
+
+func TestNormalizeMissionLearning(t *testing.T) {
+	rec := httptest.NewRecorder()
+	got, ok := normalizeMissionLearning(rec, &missionLearning{
+		Summary: " Reuse the parser. ",
+		Artifacts: []missionLearningArtifact{{
+			Kind: "doc", Path: "docs/./parser.md", Summary: " Shared contract. ",
+		}},
+	})
+	if !ok || got.Summary != "Reuse the parser." || got.Artifacts[0].Path != "docs/parser.md" {
+		t.Fatalf("normalized learning = %#v, ok=%v", got, ok)
+	}
+
+	rec = httptest.NewRecorder()
+	if _, ok := normalizeMissionLearning(rec, &missionLearning{
+		Summary: "bad path", Artifacts: []missionLearningArtifact{{Kind: "skill", Path: "../SKILL.md"}},
+	}); ok || rec.Code != http.StatusBadRequest {
+		t.Fatalf("unsafe learning path accepted: status=%d", rec.Code)
+	}
+}
+
+func TestPruneMissionLearningEntries(t *testing.T) {
+	entries := map[string]missionLearningEntry{}
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < maxMissionLearningEntries+5; i++ {
+		id := fmt.Sprintf("op-%02d", i)
+		entries[id] = missionLearningEntry{
+			OperationID: id, OperationCode: "UFO-" + id, Summary: "s",
+			CapturedAt: base.Add(time.Duration(i) * time.Hour),
+		}
+	}
+	pruned := pruneMissionLearningEntries(entries)
+	if len(pruned) != maxMissionLearningEntries {
+		t.Fatalf("pruned len=%d, want %d", len(pruned), maxMissionLearningEntries)
+	}
+	if _, ok := pruned["op-00"]; ok {
+		t.Fatal("expected oldest entry pruned")
+	}
+	if _, ok := pruned[fmt.Sprintf("op-%02d", maxMissionLearningEntries+4)]; !ok {
+		t.Fatal("expected newest entry kept")
+	}
+	if len(pruneMissionLearningEntries(map[string]missionLearningEntry{
+		"a": {OperationID: "a", CapturedAt: base},
+	})) != 1 {
+		t.Fatal("under-cap map should be unchanged")
+	}
+}
+
+func TestParseMissionLearningPatch(t *testing.T) {
+	clearAll, keys, ok := parseMissionLearningPatch(httptest.NewRecorder(), json.RawMessage("null"))
+	if !ok || !clearAll || keys != nil {
+		t.Fatalf("null should clear all: clearAll=%v keys=%v ok=%v", clearAll, keys, ok)
+	}
+	clearAll, keys, ok = parseMissionLearningPatch(httptest.NewRecorder(), json.RawMessage(`{"entries":{"a":null,"b":null}}`))
+	if !ok || clearAll || len(keys) != 2 {
+		t.Fatalf("expected two delete keys: clearAll=%v keys=%v ok=%v", clearAll, keys, ok)
+	}
+	for _, bad := range []string{`{"entries":{}}`, `{"entries":{"a":{"summary":"x"}}}`, `{"foo":1}`, `not json`} {
+		rec := httptest.NewRecorder()
+		if _, _, ok := parseMissionLearningPatch(rec, json.RawMessage(bad)); ok || rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for %q, got ok=%v status=%d", bad, ok, rec.Code)
+		}
+	}
+}
+
+func TestMissionLearningContextByteBudget(t *testing.T) {
+	entries := map[string]missionLearningEntry{}
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 8; i++ {
+		id := fmt.Sprintf("op-%02d", i)
+		entries[id] = missionLearningEntry{
+			OperationID: id, OperationCode: "UFO-" + id,
+			Summary:    strings.Repeat("x", 4096),
+			CapturedAt: base.Add(time.Duration(i) * time.Hour),
+		}
+	}
+	metadata := metadataBytes(map[string]json.RawMessage{metadataLearning: missionLearningMetadata(entries)})
+	ctx := missionLearningContext(metadata)
+	if len(ctx) > maxMissionLearningContextBytes+8*1024 {
+		t.Fatalf("context %d bytes exceeds budget headroom", len(ctx))
+	}
+	if !strings.Contains(ctx, "omitted to fit context") {
+		t.Fatal("expected omission note when over budget")
+	}
+	if !strings.Contains(ctx, "UFO-op-07") {
+		t.Fatal("expected newest entry kept")
+	}
+	if strings.Contains(ctx, "UFO-op-00") {
+		t.Fatal("expected oldest entry omitted")
 	}
 }
 

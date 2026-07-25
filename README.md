@@ -37,133 +37,6 @@ just coding. Work lands on the **board**, context keeps compounding, and each
 run can hand off cleanly to the next while workspaces and credentials stay on
 machines you control.
 
-Three layers:
-
-| Layer | Role |
-| --- | --- |
-| **Fleet** | Trust boundary: people, rovers, missions, and operations |
-| **Hub** | Control plane: API and fleet state |
-| **Board** | Web UI for the fleet |
-
-**Missions** frame projects. **Operations** are work items on the board.
-**Routines** launch work on a schedule or after completion. **Rovers** run
-local **Pilots** (Claude Code, Codex, Grok Build, ...). Humans stay in the
-fleet when needed; the product direction is zero-human ops.
-
----
-
-## Why UFO?
-
-Agent workflows are fragmented: context is scattered across chat tabs,
-terminals, local worktrees, and human notes. Individual runs can work well,
-but handoffs lack a unified operational picture.
-
-| Standalone AI sessions | UFO |
-| --- | --- |
-| Context stays session-local | **Operations** carry shared history in the fleet |
-| Handoffs are mostly manual | **Routines** and **crews** launch the next leg |
-| Local runs need a shared state bridge | **Rovers** bridge local runtimes into one Hub |
-| "Who ran what?" is tribal | **Board**, **signals**, diffs, membership |
-
-Humans keep **Claude Code**, **Codex**, **Grok Build**, and the rest. UFO is
-the **Fleet** layer on top. One Hub, one Board, people and rovers under the
-same trust boundary.
-
----
-
-## Features
-
-- **Dispatch work.** Open an **operation**, assign a **pilot**; a **rover**
-  connects the local runtime to the fleet.
-- **Board.** Kanban, list, and lanes; comments, assets, labels, relationships,
-  **signals**.
-- **Local stays local.** Code and secrets stay on hosts humans control; no
-  required cloud.
-- **Isolated worktrees.** Each run gets its own checkout; apply, branch, or
-  refresh from source when ready.
-- **Autonomous legs.** **Routines** re-pulse after **done** to drive the next
-  leg; optional auto-commit branch for unattended re-pulse loops (stall /
-  fail-closed guards).
-- **Skills.** Reusable packs (`SKILL.md`) on the fleet, bound to operations or
-  **crews**; materialised into the worktree for the pilot.
-- **Crews & membership.** Fleets, roles, email invites, crews (pilots +
-  humans).
-- **Bring the pilots.** Claude Code, Codex, Antigravity, Grok Build, Cursor
-  Agent, GitHub Copilot, Amp Code, OpenCode, OpenClaw, Hermes, Pi, Kimi, Kiro,
-  CodeBuddy Code (binary on `PATH`).
-- **Forges.** Connect GitHub or GitLab (cloud or self-hosted), bind a
-  mission, and let a rover push and ship pull requests with a host-side
-  token.
-
----
-
-## Quick start (local)
-
-No cloud account is required. Stand up a **Hub** on this machine, then connect
-a **rover**.
-
-**Needs:** [Docker](https://docs.docker.com/get-docker/) and
-[Rust/Cargo](https://rustup.rs) (rovers run on the **host**, so they can use
-local files and AI CLIs).
-
-### 1. Start the Hub
-
-```bash
-git clone https://github.com/fengsi/ufo.git
-cd ufo
-scripts/dev.sh up          # Postgres + API + web (live reload)
-```
-
-- Board: **http://localhost:3000**
-- Hub API (rover `--hub`): **http://localhost:8080**
-
-### 2. Sign up
-
-Open **http://localhost:3000** and create an account. UFO opens a personal
-**fleet** and a default **Launch Bay** **mission**.
-
-### 3. Enroll a rover
-
-```bash
-scripts/dev.sh rover enroll
-```
-
-Approve enrollment in the browser when prompted. Later runs:
-
-```bash
-scripts/dev.sh rover
-```
-
-> **Rover.** Local runtime connector that accepts work from the Hub, runs a
-> **pilot** (local AI CLI) in an isolated worktree, and reports status and
-> diffs back to the board.
-
-One rover host can keep multiple enrollments, including enrollments for
-different Hubs. Start the rover once and every stored enrollment stays ready;
-set `units` per rover to accept concurrent operations while reusing the same
-local AI CLIs on `PATH`.
-
-### 4. Put a pilot on PATH
-
-Install at least one supported CLI and ensure it's on `PATH` (e.g. `claude`,
-`codex`, `grok`, ...). The rover only runs pilots it can find.
-
-### 5. Dispatch the first operation
-
-1. Open a **mission** (project frame on the fleet).
-2. Drop an **operation** (the work item).
-3. Assign a **pilot**.
-4. Watch the board: queued → accepted → running → review/done, with live
-   updates and a diff when code changed.
-
-That's the loop. Routines, skills, crews, and auto-commit all build on it.
-
----
-
-## Screenshots
-
-**Board**
-
 <picture>
   <source
     media="(prefers-color-scheme: dark)"
@@ -176,7 +49,73 @@ That's the loop. Routines, skills, crews, and auto-commit all build on it.
   <img alt="Board" src=".github/assets/hub-dark.png">
 </picture>
 
-**Rover**
+---
+
+## Why UFO?
+
+- **Shared operations.** Operations carry context and history across AI
+  sessions, with board status, signals, diffs, and handoffs in one place.
+- **Local execution.** Rovers run existing AI CLIs on machines you control, so
+  workspaces and credentials stay local.
+- **Compounding know-how.** Routines continue work across runs while mission
+  learning turns completed operations into reusable docs and skills.
+
+---
+
+## Features
+
+- **Operate together.** Missions frame projects; operations move through
+  Kanban, list, and lane views with comments, assets, labels, relationships,
+  signals, crews, and membership.
+- **Run pilots locally.** Rovers use
+  [supported AI CLIs](apps/rover/README.md#pilots-and-tags) on machines you
+  control. Code and secrets stay local, and every run gets an isolated
+  worktree.
+- **Keep work moving.** Routines pulse now or on a schedule and can continue
+  their Loop after an operation is done. Optional auto-commit supports
+  unattended legs with stall and fail-closed guards.
+- **Learn and ship.** Mission learning carries reusable experience into shared
+  docs and skills for future operations. Forges connect GitHub or GitLab so
+  rovers can push and ship pull requests with a host-side token.
+
+---
+
+## Quick start (local)
+
+No cloud account is required.
+
+**Needs:** [Docker](https://docs.docker.com/get-docker/) and
+[Rust/Cargo](https://rustup.rs), plus at least one
+[supported AI CLI](apps/rover/README.md#pilots-and-tags) on `PATH`.
+
+### 1. Start the Hub
+
+```bash
+git clone https://github.com/fengsi/ufo.git
+cd ufo
+scripts/dev.sh up          # Postgres + API + web (live reload)
+```
+
+Open **http://localhost:3000** and create an account. UFO opens a personal
+**fleet** and a default **Launch Bay** **mission**.
+
+### 2. Enroll and start a rover
+
+```bash
+scripts/dev.sh rover enroll
+scripts/dev.sh rover
+```
+
+Approve enrollment in the browser when prompted.
+
+### 3. Dispatch the first operation
+
+1. Open a **mission** (project frame on the fleet).
+2. Create an **operation** and assign a **pilot**.
+3. Watch the board: queued → accepted → running → review/done, with live
+   updates and a diff when code changed.
+
+That's the loop. Routines, skills, crews, and auto-commit all build on it.
 
 ![Rover TUI](.github/assets/rover.png)
 
@@ -200,7 +139,8 @@ ufo rover start
 
 To connect the same host to another Hub, enroll again with that Hub URL (or
 use repeated `--config` entries with enrollment codes). `ufo rover start`
-loads the stored enrollments from `~/.ufo/rovers.json`.
+loads the stored enrollments from `~/.ufo/rovers.json`. Set `units` per rover
+to accept concurrent operations while reusing the same local AI CLIs.
 
 **Windows:** download the matching archive from
 [Releases](https://github.com/fengsi/ufo/releases), put `ufo.exe` on `PATH`,
@@ -223,7 +163,7 @@ tests run on macOS, Linux, and Windows.
 | **Operation** | One work item on the board |
 | **Rover** | Local runtime connector that accepts work and runs pilots |
 | **Pilot** | Local AI CLI the rover runs |
-| **Routine** | Recurring launch pattern (schedule or re-pulse loop) |
+| **Routine** | Reusable operation definition with an optional Pulse schedule and Loop policy |
 | **Skill** | Reusable instruction pack bound to ops or crews |
 | **Crew** | Pilots + humans under one assignment target |
 

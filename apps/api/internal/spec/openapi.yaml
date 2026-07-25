@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: UFO Hub API
-  version: 0.7.3
+  version: 0.7.5
   license:
     name: BSD-3-Clause
     url: https://opensource.org/license/bsd-3-clause
@@ -2101,7 +2101,7 @@ components:
       description: Required when authenticating with an enrollment code or rover connection token; ignored for user-authenticated requests.
       schema:
         type: string
-        example: "0.7.3"
+        example: "0.7.5"
 
   responses:
     BadRequest:
@@ -2418,7 +2418,11 @@ components:
         routine_id: { type: string, format: uuid }
         operation_id: { type: string, format: uuid, nullable: true }
         status: { type: string, enum: [pending, succeeded, skipped, failed] }
-        metadata: { type: object, additionalProperties: true }
+        metadata:
+          type: object
+          additionalProperties: true
+          properties:
+            source: { type: string, enum: [manual, schedule, loop] }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         finished_at: { type: string, format: date-time, nullable: true }
@@ -2427,17 +2431,30 @@ components:
       type: object
       additionalProperties: true
       properties:
-        trigger:
+        pulse:
           type: object
           additionalProperties: true
           properties:
-            kind: { type: string, enum: [manual, schedule], default: manual }
-            cron: { type: string, description: "Required when trigger.kind=schedule; supports @hourly/@daily/@weekly and simple five-field cron" }
+            schedule:
+              type: object
+              required: [cron]
+              properties:
+                cron: { type: string, description: "Supports @hourly/@daily/@weekly and simple five-field cron" }
+                enabled: { type: boolean, default: true }
+        loop:
+          type: object
+          additionalProperties: true
+          properties:
+            continue_on_success: { type: boolean, default: false }
         operation:
           type: object
           additionalProperties: true
           properties:
-            start_immediately: { type: boolean, default: true }
+            dispatch:
+              type: object
+              additionalProperties: true
+              properties:
+                start_immediately: { type: boolean, default: true }
             priority: { type: integer, minimum: 0, maximum: 4 }
             assignee:
               type: object
@@ -2613,7 +2630,15 @@ components:
           type: array
           items: { type: string, format: uuid }
           description: Forges this mission can use (public ids). Empty means none. Which forge to ship with is set on the routine or operation (forge_key).
-        metadata: { type: object, additionalProperties: true, readOnly: true }
+        metadata:
+          type: object
+          additionalProperties: true
+          readOnly: true
+          description: >
+            Known keys include context (string), worktree_enabled (boolean), budget,
+            and learning. learning is server-managed: an object with entries (map of
+            promoted mission-learning records from completed operations, newest 50
+            kept). Learning is injected into future operation prompts.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
@@ -2628,7 +2653,12 @@ components:
           type: array
           items: { type: string, format: uuid }
           description: Optional forges this mission can use (owner/admin).
-        metadata: { type: object, additionalProperties: true }
+        metadata:
+          type: object
+          additionalProperties: true
+          description: >
+            Client metadata for the mission. The learning key is server-managed
+            and rejected on create; omit it.
 
     UpdateMissionRequest:
       type: object
@@ -2640,7 +2670,14 @@ components:
           type: array
           items: { type: string, format: uuid }
           description: Replace the forges this mission can use (owner/admin). Omitted leaves the set unchanged.
-        metadata: { type: object, additionalProperties: true }
+        metadata:
+          type: object
+          additionalProperties: true
+          description: >
+            Top-level metadata patch. Null values remove keys; omitted keys are
+            preserved. Mission learning content is server-managed. Owners and
+            admins may set learning to null to clear all entries, or set
+            learning.entries.<operation_id> to null to delete one entry.
 
     Forge:
       type: object
@@ -3176,6 +3213,22 @@ components:
         message: { type: string, description: The pilot's final message; posted as a pilot comment if non-empty }
         needs_input: { type: boolean, description: pilot is awaiting a human answer to continue (→ input_requested signal) }
         operation_status: { type: string, description: pilot-requested operation status (overrides the default success→in_review / fail→blocked mapping) }
+        mission_learning:
+          type: object
+          description: Reusable mission-wide learning proposed by the pilot; promoted into mission metadata only when the operation reaches done.
+          required: [summary]
+          properties:
+            summary: { type: string, maxLength: 8192 }
+            artifacts:
+              type: array
+              maxItems: 8
+              items:
+                type: object
+                required: [kind, path]
+                properties:
+                  kind: { type: string, enum: [doc, skill] }
+                  path: { type: string, description: Repository-relative path updated by the run }
+                  summary: { type: string, maxLength: 1024 }
         operations: { type: array, description: "explicit first-class operations to create in the current mission; these are not sub-operations; they inherit the current operation assignee and normal auto-run behavior", items: { type: object, required: [title], properties: { title: { type: string }, body: { type: string } } } }
         sub_operations: { type: array, description: "captain's split into parallel sub-operations (top-level crew operation only; capped at 8)", items: { type: object, required: [title], properties: { title: { type: string }, body: { type: string }, assignee: { type: string, description: optional crew-member pilot kind; default = distributed available crew pilot } } } }
         sub_operations_feedback: { type: array, description: "captain feedback for existing sub-operations; posts each body to that same sub-operation and resumes its pilot", items: { type: object, required: [operation_id, body], properties: { operation_id: { type: string }, body: { type: string } } } }

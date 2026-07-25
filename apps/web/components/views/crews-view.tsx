@@ -24,7 +24,7 @@ export function CrewsView() {
   const canManage = app.myRole === "owner" || app.myRole === "admin";
 
   return (
-    <div className="mx-auto grid h-full max-w-5xl gap-4 overflow-y-auto p-4 lg:grid-cols-[minmax(0,1fr)_20rem] lg:overflow-hidden">
+    <div className="mx-auto grid h-full max-w-6xl gap-4 overflow-y-auto p-4 lg:grid-cols-[minmax(0,1fr)_20rem] lg:overflow-hidden">
       <Card className="flex min-h-0 flex-col">
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base"><SECTION_ICONS.crews className="size-4" /> {t("crews.title")}</CardTitle>

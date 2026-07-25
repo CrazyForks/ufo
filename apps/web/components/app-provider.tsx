@@ -151,6 +151,7 @@ type Ctx = {
   delCrew: (id: string) => Promise<void>;
   addMission: (name: string, key: string, context?: string) => Promise<boolean>;
   updateMission: (id: string, name: string, key: string, context?: string) => Promise<boolean>;
+  deleteMissionLearning: (id: string, operationId?: string) => Promise<boolean>;
   setMissionWorktree: (id: string, enabled: boolean | null) => Promise<void>;
   addMember: (crewId: string, value: string, role: string, userId: string) => Promise<void>;
   removeMember: (crewId: string, member_type: string, member_id: string) => Promise<void>;
@@ -479,7 +480,7 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
     const res = await patchJSON(`/api/v1/missions/${missionId}`, {
       name: mission.name,
       key: mission.key,
-      metadata: budgetMetadata(mission.metadata, budget),
+      metadata: budgetMetadata(undefined, budget),
     });
     if (!res.ok) { await fail(res, t("error.updateMissionBudget")); return false; }
     loadMeta(fleet);
@@ -745,15 +746,29 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
     return true;
   }, [fleet, loadMeta]);
   const updateMission: Ctx["updateMission"] = useCallback(async (id, name, key, context) => {
-    const mission = missions.find((it) => it.id === id);
     const body: Record<string, unknown> = { name, key };
     if (context !== undefined) {
-      if (!mission) return false;
-      body.metadata = contextMetadata(mission.metadata, context);
+      body.metadata = { context: context.trim() || null };
     }
     const res = await patchJSON(`/api/v1/missions/${id}`, body);
     if (!res.ok) { await fail(res, t("error.updateMission")); return false; }
     loadMeta(fleet); bumpBoard();
+    return true;
+  }, [fleet, loadMeta, bumpBoard]);
+  const deleteMissionLearning: Ctx["deleteMissionLearning"] = useCallback(async (id, operationId) => {
+    const mission = missions.find((it) => it.id === id);
+    if (!mission) return false;
+    const learning = operationId
+      ? { entries: { [operationId]: null } }
+      : null;
+    const res = await patchJSON(`/api/v1/missions/${id}`, {
+      name: mission.name,
+      key: mission.key,
+      metadata: { learning },
+    });
+    if (!res.ok) { await fail(res, t("error.deleteMissionLearning")); return false; }
+    loadMeta(fleet);
+    bumpBoard();
     return true;
   }, [fleet, missions, loadMeta, bumpBoard]);
   const setMissionWorktree: Ctx["setMissionWorktree"] = useCallback(async (id, enabled) => {
@@ -762,7 +777,7 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
     const res = await patchJSON(`/api/v1/missions/${id}`, {
       name: mission.name,
       key: mission.key,
-      metadata: worktreeMetadata(mission.metadata, enabled),
+      metadata: { worktree_enabled: enabled },
     });
     if (!res.ok) { await fail(res, t("error.worktree")); return; }
     loadMeta(fleet);
@@ -886,7 +901,7 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
     createOperation, setOperationTags, setOperationWorktree, updateOperation, setOperationMission, setPriority, setDates, setMainOperation, setArchived,
     createLabel, updateLabel, deleteLabel, createRoutine, updateRoutine, deleteRoutine, pulseRoutine, listRoutinePulses, attachLabel, detachLabel, addRelation, removeRelation, createSourceAction, addPullRequest, deletePullRequest, uploadAsset, searchOperations, react,
     reassign, cancelRun, moveOperation, addComment, updateComment, deleteComment,
-    addCrew, renameCrew, delCrew, addMission, updateMission, setMissionWorktree, addMember, removeMember,
+    addCrew, renameCrew, delCrew, addMission, updateMission, deleteMissionLearning, setMissionWorktree, addMember, removeMember,
     createEnrollmentCode, revokeRover, renameRover, setRoverTags, setRoverUnits, revokeEnrollmentCode, savePendingRover, approvePendingRover, denyPendingRover, openSignal, archiveSignal,
     invite, revokeInvite, acceptInvite, declineInvite, setMemberRole, removeFleetMember,
   }), [
@@ -898,7 +913,7 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
     createOperation, setOperationTags, setOperationWorktree, updateOperation, setOperationMission, setPriority, setDates, setMainOperation, setArchived,
     createLabel, updateLabel, deleteLabel, createRoutine, updateRoutine, deleteRoutine, pulseRoutine, listRoutinePulses, attachLabel, detachLabel, addRelation, removeRelation, createSourceAction, addPullRequest, deletePullRequest, uploadAsset, searchOperations, react,
     reassign, cancelRun, moveOperation, addComment, updateComment, deleteComment,
-    addCrew, renameCrew, delCrew, addMission, updateMission, setMissionWorktree, addMember, removeMember,
+    addCrew, renameCrew, delCrew, addMission, updateMission, deleteMissionLearning, setMissionWorktree, addMember, removeMember,
     createEnrollmentCode, revokeRover, renameRover, setRoverTags, setRoverUnits, revokeEnrollmentCode, savePendingRover, approvePendingRover, denyPendingRover, openSignal, archiveSignal,
     invite, revokeInvite, acceptInvite, declineInvite, setMemberRole, removeFleetMember,
   ]);

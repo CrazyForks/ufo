@@ -111,7 +111,7 @@ export function SettingsView() {
 
   return (
     <div className="h-full min-h-0 overflow-y-auto">
-      <div className="mx-auto grid max-w-5xl gap-3 p-4 pb-8 lg:grid-cols-2 lg:items-start">
+      <div className="mx-auto grid max-w-6xl gap-3 p-4 pb-8 lg:grid-cols-2 lg:items-start">
         <div className="space-y-3">
           <Card>
             <CardHeader className="px-4 py-3">
