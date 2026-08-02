@@ -113,7 +113,7 @@ jobs:
         with:
           node-version: "26"
       - name: Lint spec
-        run: npx --yes @redocly/cli@2.40.0 lint apps/api/internal/spec/openapi.yaml
+        run: npx --yes @redocly/cli@2.43.2 lint apps/api/internal/spec/openapi.yaml
 
   release-scripts:
     name: Release Scripts

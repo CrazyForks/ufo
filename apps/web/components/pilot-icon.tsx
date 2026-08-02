@@ -23,6 +23,8 @@ const ICONS: Record<string, PilotIconAsset> = {
   kimi: { src: "/pilot-icons/kimi.svg", lightOutline: true },
   kiro: { src: "/pilot-icons/kiro.svg" },
   codebuddy: { src: "/pilot-icons/codebuddy.svg" },
+  qoder: { src: "/pilot-icons/qoder.svg" },
+  trae: { src: "/pilot-icons/trae.svg" },
 };
 
 export function PilotIcon({ kind, size = 15 }: { kind: string; size?: number }) {

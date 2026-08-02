@@ -16,7 +16,8 @@ Violate any of these and the task is not done:
 2. **Verify before done:** run the real commands for every surface you
    touched, then report outcomes. Do not claim success without running them.
    Prefer one call when several surfaces changed: `scripts/verify.sh` (or
-   `scripts/verify.sh api web rover` ...).
+   `scripts/verify.sh api web rover` ...). Never bypass versioned Git hooks
+   with `--no-verify`.
    - API Go: `gofmt -l` clean, then
      `GOCACHE="${TMPDIR:-/tmp}/ufo-gocache" go test` on packages you changed
      (widen to `./...` when shared).
@@ -165,6 +166,9 @@ Violate any of these and the task is not done:
 
 ## Documentation
 
+- Treat `README.md` and `README.zh-CN.md` as a synchronized pair. Any edit to
+  either must check both for matching structure, links, commands, versions,
+  product terminology, and equivalent meaning.
 - Wrap Markdown prose greedily at 78 source columns (not display width). Keep
   filling the line until the next break unit (word, wide character, inline
   code/link, or punctuation group) would exceed 78. Text only; code blocks,

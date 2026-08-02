@@ -193,7 +193,7 @@ func clientIP(r *http.Request, trustProxy bool) string {
 }
 
 const (
-	currentRoverVersion     = "0.7.5"
+	currentRoverVersion     = "0.7.6"
 	minProtocolRoverVersion = "0.7.3"
 	roverVersionHeader      = "X-UFO-Rover-Version"
 	maxRoverUnits           = 100
@@ -7240,6 +7240,8 @@ var builtinPilotKinds = []string{
 	"kimi",
 	"kiro",
 	"codebuddy",
+	"qoder",
+	"trae",
 }
 
 func validPilotKind(kind string) bool {

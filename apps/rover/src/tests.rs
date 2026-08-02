@@ -2425,6 +2425,8 @@ fn pilot_registry_includes_default_pilots() {
         "kimi",
         "kiro",
         "codebuddy",
+        "qoder",
+        "trae",
     ] {
         assert!(find_pilot(kind).is_some(), "{kind} pilot missing");
     }
@@ -2569,6 +2571,30 @@ fn plain_text_pilots_use_non_interactive_prompt_mode() {
                 .map(|arg| arg.to_string_lossy().into_owned())
                 .collect::<Vec<_>>(),
             vec!["-p", "do it"],
+        ),
+        (
+            qoder_command(Path::new("qodercli"), &run, "do it", Path::new("/tmp"))
+                .as_std()
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec![
+                "-r",
+                "session",
+                "--yolo",
+                "-p",
+                "do it",
+                "--output-format",
+                "text",
+            ],
+        ),
+        (
+            trae_command(Path::new("trae-cli"), &run, "do it", Path::new("/tmp"))
+                .as_std()
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec!["run", "do it", "--working-dir", "/tmp"],
         ),
     ] {
         assert_eq!(args, expected);

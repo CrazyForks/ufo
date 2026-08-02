@@ -9,7 +9,6 @@ binary.
 ## Getting set up
 
 ```bash
-# Docker (live watch): PostgreSQL + API + web
 scripts/dev.sh up
 # then sign up at http://localhost:3000 and approve a rover from the browser
 scripts/dev.sh rover enroll
@@ -17,10 +16,19 @@ scripts/dev.sh rover enroll
 
 See [README.md](README.md) for the run guide and configuration.
 
-Toolchain for host-side work: Go ≥ 1.26, Node ≥ 20.9, Rust/Cargo, and `sqlc`
+Toolchain for host-side work: Go ≥ 1.26, Node ≥ 26, Rust/Cargo, and `sqlc`
 (only if you change SQL).
 
 ## Before you open a pull request
+
+Enable the versioned Git hooks once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The pre-commit hook runs formatting and changed-surface checks. The pre-push
+hook runs the complete local verification gate.
 
 One call (recommended):
 
@@ -48,7 +56,7 @@ Equivalent manual commands:
 (cd apps/rover && cargo fmt --check && cargo clippy -- -D warnings && cargo test && cargo build)
 
 # protocol (if you changed an endpoint)
-npx --yes @redocly/cli@2.40.0 lint apps/api/internal/spec/openapi.yaml
+npx --yes @redocly/cli@2.43.2 lint apps/api/internal/spec/openapi.yaml
 ```
 
 CI runs the same class of checks on protected branches.
@@ -78,12 +86,6 @@ Keep related generated and documentation changes in the same pull request:
 
 - **Commits:** use [Gitmoji](https://gitmoji.dev) followed by a concise,
   imperative summary, for example `✨ Add operation labels`.
-- **Database:** add migrations under `apps/api/internal/migrate/migrations/`;
-  `go generate ./internal/migrate`; edit queries; `sqlc generate`; commit SQL,
-  `migrations.sum`, and generated `apps/api/internal/db` changes.
-- **API contract:** if you add or change an endpoint, update
-  [`apps/api/internal/spec/openapi.yaml`](apps/api/internal/spec/openapi.yaml)
-  in the same pull request.
 - **Comments:** keep them terse. Explain *why*, not *what*.
 - **Documentation:** wrap Markdown prose greedily at 78 columns. Code blocks,
   tables, and long URLs/paths are exempt; third-party notices stay verbatim.

@@ -22,6 +22,8 @@ Used in:
 - [apps/web/public/pilot-icons/kimi.svg](apps/web/public/pilot-icons/kimi.svg)
 - [apps/web/public/pilot-icons/kiro.svg](apps/web/public/pilot-icons/kiro.svg)
 - [apps/web/public/pilot-icons/codebuddy.svg](apps/web/public/pilot-icons/codebuddy.svg)
+- [apps/web/public/pilot-icons/qoder.svg](apps/web/public/pilot-icons/qoder.svg)
+- [apps/web/public/pilot-icons/trae.svg](apps/web/public/pilot-icons/trae.svg)
 
 License:
 

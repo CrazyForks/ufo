@@ -25,59 +25,67 @@ step() {
   printf '\n==> %s\n' "$*"
 }
 
-run_diff() {
+check_diff() {
   step "git diff --check"
   git diff --check
   git diff --cached --check
 }
 
-run_docs() {
+check_docs() {
   step "docs: Markdown prose wraps at 78 source characters"
   node scripts/check-doc-wrap.mjs
 }
 
-run_api() {
-  step "api: gofmt / build / vet / test"
+check_api() {
+  scope="${1:-all}"
+  step "api: gofmt"
+  unformatted="$(gofmt -l apps/api)"
+  if [ -n "$unformatted" ]; then
+    echo "gofmt needed on:" >&2
+    echo "$unformatted" >&2
+    return 1
+  fi
+  [ "$scope" = changes ] && return
+  step "api: build / vet / test"
   (
     cd apps/api
-    unformatted="$(gofmt -l .)"
-    if [ -n "$unformatted" ]; then
-      echo "gofmt needed on:" >&2
-      echo "$unformatted" >&2
-      return 1
-    fi
     go build ./...
     go vet ./...
     go test ./...
   )
 }
 
-run_web() {
+check_web() {
+  scope="${1:-all}"
   step "web: lint"
   (cd apps/web && npm run lint)
+  [ "$scope" = changes ] && return
   if [ "${UFO_CHECK_SKIP_WEB_BUILD:-}" != "1" ]; then
     step "web: build"
     (cd apps/web && npm run build)
   fi
 }
 
-run_rover() {
-  step "rover: fmt / clippy / test / build"
+check_rover() {
+  scope="${1:-all}"
+  step "rover: fmt"
+  (cd apps/rover && cargo fmt --check)
+  [ "$scope" = changes ] && return
+  step "rover: clippy / test / build"
   (
     cd apps/rover
-    cargo fmt --check
     cargo clippy -- -D warnings
     cargo test
     cargo build
   )
 }
 
-run_openapi() {
+check_openapi() {
   step "openapi lint"
-  npx --yes @redocly/cli@2.40.0 lint apps/api/internal/spec/openapi.yaml
+  npx --yes @redocly/cli@2.43.2 lint apps/api/internal/spec/openapi.yaml
 }
 
-run_sqlc() {
+check_sqlc() {
   step "sqlc generate + dirty check"
   (cd "$ROOT" && sqlc generate)
   if ! git diff --quiet -- apps/api/internal/db; then
@@ -85,6 +93,29 @@ run_sqlc() {
     git diff --stat -- apps/api/internal/db >&2 || true
     return 1
   fi
+}
+
+check_changes() {
+  check_diff
+  check_docs
+
+  changed="$(git diff --cached --name-only --diff-filter=ACMR)"
+
+  case "$changed" in
+    *apps/api/*.go*) check_api changes ;;
+  esac
+
+  case "$changed" in
+    *apps/web/*.ts* | *apps/web/package.json* | *apps/web/tsconfig.json*)
+      check_web changes
+      ;;
+  esac
+
+  case "$changed" in
+    *apps/rover/*.rs* | *apps/rover/Cargo.toml* | *apps/rover/Cargo.lock*)
+      check_rover changes
+      ;;
+  esac
 }
 
 usage() {
@@ -105,11 +136,14 @@ for arg in "$@"; do
       ;;
     all)
       for s in $ALL; do
-        "run_$s"
+        "check_$s"
       done
       ;;
+    check-changes)
+      check_changes
+      ;;
     diff | docs | api | web | rover | openapi | sqlc)
-      "run_$arg"
+      "check_$arg"
       ;;
     *)
       echo "unknown suite: $arg (try: scripts/verify.sh list)" >&2

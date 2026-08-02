@@ -3,30 +3,20 @@
 <p align="center"><strong>An open-source zero-human ops platform</strong> 🦾🩶</p>
 
 <p align="center">
-  Orchestrate AI sessions into a zero-human ops loop: retain context, route
-  work, and hand off across runs!
-</p>
-
-<p align="center">
   <a href="https://github.com/fengsi/ufo/actions/workflows/ci.yml"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/fengsi/ufo/ci.yml?logo=github&style=flat-square"></a>
   <a href="https://github.com/fengsi/ufo/releases"><img alt="Release" src="https://img.shields.io/github/v/release/fengsi/ufo?style=flat-square"></a>
   <a href="https://crates.io/crates/ufo-cli"><img alt="crates.io" src="https://img.shields.io/crates/v/ufo-cli?style=flat-square"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/fengsi/ufo?style=flat-square"></a>
   <img alt="Status" src="https://img.shields.io/badge/status-beta-blue?style=flat-square">
   <a href="apps/api/go.mod"><img alt="Go" src="https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go&style=flat-square"></a>
-  <a href="apps/web/package.json"><img alt="Node" src="https://img.shields.io/badge/Node-20.9%2B-5FA04E?logo=node.js&style=flat-square"></a>
+  <a href="apps/web/package.json"><img alt="Node" src="https://img.shields.io/badge/Node-26%2B-5FA04E?logo=node.js&style=flat-square"></a>
   <a href="apps/rover/Cargo.toml"><img alt="Rust" src="https://img.shields.io/badge/Rust-2024-B7410E?logo=rust&style=flat-square"></a>
-  <a href="https://gitmoji.dev"><img alt="Gitmoji" src="https://img.shields.io/badge/commits-gitmoji-FDD563?style=flat-square"></a>
 </p>
 
 <p align="center"><strong>English | <a href="README.zh-CN.md">简体中文</a></strong></p>
 
 ![UFO orchestrating a unified
 fleet](.github/assets/banner.png)
-
-> **Public beta.** The core loop works. Prefer
-> [tagged releases](https://github.com/fengsi/ufo/releases); APIs and schema
-> may still change before 1.0. See [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -48,17 +38,6 @@ machines you control.
   >
   <img alt="Board" src=".github/assets/hub-dark.png">
 </picture>
-
----
-
-## Why UFO?
-
-- **Shared operations.** Operations carry context and history across AI
-  sessions, with board status, signals, diffs, and handoffs in one place.
-- **Local execution.** Rovers run existing AI CLIs on machines you control, so
-  workspaces and credentials stay local.
-- **Compounding know-how.** Routines continue work across runs while mission
-  learning turns completed operations into reusable docs and skills.
 
 ---
 
@@ -93,7 +72,7 @@ No cloud account is required.
 ```bash
 git clone https://github.com/fengsi/ufo.git
 cd ufo
-scripts/dev.sh up          # Postgres + API + web (live reload)
+scripts/dev.sh up
 ```
 
 Open **http://localhost:3000** and create an account. UFO opens a personal
@@ -207,7 +186,7 @@ Copy [`.env.example`](.env.example) to `.env` for overrides.
 | Variable | Default | Who |
 | --- | --- | --- |
 | `UFO_HUB_URL` | `http://localhost:8080` | rover, web |
-| `UFO_HUB_DATABASE_URL` | local Docker Postgres | api |
+| `UFO_HUB_DATABASE_URL` | local Docker PostgreSQL | api |
 | `UFO_HUB_JWT_PRIVATE_KEY` | required in production | api |
 | `UFO_HUB_JWT_ALLOW_EPHEMERAL` | set `1` for local-only | api |
 | `UFO_HUB_MIN_ROVER_VERSION` | current release | api |
@@ -224,14 +203,13 @@ rover host (GitHub PAT, GitLab token, etc.). Integrations can point at another
 env name; export that name where `ufo rover start` runs. The Hub stores the
 name only, never the secret.
 
-Full list: [`.env.example`](.env.example),
-[`.env.production.example`](.env.production.example).
+Production template: [`.env.production.example`](.env.production.example).
 
 ---
 
 ## Advanced: host-only API/web
 
-Go ≥ 1.26 and Node ≥ 20.9 on the host; Postgres still via Docker:
+Go ≥ 1.26 and Node ≥ 26 on the host; PostgreSQL still via Docker:
 
 ```bash
 scripts/dev.sh db
@@ -239,8 +217,6 @@ scripts/dev.sh api
 scripts/dev.sh web
 scripts/dev.sh rover enroll
 ```
-
-Contributor workflow: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
@@ -263,7 +239,6 @@ Contributor workflow: [CONTRIBUTING.md](CONTRIBUTING.md).
 | --- | --- |
 | [Rover CLI](apps/rover/README.md) | Install, enroll, TUI, headless |
 | [OpenAPI](apps/api/internal/spec/openapi.yaml) | HTTP contract |
-| [Contributing](CONTRIBUTING.md) | PRs, monorepo, beta DB notes |
 | [Security](SECURITY.md) | Fleet trust and rover risk |
 | [Changelog](CHANGELOG.md) | Releases |
 
@@ -271,12 +246,9 @@ Contributor workflow: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Contributing
 
-Issues and PRs are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md).
-
-Schema changes are SQL migrations under
-`apps/api/internal/migrate/migrations/` (applied on Hub startup). See
-[CONTRIBUTING.md](CONTRIBUTING.md). When release notes mention a schema reset,
-back up or wipe local DBs before upgrading.
+Issues and PRs are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup,
+checks, and project conventions. When release notes mention a schema reset,
+back up or wipe local Hub databases before upgrading.
 
 ---
 

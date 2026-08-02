@@ -5,6 +5,14 @@ All notable changes to UFO are recorded here.
 > **Public beta:** before 1.0, contracts may still evolve. Prefer tagged
 > releases; release notes call out anything that needs a careful upgrade.
 
+## [0.7.6] - 2026-08-01
+
+Public beta maintenance release. Rover CLI **0.7.6+**.
+
+### Pilots
+
+- Added Qoder and Trae as built-in pilots.
+
 ## [0.7.5] - 2026-07-25
 
 Public beta feature release. Separates Pulse starts from Loop continuation and
@@ -257,7 +265,7 @@ upgrading, and expect to reset dev databases or migrate them manually.
   list assets referenced by an operation.
 - Store object keys under sharded `v1/fleets/...`, `v1/users/...`, and
   `v1/fleets/.../runs/.../artifacts/...` paths without filenames, keeping
-  filenames and metadata in Postgres.
+  filenames and metadata in PostgreSQL.
 - Track asset checksums as JSON by algorithm, using BLAKE3 when UFO reads the
   bytes and preserving vendor checksums such as SHA-256 when object storage
   exposes them.
@@ -304,7 +312,7 @@ upgrading, and expect to reset dev databases or migrate them manually.
   a pilot, and upload generated files referenced in final pilot output back to
   the Hub as assets.
 - Kept text communications, final messages, telemetry, logs, and `git.diff`
-  artifacts in Postgres instead of fragmenting them into asset blobs.
+  artifacts in PostgreSQL instead of fragmenting them into asset blobs.
 
 ### Rover CLI & TUI
 - Added the interactive rover outpost TUI for `ufo rover start`, with rover,
@@ -313,7 +321,7 @@ upgrading, and expect to reset dev databases or migrate them manually.
 - Added `--headless` for supervisor-friendly rover logs while keeping the TUI
   as the default in interactive terminals.
 - Added browser-approved rover enrollment: the CLI opens the Rovers page,
-  pending approvals live in Postgres, and the web modal can approve or deny
+  pending approvals live in PostgreSQL, and the web modal can approve or deny
   with editable fleet, name, units, and tags.
 - Added rover config streaming so Hub-side name, unit, tag, and fleet changes
   update a running rover without restarting.

@@ -5291,6 +5291,20 @@ const PILOTS: &[Pilot] = &[
         output: PilotOutput::PlainText,
         command: codebuddy_command,
     },
+    Pilot {
+        kind: "qoder",
+        binary: "qodercli",
+        probe_args: &["--version"],
+        output: PilotOutput::PlainText,
+        command: qoder_command,
+    },
+    Pilot {
+        kind: "trae",
+        binary: "trae-cli",
+        probe_args: &["--help"],
+        output: PilotOutput::PlainText,
+        command: trae_command,
+    },
 ];
 
 #[derive(Clone, PartialEq, Eq)]
@@ -5382,6 +5396,32 @@ fn codebuddy_command(executable: &Path, _run: &AcceptedRun, prompt: &str, cwd: &
     let mut cmd = Command::new(executable);
     cmd.arg("-p")
         .arg(prompt)
+        .current_dir(cwd)
+        .stdin(Stdio::null());
+    cmd
+}
+
+fn qoder_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd: &Path) -> Command {
+    let mut cmd = Command::new(executable);
+    if !run.session_id.is_empty() {
+        cmd.arg("-r").arg(&run.session_id);
+    }
+    cmd.arg("--yolo")
+        .arg("-p")
+        .arg(prompt)
+        .arg("--output-format")
+        .arg("text")
+        .current_dir(cwd)
+        .stdin(Stdio::null());
+    cmd
+}
+
+fn trae_command(executable: &Path, _run: &AcceptedRun, prompt: &str, cwd: &Path) -> Command {
+    let mut cmd = Command::new(executable);
+    cmd.arg("run")
+        .arg(prompt)
+        .arg("--working-dir")
+        .arg(cwd)
         .current_dir(cwd)
         .stdin(Stdio::null());
     cmd
