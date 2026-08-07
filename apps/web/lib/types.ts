@@ -218,13 +218,43 @@ export type MissionUsage = UsageTotals & {
   name: string;
 };
 
+export type PilotUsage = UsageTotals & { pilot: string };
+export type RoverUsage = UsageTotals & { id: string; name: string };
+export type OperationUsage = UsageTotals & {
+  id: string;
+  code: string;
+  title: string;
+  mission_id: string;
+};
+export type DayUsage = UsageTotals & { day: string };
+
+export const SPEND_BUDGET_PERIODS = ["calendar_day", "calendar_week", "calendar_month"] as const;
+export type SpendBudgetPeriod = (typeof SPEND_BUDGET_PERIODS)[number];
+
+export const SPEND_BUDGET_PERIOD_LABEL = {
+  calendar_day: "budget.day",
+  calendar_week: "budget.week",
+  calendar_month: "budget.month",
+} as const satisfies Record<SpendBudgetPeriod, string>;
+
+export function spendBudgetPeriod(raw: unknown): SpendBudgetPeriod {
+  for (const period of SPEND_BUDGET_PERIODS) {
+    if (raw === period) return period;
+  }
+  return "calendar_week";
+}
+
 export type UsageSummary = {
-  period: "calendar_week" | "calendar_month";
+  period: SpendBudgetPeriod;
   period_key: string;
   start_at: string;
   end_at: string;
   fleet: UsageTotals;
   missions: MissionUsage[];
+  pilots: PilotUsage[];
+  rovers: RoverUsage[];
+  operations: OperationUsage[];
+  days: DayUsage[];
 };
 export type Run = {
   id: string;
@@ -307,7 +337,7 @@ export type Signal = {
 export type ForgeAction = {
   id: string;
   kind: string;
-  status: string;
+  status: "queued" | "accepted" | "succeeded" | "failed" | "conflicted" | string;
   provider?: string;
   base_url?: string;
   repo?: string;
@@ -320,8 +350,12 @@ export type ForgeAction = {
   remote_number?: number | null;
   result_sha?: string;
   message?: string;
+  rover_id?: string;
+  metadata?: Record<string, unknown>;
   created_at: string;
   updated_at: string;
+  accepted_at?: string | null;
+  finished_at?: string | null;
 };
 export type OperationDetail = {
   operation: Operation;

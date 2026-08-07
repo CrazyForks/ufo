@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: UFO Hub API
-  version: 0.7.6
+  version: 0.7.7
   license:
     name: BSD-3-Clause
     url: https://opensource.org/license/bsd-3-clause
@@ -568,7 +568,7 @@ paths:
     get:
       tags: [ui]
       operationId: getUsage
-      summary: Fleet and mission usage totals for a calendar period
+      summary: Fleet usage totals and pilot, rover, and day breakdowns for a calendar period; mission_id or operation_id scopes to one entity
       security: [{ accessCookie: [] }, { userBearer: [] }]
       parameters:
         - name: fleet_id
@@ -577,7 +577,15 @@ paths:
           schema: { type: string, format: uuid }
         - name: period
           in: query
-          schema: { type: string, enum: [calendar_week, calendar_month], default: calendar_week }
+          schema: { type: string, enum: [calendar_day, calendar_week, calendar_month], default: calendar_week }
+        - name: mission_id
+          in: query
+          schema: { type: string, format: uuid }
+          description: Optional; limit the summary to one mission and its operations. Mutually exclusive with operation_id.
+        - name: operation_id
+          in: query
+          schema: { type: string, format: uuid }
+          description: Optional; limit the summary to one operation. Mutually exclusive with mission_id.
       responses:
         "200":
           description: OK
@@ -586,6 +594,7 @@ paths:
               schema: { $ref: "#/components/schemas/UsageSummary" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /v1/source-actions:
     post:
@@ -839,7 +848,7 @@ paths:
     get:
       tags: [ui]
       operationId: getOperation
-      summary: Operation detail (comments, runs, relations, source actions)
+      summary: Operation detail (comments, runs, relations, source and forge actions)
       security: [{ accessCookie: [] }, { userBearer: [] }]
       parameters: [{ $ref: "#/components/parameters/Id" }]
       responses:
@@ -867,6 +876,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Operation" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /v1/operations/{id}/labels/{label_id}:
@@ -2101,7 +2111,7 @@ components:
       description: Required when authenticating with an enrollment code or rover connection token; ignored for user-authenticated requests.
       schema:
         type: string
-        example: "0.7.6"
+        example: "0.7.7"
 
   responses:
     BadRequest:
@@ -2374,7 +2384,11 @@ components:
         labels: { type: array, items: { $ref: "#/components/schemas/Label" } }
         reactions: { type: array, items: { $ref: "#/components/schemas/Reaction" }, description: only populated in the detail view }
         sub_operation_progress: { type: object, properties: { total: { type: integer }, done: { type: integer }, in_progress: { type: integer }, in_review: { type: integer }, blocked: { type: integer }, pilot_kinds: { type: array, items: { type: string } } }, description: sub-operation progress }
-        metadata: { type: object, additionalProperties: true, readOnly: true, description: Operation metadata object for optional feature flags and future fields }
+        metadata:
+          type: object
+          additionalProperties: true
+          readOnly: true
+          description: Known keys include context, worktree_enabled, budget, and loop ship state.
         sub_operations_enabled: { type: boolean, description: Captain may split this operation into sub-operations }
         start_date: { type: string, format: date, nullable: true, description: Planning start date }
         due_date: { type: string, format: date, nullable: true, description: Planning due date }
@@ -2753,11 +2767,47 @@ components:
             key: { type: string }
             name: { type: string }
 
+    PilotUsage:
+      allOf:
+        - { $ref: "#/components/schemas/UsageTotals" }
+        - type: object
+          required: [pilot]
+          properties:
+            pilot: { type: string }
+
+    RoverUsage:
+      allOf:
+        - { $ref: "#/components/schemas/UsageTotals" }
+        - type: object
+          required: [id, name]
+          properties:
+            id: { type: string, format: uuid, description: Rover public id; unattributed runs are omitted }
+            name: { type: string }
+
+    OperationUsage:
+      allOf:
+        - { $ref: "#/components/schemas/UsageTotals" }
+        - type: object
+          required: [id, code, title, mission_id]
+          properties:
+            id: { type: string, format: uuid }
+            code: { type: string, example: MSJ-123 }
+            title: { type: string }
+            mission_id: { type: string, format: uuid }
+
+    DayUsage:
+      allOf:
+        - { $ref: "#/components/schemas/UsageTotals" }
+        - type: object
+          required: [day]
+          properties:
+            day: { type: string, format: date, description: UTC calendar day YYYY-MM-DD }
+
     UsageSummary:
       type: object
-      required: [period, period_key, start_at, end_at, fleet, missions]
+      required: [period, period_key, start_at, end_at, fleet, missions, pilots, rovers, operations, days]
       properties:
-        period: { type: string, enum: [calendar_week, calendar_month] }
+        period: { type: string, enum: [calendar_day, calendar_week, calendar_month] }
         period_key: { type: string }
         start_at: { type: string, format: date-time }
         end_at: { type: string, format: date-time }
@@ -2765,6 +2815,19 @@ components:
         missions:
           type: array
           items: { $ref: "#/components/schemas/MissionUsage" }
+        pilots:
+          type: array
+          items: { $ref: "#/components/schemas/PilotUsage" }
+        rovers:
+          type: array
+          items: { $ref: "#/components/schemas/RoverUsage" }
+        operations:
+          type: array
+          description: Populated when mission_id or operation_id is set; empty on an unscoped fleet summary.
+          items: { $ref: "#/components/schemas/OperationUsage" }
+        days:
+          type: array
+          items: { $ref: "#/components/schemas/DayUsage" }
 
     Run:
       type: object
@@ -2777,7 +2840,10 @@ components:
           enum: [queued, accepted, starting, running, blocked, succeeded, failed, canceled]
         needs_input: { type: boolean, description: pilot ended this run awaiting a human answer }
         metadata: { type: object, additionalProperties: true, readOnly: true }
-        usage: { $ref: "#/components/schemas/RunUsage", description: Present on run detail when reported }
+        usage:
+          description: Present on run detail when reported
+          allOf:
+            - $ref: "#/components/schemas/RunUsage"
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
@@ -3058,8 +3124,15 @@ components:
         remote_number: { type: integer, nullable: true }
         result_sha: { type: string }
         message: { type: string }
+        rover_id: { type: string, format: uuid }
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Non-secret ship metadata such as forge key, CI wait, attempts, and not_before.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+        accepted_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
 
     AcceptedAsset:
       type: object
@@ -3149,7 +3222,17 @@ components:
         due_date: { type: string, format: date, nullable: true }
         main_operation_id: { type: string, format: uuid, nullable: true, description: Main operation public id; must not point to a sub-operation }
         sub_operations_enabled: { type: boolean }
+        worktree_enabled: { type: boolean, nullable: true }
         archived: { type: boolean }
+        budget:
+          type: object
+          nullable: true
+          description: Owner/admin spend cap for this operation. Null clears the cap. Same shape as fleet/mission/rover budget metadata.
+          properties:
+            period: { type: string, enum: [calendar_day, calendar_week, calendar_month] }
+            max_runs: { type: integer, format: int64, nullable: true }
+            max_tokens: { type: integer, format: int64, nullable: true }
+            max_usd_micros: { type: integer, format: int64, nullable: true }
 
     PostCommentRequest:
       type: object

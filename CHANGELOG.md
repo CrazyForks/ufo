@@ -5,6 +5,21 @@ All notable changes to UFO are recorded here.
 > **Public beta:** before 1.0, contracts may still evolve. Prefer tagged
 > releases; release notes call out anything that needs a careful upgrade.
 
+## [0.7.7] - 2026-08-07
+
+Public beta feature release. Adds operation budgets and scoped usage
+summaries. Rover CLI **0.7.7+**.
+
+### Budgets & Usage
+
+- Owners and admins can now set per-operation caps on runs, tokens, and USD
+  spend. The Hub enforces them when a rover accepts an operation, alongside
+  existing fleet, mission, and rover budgets.
+- Usage summaries report fleet totals and breakdowns by pilot, rover,
+  operation, and UTC day. Mission and operation views can request scoped
+  summaries, and operation rows show their spend caps. Usage periods follow
+  UTC calendar days, weeks, and months.
+
 ## [0.7.6] - 2026-08-01
 
 Public beta maintenance release. Rover CLI **0.7.6+**.
@@ -123,8 +138,8 @@ manually. Rover CLI **0.6.1+**.
 - Run history can now show reported tokens, duration, cost, provider, and
   model for completed work.
 - Fleet and mission pages include week and month usage summaries.
-- Fleets, missions, operations, and rovers can set spend or run caps that the
-  Hub enforces before assigning more work.
+- Fleets, missions, and rovers can set caps on runs, tokens, or USD spend that
+  the Hub enforces before assigning more work.
 - UFO notifies the fleet once per budget period when a cap stops new work.
 - Budget controls now live on Hub resources instead of rover process settings.
 

@@ -6,24 +6,27 @@ import { useT } from "@/lib/i18n";
 import { formatCostMicros } from "@/lib/usage";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { UsageSummary } from "@/lib/types";
+import {
+  SPEND_BUDGET_PERIODS,
+  SPEND_BUDGET_PERIOD_LABEL,
+  type DayUsage, type OperationUsage, type PilotUsage, type RoverUsage, type SpendBudgetPeriod, type UsageSummary,
+} from "@/lib/types";
 
 export function UsagePeriodToggle({
   period,
   onChange,
 }: {
-  period: "calendar_week" | "calendar_month";
-  onChange: (p: "calendar_week" | "calendar_month") => void;
+  period: SpendBudgetPeriod;
+  onChange: (p: SpendBudgetPeriod) => void;
 }) {
   const t = useT();
   return (
     <div className="flex gap-1">
-      <Button type="button" size="sm" variant={period === "calendar_week" ? "default" : "outline"} className="h-7 px-2 text-xs" onClick={() => onChange("calendar_week")}>
-        {t("budget.periodWeek")}
-      </Button>
-      <Button type="button" size="sm" variant={period === "calendar_month" ? "default" : "outline"} className="h-7 px-2 text-xs" onClick={() => onChange("calendar_month")}>
-        {t("budget.periodMonth")}
-      </Button>
+      {SPEND_BUDGET_PERIODS.map((p) => (
+        <Button key={p} type="button" size="sm" variant={period === p ? "default" : "outline"} className="h-7 px-2 text-xs" onClick={() => onChange(p)}>
+          {t(SPEND_BUDGET_PERIOD_LABEL[p])}
+        </Button>
+      ))}
     </div>
   );
 }
@@ -77,9 +80,15 @@ export function UsageTotalsView({
   );
 }
 
-export function useFleetUsage(fleetId: string | undefined, period: "calendar_week" | "calendar_month") {
+export function useFleetUsage(
+  fleetId: string | undefined,
+  period: SpendBudgetPeriod,
+  scope?: { missionId?: string; operationId?: string },
+) {
   const [data, setData] = useState<UsageSummary | null>(null);
   const [loading, setLoading] = useState(false);
+  const missionId = scope?.missionId;
+  const operationId = scope?.operationId;
   useEffect(() => {
     if (!fleetId) {
       setData(null);
@@ -87,7 +96,10 @@ export function useFleetUsage(fleetId: string | undefined, period: "calendar_wee
     }
     let canceled = false;
     setLoading(true);
-    getJSON<UsageSummary>(`/api/v1/usage?fleet_id=${encodeURIComponent(fleetId)}&period=${period}`)
+    const qs = new URLSearchParams({ fleet_id: fleetId, period });
+    if (missionId) qs.set("mission_id", missionId);
+    if (operationId) qs.set("operation_id", operationId);
+    getJSON<UsageSummary>(`/api/v1/usage?${qs}`)
       .then((res) => {
         if (!canceled) setData(res);
       })
@@ -95,13 +107,91 @@ export function useFleetUsage(fleetId: string | undefined, period: "calendar_wee
         if (!canceled) setLoading(false);
       });
     return () => { canceled = true; };
-  }, [fleetId, period]);
+  }, [fleetId, period, missionId, operationId]);
   return { data, loading };
+}
+
+function BreakdownTable({
+  label,
+  rows,
+}: {
+  label: string;
+  rows: { key: string; name: string; runs: number; total_tokens: number; cost_micros: number }[];
+}) {
+  const t = useT();
+  if (rows.length === 0) return null;
+  return (
+    <div className="space-y-1">
+      <div className="text-[11px] font-medium text-muted-foreground">{label}</div>
+      <div className="overflow-x-auto rounded-md border border-border/80">
+        <table className="w-full text-[11px]">
+          <thead className="text-muted-foreground">
+            <tr className="border-b border-border/70">
+              <th className="px-2 py-1 text-left font-medium">{label}</th>
+              <th className="px-2 py-1 text-right font-medium">{t("usage.runs")}</th>
+              <th className="px-2 py-1 text-right font-medium">{t("usage.tokens")}</th>
+              <th className="px-2 py-1 text-right font-medium">{t("usage.cost")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.key} className="border-b border-border/50 last:border-0">
+                <td className="max-w-[10rem] truncate px-2 py-1" title={row.name}>{row.name}</td>
+                <td className="px-2 py-1 text-right tabular-nums">{row.runs.toLocaleString()}</td>
+                <td className="px-2 py-1 text-right tabular-nums">{row.total_tokens.toLocaleString()}</td>
+                <td className="px-2 py-1 text-right tabular-nums">{formatCostMicros(row.cost_micros)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function pilotRows(items: PilotUsage[] | undefined) {
+  return (items ?? []).map((p) => ({
+    key: p.pilot || "-",
+    name: p.pilot || "-",
+    runs: p.runs,
+    total_tokens: p.total_tokens,
+    cost_micros: p.cost_micros,
+  }));
+}
+
+function roverRows(items: RoverUsage[] | undefined, unlabeled: string) {
+  return (items ?? []).map((r) => ({
+    key: r.id || r.name || unlabeled,
+    name: r.name || unlabeled,
+    runs: r.runs,
+    total_tokens: r.total_tokens,
+    cost_micros: r.cost_micros,
+  }));
+}
+
+function operationRows(items: OperationUsage[] | undefined) {
+  return (items ?? []).map((o) => ({
+    key: o.id,
+    name: o.code ? `${o.code} ${o.title}` : o.title,
+    runs: o.runs,
+    total_tokens: o.total_tokens,
+    cost_micros: o.cost_micros,
+  }));
+}
+
+function dayRows(items: DayUsage[] | undefined) {
+  return (items ?? []).filter((d) => d.runs > 0 || d.total_tokens > 0 || d.cost_micros > 0).map((d) => ({
+    key: d.day,
+    name: d.day,
+    runs: d.runs,
+    total_tokens: d.total_tokens,
+    cost_micros: d.cost_micros,
+  }));
 }
 
 export function FleetUsagePanel({ fleetId }: { fleetId: string }) {
   const t = useT();
-  const [period, setPeriod] = useState<"calendar_week" | "calendar_month">("calendar_week");
+  const [period, setPeriod] = useState<SpendBudgetPeriod>("calendar_week");
   const { data, loading } = useFleetUsage(fleetId, period);
   return (
     <div className="space-y-2">
@@ -112,9 +202,12 @@ export function FleetUsagePanel({ fleetId }: { fleetId: string }) {
       {loading && !data ? (
         <p className="text-xs text-muted-foreground">{t("common.loading")}</p>
       ) : data ? (
-        <div className="space-y-1.5">
+        <div className="space-y-2">
           <div className="text-[11px] text-muted-foreground">{t("usage.periodKey", { key: data.period_key })}</div>
           <UsageTotalsView {...data.fleet} />
+          <BreakdownTable label={t("usage.pilots")} rows={pilotRows(data.pilots)} />
+          <BreakdownTable label={t("usage.rovers")} rows={roverRows(data.rovers, t("usage.unknownRover"))} />
+          <BreakdownTable label={t("usage.days")} rows={dayRows(data.days)} />
         </div>
       ) : (
         <p className="text-xs text-muted-foreground">{t("usage.unavailable")}</p>
@@ -131,9 +224,9 @@ export function MissionUsagePanel({
   missionId: string;
 }) {
   const t = useT();
-  const [period, setPeriod] = useState<"calendar_week" | "calendar_month">("calendar_week");
-  const { data, loading } = useFleetUsage(fleetId, period);
-  const mission = data?.missions.find((m) => m.id === missionId);
+  const [period, setPeriod] = useState<SpendBudgetPeriod>("calendar_week");
+  const { data, loading } = useFleetUsage(fleetId, period, { missionId });
+  const mission = data?.missions.find((m) => m.id === missionId) ?? data?.missions[0];
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -143,9 +236,41 @@ export function MissionUsagePanel({
       {loading && !data ? (
         <p className="text-xs text-muted-foreground">{t("common.loading")}</p>
       ) : mission ? (
-        <div className="space-y-1.5">
+        <div className="space-y-2">
           <div className="text-[11px] text-muted-foreground">{t("usage.periodKey", { key: data!.period_key })}</div>
           <UsageTotalsView {...mission} compact />
+          <BreakdownTable label={t("usage.operations")} rows={operationRows(data?.operations.filter((o) => o.mission_id === missionId))} />
+        </div>
+      ) : (
+        <p className="text-xs text-muted-foreground">{t("usage.none")}</p>
+      )}
+    </div>
+  );
+}
+
+export function OperationUsagePanel({
+  fleetId,
+  operationId,
+}: {
+  fleetId: string;
+  operationId: string;
+}) {
+  const t = useT();
+  const [period, setPeriod] = useState<SpendBudgetPeriod>("calendar_week");
+  const { data, loading } = useFleetUsage(fleetId, period, { operationId });
+  const operation = data?.operations.find((o) => o.id === operationId) ?? data?.operations[0];
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="text-xs font-medium text-muted-foreground">{t("usage.periodUsage")}</div>
+        <UsagePeriodToggle period={period} onChange={setPeriod} />
+      </div>
+      {loading && !data ? (
+        <p className="text-xs text-muted-foreground">{t("common.loading")}</p>
+      ) : operation ? (
+        <div className="space-y-1.5">
+          <div className="text-[11px] text-muted-foreground">{t("usage.periodKey", { key: data!.period_key })}</div>
+          <UsageTotalsView {...operation} compact />
         </div>
       ) : (
         <p className="text-xs text-muted-foreground">{t("usage.none")}</p>

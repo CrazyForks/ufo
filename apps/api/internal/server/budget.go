@@ -7,20 +7,32 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"golang.org/x/sync/errgroup"
 
 	"ufo/apps/api/internal/db"
 )
 
 const (
+	budgetPeriodDay   = "calendar_day"
 	budgetPeriodWeek  = "calendar_week"
 	budgetPeriodMonth = "calendar_month"
 )
+
+func validBudgetPeriod(period string) bool {
+	switch period {
+	case budgetPeriodDay, budgetPeriodWeek, budgetPeriodMonth:
+		return true
+	default:
+		return false
+	}
+}
 
 type spendBudget struct {
 	Period       string
@@ -48,6 +60,17 @@ func parseSpendBudget(metadata []byte) spendBudget {
 	if !ok || len(raw) == 0 || string(raw) == "null" {
 		return spendBudget{}
 	}
+	b, ok := parseSpendBudgetBody(raw)
+	if !ok {
+		return spendBudget{}
+	}
+	return b
+}
+
+func parseSpendBudgetBody(raw json.RawMessage) (spendBudget, bool) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return spendBudget{}, true
+	}
 	var body struct {
 		Period       string `json:"period"`
 		MaxRuns      *int64 `json:"max_runs"`
@@ -55,7 +78,7 @@ func parseSpendBudget(metadata []byte) spendBudget {
 		MaxUSDMicros *int64 `json:"max_usd_micros"`
 	}
 	if err := json.Unmarshal(raw, &body); err != nil {
-		return spendBudget{}
+		return spendBudget{}, false
 	}
 	b := spendBudget{
 		Period:       strings.TrimSpace(body.Period),
@@ -64,15 +87,62 @@ func parseSpendBudget(metadata []byte) spendBudget {
 		MaxUSDMicros: positiveOrNil(body.MaxUSDMicros),
 	}
 	if !b.limited() {
-		return spendBudget{}
+		if b.Period != "" && !validBudgetPeriod(b.Period) {
+			return spendBudget{}, false
+		}
+		return spendBudget{}, true
 	}
 	if b.Period == "" {
 		b.Period = budgetPeriodWeek
 	}
-	if b.Period != budgetPeriodWeek && b.Period != budgetPeriodMonth {
-		return spendBudget{}
+	if !validBudgetPeriod(b.Period) {
+		return spendBudget{}, false
 	}
-	return b
+	return b, true
+}
+
+func normalizeSpendBudgetRaw(raw json.RawMessage) (json.RawMessage, bool) {
+	b, ok := parseSpendBudgetBody(raw)
+	if !ok {
+		return nil, false
+	}
+	if !b.limited() {
+		return json.RawMessage("null"), true
+	}
+	body := map[string]any{"period": b.Period}
+	if b.MaxRuns != nil {
+		body["max_runs"] = *b.MaxRuns
+	}
+	if b.MaxTokens != nil {
+		body["max_tokens"] = *b.MaxTokens
+	}
+	if b.MaxUSDMicros != nil {
+		body["max_usd_micros"] = *b.MaxUSDMicros
+	}
+	enc, err := json.Marshal(body)
+	if err != nil {
+		return nil, false
+	}
+	return enc, true
+}
+
+func stampSpendBudgetInMetadata(metadata []byte) ([]byte, bool) {
+	m := metadataMap(metadata)
+	raw, ok := m["budget"]
+	if !ok {
+		return metadata, true
+	}
+	next, ok := normalizeSpendBudgetRaw(raw)
+	if !ok {
+		return metadata, false
+	}
+	m["budget"] = next
+	return metadataBytes(m), true
+}
+
+func metadataTouchesBudget(metadata []byte) bool {
+	_, ok := metadataMap(metadata)["budget"]
+	return ok
 }
 
 func positiveOrNil(v *int64) *int64 {
@@ -85,6 +155,13 @@ func positiveOrNil(v *int64) *int64 {
 func periodWindowUTC(period string, now time.Time) (budgetPeriodWindow, bool) {
 	now = now.UTC()
 	switch period {
+	case budgetPeriodDay:
+		start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+		return budgetPeriodWindow{
+			Start: start,
+			End:   start.AddDate(0, 0, 1),
+			Key:   start.Format("2006-01-02"),
+		}, true
 	case budgetPeriodWeek:
 		start := isoWeekStartUTC(now)
 		end := start.AddDate(0, 0, 7)
@@ -422,17 +499,117 @@ type missionUsageDTO struct {
 	usageTotalsDTO
 }
 
+type pilotUsageDTO struct {
+	Pilot string `json:"pilot"`
+	usageTotalsDTO
+}
+
+type roverUsageDTO struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	usageTotalsDTO
+}
+
+type operationUsageDTO struct {
+	ID        string `json:"id"`
+	Code      string `json:"code"`
+	Title     string `json:"title"`
+	MissionID string `json:"mission_id"`
+	usageTotalsDTO
+}
+
+type dayUsageDTO struct {
+	Day string `json:"day"`
+	usageTotalsDTO
+}
+
 type usageSummaryDTO struct {
-	Period    string            `json:"period"`
-	PeriodKey string            `json:"period_key"`
-	StartAt   time.Time         `json:"start_at"`
-	EndAt     time.Time         `json:"end_at"`
-	Fleet     usageTotalsDTO    `json:"fleet"`
-	Missions  []missionUsageDTO `json:"missions"`
+	Period     string              `json:"period"`
+	PeriodKey  string              `json:"period_key"`
+	StartAt    time.Time           `json:"start_at"`
+	EndAt      time.Time           `json:"end_at"`
+	Fleet      usageTotalsDTO      `json:"fleet"`
+	Missions   []missionUsageDTO   `json:"missions"`
+	Pilots     []pilotUsageDTO     `json:"pilots"`
+	Rovers     []roverUsageDTO     `json:"rovers"`
+	Operations []operationUsageDTO `json:"operations"`
+	Days       []dayUsageDTO       `json:"days"`
+}
+
+type usageFact struct {
+	runs   int64
+	tokens int64
+	cost   int64
+}
+
+func addUsageRuns(dst map[string]*usageFact, key string, runs int64) {
+	if key == "" && runs == 0 {
+		return
+	}
+	f := dst[key]
+	if f == nil {
+		f = &usageFact{}
+		dst[key] = f
+	}
+	f.runs += runs
+}
+
+func addUsageTokens(dst map[string]*usageFact, key string, tokens, cost int64) {
+	if key == "" && tokens == 0 && cost == 0 {
+		return
+	}
+	f := dst[key]
+	if f == nil {
+		f = &usageFact{}
+		dst[key] = f
+	}
+	f.tokens += tokens
+	f.cost += cost
 }
 
 func budgetLimitFields(b spendBudget) (maxRuns, maxTokens, maxUSD *int64) {
 	return b.MaxRuns, b.MaxTokens, b.MaxUSDMicros
+}
+
+func usageTotalsFromBudget(runs, tokens, cost int64, b spendBudget) usageTotalsDTO {
+	mr, mt, mu := budgetLimitFields(b)
+	return usageTotalsDTO{
+		Runs: runs, TotalTokens: tokens, CostMicros: cost,
+		MaxRuns: mr, MaxTokens: mt, MaxUSDMicros: mu,
+	}
+}
+
+func operationCode(missionKey string, sequence int32) string {
+	if sequence > 0 && missionKey != "" {
+		return fmt.Sprintf("%s-%d", missionKey, sequence)
+	}
+	return missionKey
+}
+
+func emptyUsageSummary(period string, win budgetPeriodWindow) usageSummaryDTO {
+	return usageSummaryDTO{
+		Period:     period,
+		PeriodKey:  win.Key,
+		StartAt:    win.Start,
+		EndAt:      win.End,
+		Missions:   []missionUsageDTO{},
+		Pilots:     []pilotUsageDTO{},
+		Rovers:     []roverUsageDTO{},
+		Operations: []operationUsageDTO{},
+		Days:       []dayUsageDTO{},
+	}
+}
+
+func (s *Server) fleetUsageTotals(ctx context.Context, fleet db.Fleet, win budgetPeriodWindow) (usageTotalsDTO, error) {
+	runs, err := s.countTerminalRuns(ctx, budgetScopeFleet, fleet.ID, win)
+	if err != nil {
+		return usageTotalsDTO{}, err
+	}
+	tokens, cost, err := s.sumUsage(ctx, budgetScopeFleet, fleet.ID, win)
+	if err != nil {
+		return usageTotalsDTO{}, err
+	}
+	return usageTotalsFromBudget(runs, tokens, cost, parseSpendBudget(fleet.Metadata)), nil
 }
 
 func (s *Server) getUsage(w http.ResponseWriter, r *http.Request) {
@@ -449,8 +626,14 @@ func (s *Server) getUsage(w http.ResponseWriter, r *http.Request) {
 	if period == "" {
 		period = budgetPeriodWeek
 	}
-	if period != budgetPeriodWeek && period != budgetPeriodMonth {
-		httpError(w, http.StatusBadRequest, "period must be calendar_week or calendar_month")
+	if !validBudgetPeriod(period) {
+		httpError(w, http.StatusBadRequest, "period must be calendar_day, calendar_week, or calendar_month")
+		return
+	}
+	rawMission := strings.TrimSpace(r.URL.Query().Get("mission_id"))
+	rawOperation := strings.TrimSpace(r.URL.Query().Get("operation_id"))
+	if rawMission != "" && rawOperation != "" {
+		httpError(w, http.StatusBadRequest, "mission_id and operation_id cannot both be set")
 		return
 	}
 	win, ok := periodWindowUTC(period, time.Now())
@@ -464,28 +647,45 @@ func (s *Server) getUsage(w http.ResponseWriter, r *http.Request) {
 		serverError(w, err)
 		return
 	}
-	fleetBudget := parseSpendBudget(fleet.Metadata)
-	runs, err := s.countTerminalRuns(ctx, budgetScopeFleet, fleet.ID, win)
+	if rawOperation != "" {
+		out, err := s.usageForOperation(ctx, fleet, rawOperation, period, win)
+		if err != nil {
+			if errors.Is(err, errInvalidUsageScope) {
+				httpError(w, http.StatusBadRequest, "invalid operation_id")
+				return
+			}
+			if errors.Is(err, pgx.ErrNoRows) {
+				httpError(w, http.StatusNotFound, "operation not found")
+				return
+			}
+			serverError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
+	if rawMission != "" {
+		out, err := s.usageForMission(ctx, fleet, rawMission, period, win)
+		if err != nil {
+			if errors.Is(err, errInvalidUsageScope) {
+				httpError(w, http.StatusBadRequest, "invalid mission_id")
+				return
+			}
+			if errors.Is(err, pgx.ErrNoRows) {
+				httpError(w, http.StatusNotFound, "mission not found")
+				return
+			}
+			serverError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
+	out := emptyUsageSummary(period, win)
+	out.Fleet, err = s.fleetUsageTotals(ctx, fleet, win)
 	if err != nil {
 		serverError(w, err)
 		return
-	}
-	tokens, cost, err := s.sumUsage(ctx, budgetScopeFleet, fleet.ID, win)
-	if err != nil {
-		serverError(w, err)
-		return
-	}
-	mr, mt, mu := budgetLimitFields(fleetBudget)
-	out := usageSummaryDTO{
-		Period:    period,
-		PeriodKey: win.Key,
-		StartAt:   win.Start,
-		EndAt:     win.End,
-		Fleet: usageTotalsDTO{
-			Runs: runs, TotalTokens: tokens, CostMicros: cost,
-			MaxRuns: mr, MaxTokens: mt, MaxUSDMicros: mu,
-		},
-		Missions: []missionUsageDTO{},
 	}
 	start, end := timestamptz(win.Start), timestamptz(win.End)
 	missions, err := s.q.ListMissionUsageInRange(ctx, db.ListMissionUsageInRangeParams{
@@ -496,17 +696,266 @@ func (s *Server) getUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, m := range missions {
-		mb := parseSpendBudget(m.Metadata)
-		mmr, mmt, mmu := budgetLimitFields(mb)
 		out.Missions = append(out.Missions, missionUsageDTO{
 			ID: uuidStr(m.PublicID), Key: m.Key, Name: m.Name,
-			usageTotalsDTO: usageTotalsDTO{
-				Runs: m.Runs, TotalTokens: m.TotalTokens, CostMicros: m.CostMicros,
-				MaxRuns: mmr, MaxTokens: mmt, MaxUSDMicros: mmu,
-			},
+			usageTotalsDTO: usageTotalsFromBudget(m.Runs, m.TotalTokens, m.CostMicros, parseSpendBudget(m.Metadata)),
 		})
 	}
+	if err := s.appendUsageBreakdowns(ctx, fleet.ID, start, end, win, &out); err != nil {
+		serverError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) usageForOperation(ctx context.Context, fleet db.Fleet, rawID, period string, win budgetPeriodWindow) (usageSummaryDTO, error) {
+	pid, ok := parseUUID(rawID)
+	if !ok {
+		return usageSummaryDTO{}, errInvalidUsageScope
+	}
+	op, err := s.q.GetOperationByPublicID(ctx, pid)
+	if err != nil {
+		return usageSummaryDTO{}, err
+	}
+	if op.FleetID != fleet.ID {
+		return usageSummaryDTO{}, pgx.ErrNoRows
+	}
+	mission, err := s.q.GetMission(ctx, op.MissionID)
+	if err != nil {
+		return usageSummaryDTO{}, err
+	}
+	out := emptyUsageSummary(period, win)
+	runs, err := s.countTerminalRuns(ctx, budgetScopeOperation, op.ID, win)
+	if err != nil {
+		return usageSummaryDTO{}, err
+	}
+	tokens, cost, err := s.sumUsage(ctx, budgetScopeOperation, op.ID, win)
+	if err != nil {
+		return usageSummaryDTO{}, err
+	}
+	out.Operations = []operationUsageDTO{{
+		ID: uuidStr(op.PublicID), Code: operationCode(mission.Key, op.Sequence), Title: op.Title, MissionID: uuidStr(mission.PublicID),
+		usageTotalsDTO: usageTotalsFromBudget(runs, tokens, cost, parseSpendBudget(op.Metadata)),
+	}}
+	return out, nil
+}
+
+func (s *Server) usageForMission(ctx context.Context, fleet db.Fleet, rawID, period string, win budgetPeriodWindow) (usageSummaryDTO, error) {
+	pid, ok := parseUUID(rawID)
+	if !ok {
+		return usageSummaryDTO{}, errInvalidUsageScope
+	}
+	mission, err := s.q.GetMissionByPublicID(ctx, pid)
+	if err != nil {
+		return usageSummaryDTO{}, err
+	}
+	if mission.FleetID != fleet.ID {
+		return usageSummaryDTO{}, pgx.ErrNoRows
+	}
+	out := emptyUsageSummary(period, win)
+	runs, err := s.countTerminalRuns(ctx, budgetScopeMission, mission.ID, win)
+	if err != nil {
+		return usageSummaryDTO{}, err
+	}
+	tokens, cost, err := s.sumUsage(ctx, budgetScopeMission, mission.ID, win)
+	if err != nil {
+		return usageSummaryDTO{}, err
+	}
+	out.Missions = []missionUsageDTO{{
+		ID: uuidStr(mission.PublicID), Key: mission.Key, Name: mission.Name,
+		usageTotalsDTO: usageTotalsFromBudget(runs, tokens, cost, parseSpendBudget(mission.Metadata)),
+	}}
+	start, end := timestamptz(win.Start), timestamptz(win.End)
+	rows, err := s.q.ListMissionOperationUsageInRange(ctx, db.ListMissionOperationUsageInRangeParams{
+		FleetID: fleet.ID, MissionID: mission.ID, StartAt: start, EndAt: end,
+	})
+	if err != nil {
+		return usageSummaryDTO{}, err
+	}
+	for _, row := range rows {
+		out.Operations = append(out.Operations, operationUsageDTO{
+			ID: uuidStr(row.PublicID), Code: operationCode(row.MissionKey, row.Sequence), Title: row.Title, MissionID: uuidStr(row.MissionID),
+			usageTotalsDTO: usageTotalsFromBudget(row.Runs, row.TotalTokens, row.CostMicros, parseSpendBudget(row.Metadata)),
+		})
+	}
+	sort.Slice(out.Operations, func(i, j int) bool {
+		if out.Operations[i].TotalTokens != out.Operations[j].TotalTokens {
+			return out.Operations[i].TotalTokens > out.Operations[j].TotalTokens
+		}
+		if out.Operations[i].Code != out.Operations[j].Code {
+			return out.Operations[i].Code < out.Operations[j].Code
+		}
+		return out.Operations[i].ID < out.Operations[j].ID
+	})
+	return out, nil
+}
+
+var errInvalidUsageScope = errors.New("invalid usage scope id")
+
+func (s *Server) appendUsageBreakdowns(ctx context.Context, fleetID int64, start, end pgtype.Timestamptz, win budgetPeriodWindow, out *usageSummaryDTO) error {
+	g, ctx := errgroup.WithContext(ctx)
+	var (
+		pilotRuns  []db.ListPilotTerminalRunsInRangeRow
+		pilotUsage []db.ListPilotUsageFactsInRangeRow
+		roverRuns  []db.ListRoverTerminalRunsInRangeRow
+		roverUsage []db.ListRoverUsageFactsInRangeRow
+		dayRuns    []db.ListDayTerminalRunsInRangeRow
+		dayUsage   []db.ListDayUsageFactsInRangeRow
+	)
+	g.Go(func() error {
+		rows, err := s.q.ListPilotTerminalRunsInRange(ctx, db.ListPilotTerminalRunsInRangeParams{
+			FleetID: fleetID, StartAt: start, EndAt: end,
+		})
+		if err != nil {
+			return err
+		}
+		pilotRuns = rows
+		return nil
+	})
+	g.Go(func() error {
+		rows, err := s.q.ListPilotUsageFactsInRange(ctx, db.ListPilotUsageFactsInRangeParams{
+			FleetID: fleetID, StartAt: start, EndAt: end,
+		})
+		if err != nil {
+			return err
+		}
+		pilotUsage = rows
+		return nil
+	})
+	g.Go(func() error {
+		rows, err := s.q.ListRoverTerminalRunsInRange(ctx, db.ListRoverTerminalRunsInRangeParams{
+			FleetID: fleetID, StartAt: start, EndAt: end,
+		})
+		if err != nil {
+			return err
+		}
+		roverRuns = rows
+		return nil
+	})
+	g.Go(func() error {
+		rows, err := s.q.ListRoverUsageFactsInRange(ctx, db.ListRoverUsageFactsInRangeParams{
+			FleetID: fleetID, StartAt: start, EndAt: end,
+		})
+		if err != nil {
+			return err
+		}
+		roverUsage = rows
+		return nil
+	})
+	g.Go(func() error {
+		rows, err := s.q.ListDayTerminalRunsInRange(ctx, db.ListDayTerminalRunsInRangeParams{
+			FleetID: fleetID, StartAt: start, EndAt: end,
+		})
+		if err != nil {
+			return err
+		}
+		dayRuns = rows
+		return nil
+	})
+	g.Go(func() error {
+		rows, err := s.q.ListDayUsageFactsInRange(ctx, db.ListDayUsageFactsInRangeParams{
+			FleetID: fleetID, StartAt: start, EndAt: end,
+		})
+		if err != nil {
+			return err
+		}
+		dayUsage = rows
+		return nil
+	})
+	if err := g.Wait(); err != nil {
+		return err
+	}
+
+	pilotFacts := map[string]*usageFact{}
+	for _, row := range pilotRuns {
+		if row.Pilot == "" {
+			continue
+		}
+		addUsageRuns(pilotFacts, row.Pilot, row.Runs)
+	}
+	for _, row := range pilotUsage {
+		if row.Pilot == "" {
+			continue
+		}
+		addUsageTokens(pilotFacts, row.Pilot, row.TotalTokens, row.CostMicros)
+	}
+	for pilot, fact := range pilotFacts {
+		if fact.runs == 0 && fact.tokens == 0 && fact.cost == 0 {
+			continue
+		}
+		out.Pilots = append(out.Pilots, pilotUsageDTO{
+			Pilot:          pilot,
+			usageTotalsDTO: usageTotalsDTO{Runs: fact.runs, TotalTokens: fact.tokens, CostMicros: fact.cost},
+		})
+	}
+	sort.Slice(out.Pilots, func(i, j int) bool {
+		if out.Pilots[i].TotalTokens != out.Pilots[j].TotalTokens {
+			return out.Pilots[i].TotalTokens > out.Pilots[j].TotalTokens
+		}
+		return out.Pilots[i].Pilot < out.Pilots[j].Pilot
+	})
+
+	type roverKey struct{ id, name string }
+	roverFacts := map[string]*usageFact{}
+	roverMeta := map[string]roverKey{}
+	roverKeyOf := func(id pgtype.UUID, name string) string {
+		k := uuidStr(id)
+		if k == "" {
+			return ""
+		}
+		roverMeta[k] = roverKey{id: k, name: name}
+		return k
+	}
+	for _, row := range roverRuns {
+		if key := roverKeyOf(row.PublicID, row.Name); key != "" {
+			addUsageRuns(roverFacts, key, row.Runs)
+		}
+	}
+	for _, row := range roverUsage {
+		if key := roverKeyOf(row.PublicID, row.Name); key != "" {
+			addUsageTokens(roverFacts, key, row.TotalTokens, row.CostMicros)
+		}
+	}
+	for key, fact := range roverFacts {
+		if fact.runs == 0 && fact.tokens == 0 && fact.cost == 0 {
+			continue
+		}
+		meta := roverMeta[key]
+		out.Rovers = append(out.Rovers, roverUsageDTO{
+			ID:             meta.id,
+			Name:           meta.name,
+			usageTotalsDTO: usageTotalsDTO{Runs: fact.runs, TotalTokens: fact.tokens, CostMicros: fact.cost},
+		})
+	}
+	sort.Slice(out.Rovers, func(i, j int) bool {
+		if out.Rovers[i].TotalTokens != out.Rovers[j].TotalTokens {
+			return out.Rovers[i].TotalTokens > out.Rovers[j].TotalTokens
+		}
+		if out.Rovers[i].Name != out.Rovers[j].Name {
+			return out.Rovers[i].Name < out.Rovers[j].Name
+		}
+		return out.Rovers[i].ID < out.Rovers[j].ID
+	})
+
+	dayFacts := map[string]*usageFact{}
+	for _, row := range dayRuns {
+		addUsageRuns(dayFacts, row.Day, row.Runs)
+	}
+	for _, row := range dayUsage {
+		addUsageTokens(dayFacts, row.Day, row.TotalTokens, row.CostMicros)
+	}
+	for d := win.Start; d.Before(win.End); d = d.AddDate(0, 0, 1) {
+		key := d.UTC().Format("2006-01-02")
+		fact := dayFacts[key]
+		row := dayUsageDTO{Day: key}
+		if fact != nil {
+			row.Runs = fact.runs
+			row.TotalTokens = fact.tokens
+			row.CostMicros = fact.cost
+		}
+		out.Days = append(out.Days, row)
+	}
+	return nil
 }
 
 func normalizeRunUsage(u *runUsagePayload) runUsagePayload {

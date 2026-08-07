@@ -6,13 +6,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { SpendBudgetInput } from "@/components/app-provider";
+import { SPEND_BUDGET_PERIODS, SPEND_BUDGET_PERIOD_LABEL, spendBudgetPeriod, type SpendBudgetPeriod } from "@/lib/types";
 import { useT } from "@/lib/i18n";
 
 export function budgetFromMetadata(metadata: Record<string, unknown> | undefined): SpendBudgetInput {
   const raw = metadata?.budget;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const b = raw as Record<string, unknown>;
-  const period = b.period === "calendar_month" ? "calendar_month" : "calendar_week";
+  const period = spendBudgetPeriod(b.period);
   const max_runs = typeof b.max_runs === "number" && b.max_runs > 0 ? b.max_runs : null;
   const max_tokens = typeof b.max_tokens === "number" && b.max_tokens > 0 ? b.max_tokens : null;
   const max_usd_micros = typeof b.max_usd_micros === "number" && b.max_usd_micros > 0 ? b.max_usd_micros : null;
@@ -37,7 +38,7 @@ export function BudgetEditor({
   const t = useT();
   const saved = budgetFromMetadata(metadata);
   const [enabled, setEnabled] = useState(saved != null);
-  const [period, setPeriod] = useState<"calendar_week" | "calendar_month">(saved?.period ?? "calendar_week");
+  const [period, setPeriod] = useState<SpendBudgetPeriod>(saved?.period ?? "calendar_week");
   const [maxRuns, setMaxRuns] = useState(saved?.max_runs != null ? String(saved.max_runs) : "");
   const [maxTokens, setMaxTokens] = useState(saved?.max_tokens != null ? String(saved.max_tokens) : "");
   const [maxUsd, setMaxUsd] = useState(usdFromMicros(saved?.max_usd_micros));
@@ -94,11 +95,12 @@ export function BudgetEditor({
         <div className="grid gap-2 sm:grid-cols-4">
           <div className="space-y-1">
             <Label className="text-xs text-muted-foreground">{t("budget.period")}</Label>
-            <Select value={period} onValueChange={(v) => setPeriod(v as "calendar_week" | "calendar_month")} disabled={disabled}>
+            <Select value={period} onValueChange={(v) => setPeriod(v as SpendBudgetPeriod)} disabled={disabled}>
               <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="calendar_week">{t("budget.periodWeek")}</SelectItem>
-                <SelectItem value="calendar_month">{t("budget.periodMonth")}</SelectItem>
+                {SPEND_BUDGET_PERIODS.map((p) => (
+                  <SelectItem key={p} value={p}>{t(SPEND_BUDGET_PERIOD_LABEL[p])}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>

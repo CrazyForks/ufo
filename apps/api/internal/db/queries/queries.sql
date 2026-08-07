@@ -1066,6 +1066,114 @@ WHERE operation_id = sqlc.arg(operation_id)
   AND created_at >= sqlc.arg(start_at)
   AND created_at < sqlc.arg(end_at);
 
+-- name: ListPilotTerminalRunsInRange :many
+SELECT r.pilot, COUNT(*)::bigint AS runs
+FROM runs r
+WHERE r.fleet_id = sqlc.arg(fleet_id)
+  AND r.pilot <> ''
+  AND r.status IN ('succeeded', 'failed', 'canceled')
+  AND COALESCE(r.finalized_at, r.updated_at) >= sqlc.arg(start_at)
+  AND COALESCE(r.finalized_at, r.updated_at) < sqlc.arg(end_at)
+GROUP BY r.pilot
+ORDER BY r.pilot;
+
+-- name: ListPilotUsageFactsInRange :many
+SELECT u.pilot,
+    COALESCE(SUM(u.total_tokens), 0)::bigint AS total_tokens,
+    COALESCE(SUM(u.cost_micros), 0)::bigint AS cost_micros
+FROM run_usage u
+WHERE u.fleet_id = sqlc.arg(fleet_id)
+  AND u.pilot <> ''
+  AND u.created_at >= sqlc.arg(start_at)
+  AND u.created_at < sqlc.arg(end_at)
+GROUP BY u.pilot
+ORDER BY 1;
+
+-- name: ListRoverTerminalRunsInRange :many
+SELECT rv.public_id, COALESCE(rv.name, '') AS name, COUNT(*)::bigint AS runs
+FROM runs r
+JOIN rovers rv ON rv.id = r.rover_id AND rv.fleet_id = sqlc.arg(fleet_id)
+WHERE r.fleet_id = sqlc.arg(fleet_id)
+  AND r.status IN ('succeeded', 'failed', 'canceled')
+  AND COALESCE(r.finalized_at, r.updated_at) >= sqlc.arg(start_at)
+  AND COALESCE(r.finalized_at, r.updated_at) < sqlc.arg(end_at)
+GROUP BY rv.public_id, rv.name
+ORDER BY COALESCE(rv.name, ''), rv.public_id;
+
+-- name: ListRoverUsageFactsInRange :many
+SELECT rv.public_id, COALESCE(rv.name, '') AS name,
+    COALESCE(SUM(u.total_tokens), 0)::bigint AS total_tokens,
+    COALESCE(SUM(u.cost_micros), 0)::bigint AS cost_micros
+FROM run_usage u
+JOIN rovers rv ON rv.id = u.rover_id AND rv.fleet_id = sqlc.arg(fleet_id)
+WHERE u.fleet_id = sqlc.arg(fleet_id)
+  AND u.created_at >= sqlc.arg(start_at)
+  AND u.created_at < sqlc.arg(end_at)
+GROUP BY rv.public_id, rv.name
+ORDER BY COALESCE(rv.name, ''), rv.public_id;
+
+-- name: ListMissionOperationUsageInRange :many
+SELECT
+    o.public_id,
+    o.title,
+    o.sequence,
+    o.metadata,
+    m.public_id AS mission_id,
+    m.key AS mission_key,
+    COALESCE(rc.runs, 0)::bigint AS runs,
+    COALESCE(uc.total_tokens, 0)::bigint AS total_tokens,
+    COALESCE(uc.cost_micros, 0)::bigint AS cost_micros
+FROM operations o
+JOIN missions m ON m.id = o.mission_id
+LEFT JOIN LATERAL (
+    SELECT COUNT(*)::bigint AS runs
+    FROM runs r
+    WHERE r.operation_id = o.id
+      AND r.status IN ('succeeded', 'failed', 'canceled')
+      AND COALESCE(r.finalized_at, r.updated_at) >= sqlc.arg(start_at)
+      AND COALESCE(r.finalized_at, r.updated_at) < sqlc.arg(end_at)
+) rc ON true
+LEFT JOIN LATERAL (
+    SELECT
+        COALESCE(SUM(u.total_tokens), 0)::bigint AS total_tokens,
+        COALESCE(SUM(u.cost_micros), 0)::bigint AS cost_micros
+    FROM run_usage u
+    WHERE u.operation_id = o.id
+      AND u.created_at >= sqlc.arg(start_at)
+      AND u.created_at < sqlc.arg(end_at)
+) uc ON true
+WHERE o.fleet_id = sqlc.arg(fleet_id)
+  AND o.mission_id = sqlc.arg(mission_id)
+  AND (
+    COALESCE(rc.runs, 0) > 0
+    OR COALESCE(uc.total_tokens, 0) > 0
+    OR COALESCE(uc.cost_micros, 0) > 0
+    OR jsonb_typeof(o.metadata->'budget') = 'object'
+  )
+ORDER BY o.sequence, o.public_id;
+
+-- name: ListDayTerminalRunsInRange :many
+SELECT to_char(COALESCE(r.finalized_at, r.updated_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day,
+    COUNT(*)::bigint AS runs
+FROM runs r
+WHERE r.fleet_id = sqlc.arg(fleet_id)
+  AND r.status IN ('succeeded', 'failed', 'canceled')
+  AND COALESCE(r.finalized_at, r.updated_at) >= sqlc.arg(start_at)
+  AND COALESCE(r.finalized_at, r.updated_at) < sqlc.arg(end_at)
+GROUP BY 1
+ORDER BY 1;
+
+-- name: ListDayUsageFactsInRange :many
+SELECT to_char(u.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day,
+    COALESCE(SUM(u.total_tokens), 0)::bigint AS total_tokens,
+    COALESCE(SUM(u.cost_micros), 0)::bigint AS cost_micros
+FROM run_usage u
+WHERE u.fleet_id = sqlc.arg(fleet_id)
+  AND u.created_at >= sqlc.arg(start_at)
+  AND u.created_at < sqlc.arg(end_at)
+GROUP BY 1
+ORDER BY 1;
+
 -- name: CancelRun :one
 UPDATE runs
 SET status = 'canceled'

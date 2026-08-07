@@ -15,6 +15,7 @@ import { pilotLabel } from "@/lib/labels";
 import { SECTION_ICONS } from "@/lib/section-icons";
 import { cn } from "@/lib/utils";
 import { BudgetEditor } from "@/components/budget-editor";
+import { SPEND_BUDGET_PERIOD_LABEL, spendBudgetPeriod } from "@/lib/types";
 
 const ROVER_STATUS: Record<string, { labelKey: MessageKey; icon: LucideIcon; color: string }> = {
   online: { labelKey: "rovers.online", icon: Circle, color: "text-success" },
@@ -60,8 +61,7 @@ function budgetSummary(metadata: Record<string, unknown> | undefined): string | 
   const raw = metadata?.budget;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const budget = raw as Record<string, unknown>;
-  const period = typeof budget.period === "string" && budget.period.trim() ? budget.period : "calendar_week";
-  const periodLabel = period === "calendar_month" ? translate("budget.month") : period === "calendar_week" ? translate("budget.week") : period;
+  const periodLabel = translate(SPEND_BUDGET_PERIOD_LABEL[spendBudgetPeriod(budget.period)]);
   const parts: string[] = [];
   if (typeof budget.max_runs === "number" && budget.max_runs > 0) parts.push(translate("rovers.budgetRuns", { count: budget.max_runs, period: periodLabel }));
   if (typeof budget.max_tokens === "number" && budget.max_tokens > 0) parts.push(translate("rovers.budgetTokens", { count: budget.max_tokens, period: periodLabel }));

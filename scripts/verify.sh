@@ -82,7 +82,7 @@ check_rover() {
 
 check_openapi() {
   step "openapi lint"
-  npx --yes @redocly/cli@2.43.2 lint apps/api/internal/spec/openapi.yaml
+  npx --yes @redocly/cli@2.46.0 lint apps/api/internal/spec/openapi.yaml
 }
 
 check_sqlc() {

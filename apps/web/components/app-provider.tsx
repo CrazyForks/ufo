@@ -10,8 +10,9 @@ import { parseAppPath } from "@/lib/routes";
 import type {
   EnrollmentCode, Pilot, Comment, Crew, Fleet, Forge, ForgeInput, Invitation, Label, Member, MyInvite, OperationReference, Signal, Mission, Operation,
   Asset, AssetUploadIntent, OperationDetail, Routine, RoutineMetadata, RoutineOperationMetadata, Rover, Run, RunDetail, User, UserProfile,
-  Pulse,
+  Pulse, SpendBudgetPeriod,
 } from "@/lib/types";
+import { spendBudgetPeriod } from "@/lib/types";
 
 const OP_CODE_SEARCH_RE = /#?([A-Za-z0-9]+)-(\d+)/;
 type RoutineCreateInput = {
@@ -43,7 +44,7 @@ function contextMetadata(metadata: Record<string, unknown> | undefined, context:
 }
 
 export type SpendBudgetInput = {
-  period?: "calendar_week" | "calendar_month";
+  period?: SpendBudgetPeriod;
   max_runs?: number | null;
   max_tokens?: number | null;
   max_usd_micros?: number | null;
@@ -56,7 +57,7 @@ function budgetMetadata(metadata: Record<string, unknown> | undefined, budget: S
     return next;
   }
   const body: Record<string, unknown> = {
-    period: budget.period === "calendar_month" ? "calendar_month" : "calendar_week",
+    period: spendBudgetPeriod(budget.period),
   };
   if (budget.max_runs != null && budget.max_runs > 0) body.max_runs = Math.floor(budget.max_runs);
   if (budget.max_tokens != null && budget.max_tokens > 0) body.max_tokens = Math.floor(budget.max_tokens);
@@ -82,6 +83,7 @@ type Ctx = {
   setFleetBudget: (budget: SpendBudgetInput) => Promise<boolean>;
   setMissionBudget: (missionId: string, budget: SpendBudgetInput) => Promise<boolean>;
   setRoverBudget: (roverId: string, budget: SpendBudgetInput) => Promise<boolean>;
+  setOperationBudget: (operationId: string, budget: SpendBudgetInput) => Promise<boolean>;
   forges: Forge[];
   createForge: (input: ForgeInput) => Promise<Forge | null>;
   updateForge: (id: string, input: ForgeInput) => Promise<boolean>;
@@ -496,6 +498,17 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
     toast.success(t("toast.roverBudgetSaved"));
     return true;
   }, [fleet, rovers, loadMeta]);
+  const setOperationBudget: Ctx["setOperationBudget"] = useCallback(async (operationId, budget) => {
+    const body = budget == null
+      ? { budget: null }
+      : { budget: budgetMetadata(undefined, budget).budget ?? null };
+    const res = await patchJSON(`/api/v1/operations/${operationId}`, body);
+    if (!res.ok) { await fail(res, t("error.updateOperationBudget")); return false; }
+    bumpBoard();
+    loadOperationDetail(operationId);
+    toast.success(t("toast.operationBudgetSaved"));
+    return true;
+  }, [fleet, bumpBoard, loadOperationDetail]);
   const updateUserName: Ctx["updateUserName"] = useCallback(async (name) => {
     const res = await patchJSON("/api/v1/users/me", { name });
     if (!res.ok) { await fail(res, t("error.updateName")); return false; }
@@ -892,7 +905,7 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
   }, [fleet, loadMembers]);
 
   const value: Ctx = useMemo(() => ({
-    user, updateUserName, fleets, fleet, switchFleet, createFleet, updateFleet, setFleetContext, setFleetWorktree, setFleetBudget, setMissionBudget, setRoverBudget, signOut,
+    user, updateUserName, fleets, fleet, switchFleet, createFleet, updateFleet, setFleetContext, setFleetWorktree, setFleetBudget, setMissionBudget, setRoverBudget, setOperationBudget, signOut,
     forges, createForge, updateForge, deleteForge, setMissionForges,
     missions, missionCounts, pilots, crews, labels, routines, rovers, enrollmentCodes, signals, newEnrollmentCode, boardTick,
     members, myRole, fleetInvites, myInvites,
@@ -908,7 +921,7 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
     user, fleets, fleet, forges, missions, missionCounts, pilots, crews, labels, routines, rovers, enrollmentCodes, signals, newEnrollmentCode, boardTick,
     members, myRole, fleetInvites, myInvites,
     selectedOperation, operationDetail, selectedRun, runDetail, selectedUserId, userProfile,
-    updateUserName, switchFleet, createFleet, updateFleet, setFleetContext, setFleetWorktree, setFleetBudget, createForge, updateForge, deleteForge, setMissionForges, setMissionBudget, setRoverBudget, signOut,
+    updateUserName, switchFleet, createFleet, updateFleet, setFleetContext, setFleetWorktree, setFleetBudget, createForge, updateForge, deleteForge, setMissionForges, setMissionBudget, setRoverBudget, setOperationBudget, signOut,
     openOperation, backOperation, setSelectedRun, openUser,
     createOperation, setOperationTags, setOperationWorktree, updateOperation, setOperationMission, setPriority, setDates, setMainOperation, setArchived,
     createLabel, updateLabel, deleteLabel, createRoutine, updateRoutine, deleteRoutine, pulseRoutine, listRoutinePulses, attachLabel, detachLabel, addRelation, removeRelation, createSourceAction, addPullRequest, deletePullRequest, uploadAsset, searchOperations, react,

@@ -3579,7 +3579,11 @@ func TestRoverDonationBudgetMaxRunsAndUsage(t *testing.T) {
 	roverID := field(t, eb, "id")
 	if code, b := do(t, &http.Client{}, "PATCH", ts.URL+"/v1/rovers/"+roverID, rover, map[string]any{
 		"auto_tags": []string{"pilot:claude"},
-		"metadata":  map[string]any{"budget": map[string]any{"period": "calendar_week", "max_runs": 1}},
+	}); code != http.StatusNoContent {
+		t.Fatalf("tags: %d %s", code, b)
+	}
+	if code, b := do(t, owner, "PATCH", ts.URL+"/v1/rovers/"+roverID, "", map[string]any{
+		"metadata": map[string]any{"budget": map[string]any{"period": "calendar_week", "max_runs": 1}},
 	}); code != http.StatusNoContent {
 		t.Fatalf("set budget: %d %s", code, b)
 	}
@@ -3631,7 +3635,7 @@ func TestRoverDonationBudgetMaxRunsAndUsage(t *testing.T) {
 		t.Fatalf("second accept after max_runs=1 = %d, want 204 (%s)", code, b)
 	}
 
-	if code, b := do(t, &http.Client{}, "PATCH", ts.URL+"/v1/rovers/"+roverID, rover, map[string]any{
+	if code, b := do(t, owner, "PATCH", ts.URL+"/v1/rovers/"+roverID, "", map[string]any{
 		"metadata": map[string]any{"budget": map[string]any{"period": "calendar_week", "max_tokens": 10}},
 	}); code != http.StatusNoContent {
 		t.Fatalf("token budget: %d %s", code, b)
@@ -3685,5 +3689,475 @@ func TestPatchRoverFieldAuthorization(t *testing.T) {
 	}
 	if after := readUnits(); after != 5 {
 		t.Fatalf("owner units patch reflected = %v, want 5", after)
+	}
+}
+
+func TestGetUsageSummaryAuthzAndBreakdowns(t *testing.T) {
+	ts := newTestServer(t)
+	owner := signup(t, ts, "usage-summary-owner")
+	outsider := signup(t, ts, "usage-summary-outsider")
+	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Usage fleet"})
+	fq := field(t, fb, "id")
+	_, tb := do(t, owner, "POST", ts.URL+"/v1/enrollment-codes", "", map[string]any{"fleet_id": fq, "name": "r"})
+	_, eb := do(t, &http.Client{}, "POST", ts.URL+"/v1/rovers", field(t, tb, "code"), map[string]any{"name": "donor", "auto_tags": []string{"pilot:claude"}})
+	rover := field(t, eb, "token")
+	roverID := field(t, eb, "id")
+	if code, b := do(t, &http.Client{}, "PATCH", ts.URL+"/v1/rovers/"+roverID, rover, map[string]any{
+		"auto_tags": []string{"pilot:claude"},
+	}); code != http.StatusNoContent {
+		t.Fatalf("tags: %d %s", code, b)
+	}
+	_, mb := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fq, "name": "M", "key": "USE"})
+	mission := field(t, mb, "id")
+	_, ob := do(t, owner, "POST", ts.URL+"/v1/operations", "", map[string]any{
+		"fleet_id": fq, "title": "usage op", "mission_id": mission,
+		"assignee_type": "pilot", "assignee_id": "claude",
+	})
+	opID := field(t, ob, "id")
+	code, accept := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
+	if code != http.StatusOK {
+		t.Fatalf("accept: %d %s", code, accept)
+	}
+	runID := field(t, accept, "id")
+	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+runID+"/result", rover, map[string]any{
+		"status": "succeeded",
+		"usage": map[string]any{
+			"provider": "claude", "model": "test", "input_tokens": 10, "output_tokens": 5,
+			"total_tokens": 15, "duration_ms": 50, "source": "pilot", "cost_micros": 1000,
+		},
+	}); code != http.StatusNoContent {
+		t.Fatalf("result: %d %s", code, b)
+	}
+
+	if code, b := do(t, owner, "GET", ts.URL+"/v1/usage", "", nil); code != http.StatusBadRequest {
+		t.Fatalf("usage without fleet_id = %d %s", code, b)
+	}
+	if code, b := do(t, outsider, "GET", ts.URL+"/v1/usage?fleet_id="+fq, "", nil); code != http.StatusForbidden {
+		t.Fatalf("outsider usage = %d %s", code, b)
+	}
+	code, dayBody := do(t, owner, "GET", ts.URL+"/v1/usage?fleet_id="+fq+"&period=calendar_day", "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("calendar_day usage: %d %s", code, dayBody)
+	}
+	code, body := do(t, owner, "GET", ts.URL+"/v1/usage?fleet_id="+fq+"&period=calendar_week", "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("calendar_week usage: %d %s", code, body)
+	}
+	var summary struct {
+		Period    string `json:"period"`
+		PeriodKey string `json:"period_key"`
+		Fleet     struct {
+			Runs        int64 `json:"runs"`
+			TotalTokens int64 `json:"total_tokens"`
+			CostMicros  int64 `json:"cost_micros"`
+		} `json:"fleet"`
+		Missions []struct {
+			ID          string `json:"id"`
+			Key         string `json:"key"`
+			Runs        int64  `json:"runs"`
+			TotalTokens int64  `json:"total_tokens"`
+		} `json:"missions"`
+		Pilots []struct {
+			Pilot       string `json:"pilot"`
+			Runs        int64  `json:"runs"`
+			TotalTokens int64  `json:"total_tokens"`
+		} `json:"pilots"`
+		Rovers []struct {
+			ID          string `json:"id"`
+			Name        string `json:"name"`
+			Runs        int64  `json:"runs"`
+			TotalTokens int64  `json:"total_tokens"`
+		} `json:"rovers"`
+		Operations []struct {
+			ID           string `json:"id"`
+			Code         string `json:"code"`
+			MissionID    string `json:"mission_id"`
+			Runs         int64  `json:"runs"`
+			TotalTokens  int64  `json:"total_tokens"`
+			MaxRuns      *int64 `json:"max_runs"`
+			MaxTokens    *int64 `json:"max_tokens"`
+			MaxUSDMicros *int64 `json:"max_usd_micros"`
+		} `json:"operations"`
+		Days []struct {
+			Day         string `json:"day"`
+			Runs        int64  `json:"runs"`
+			TotalTokens int64  `json:"total_tokens"`
+		} `json:"days"`
+	}
+	if err := json.Unmarshal(dayBody, &summary); err != nil {
+		t.Fatal(err)
+	}
+	if summary.Period != "calendar_day" || len(summary.PeriodKey) != 10 {
+		t.Fatalf("calendar_day period = %+v", summary)
+	}
+	if len(summary.Days) != 1 {
+		t.Fatalf("calendar_day days = %+v", summary.Days)
+	}
+	if err := json.Unmarshal(body, &summary); err != nil {
+		t.Fatal(err)
+	}
+	if summary.Period != "calendar_week" || summary.PeriodKey == "" {
+		t.Fatalf("calendar_week period = %+v", summary)
+	}
+	if summary.Fleet.Runs != 1 || summary.Fleet.TotalTokens != 15 || summary.Fleet.CostMicros != 1000 {
+		t.Fatalf("fleet totals = %+v", summary.Fleet)
+	}
+	foundMission := false
+	for _, m := range summary.Missions {
+		if m.ID == mission && m.Runs == 1 && m.TotalTokens == 15 {
+			foundMission = true
+		}
+	}
+	if !foundMission {
+		t.Fatalf("missions = %+v", summary.Missions)
+	}
+	if len(summary.Pilots) != 1 || summary.Pilots[0].Pilot != "claude" || summary.Pilots[0].TotalTokens != 15 {
+		t.Fatalf("pilots = %+v", summary.Pilots)
+	}
+	if len(summary.Rovers) != 1 || summary.Rovers[0].ID != roverID || summary.Rovers[0].Name != "donor" {
+		t.Fatalf("rovers = %+v", summary.Rovers)
+	}
+	if len(summary.Operations) != 0 {
+		t.Fatalf("unscoped fleet usage should omit operations = %+v", summary.Operations)
+	}
+	if len(summary.Days) == 0 {
+		t.Fatal("days empty")
+	}
+	dayHits := 0
+	for _, d := range summary.Days {
+		if d.Runs == 1 && d.TotalTokens == 15 {
+			dayHits++
+		}
+	}
+	if dayHits != 1 {
+		t.Fatalf("day hits = %d days=%+v", dayHits, summary.Days)
+	}
+
+	code, monthBody := do(t, owner, "GET", ts.URL+"/v1/usage?fleet_id="+fq+"&period=calendar_month", "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("calendar_month usage: %d %s", code, monthBody)
+	}
+	if err := json.Unmarshal(monthBody, &summary); err != nil {
+		t.Fatal(err)
+	}
+	if summary.Period != "calendar_month" || len(summary.PeriodKey) != 7 {
+		t.Fatalf("calendar_month period = %+v", summary)
+	}
+	if len(summary.Days) < 28 {
+		t.Fatalf("calendar_month days = %+v", summary.Days)
+	}
+
+	if code, b := do(t, owner, "PATCH", ts.URL+"/v1/operations/"+opID, "", map[string]any{
+		"budget": map[string]any{"period": "calendar_week", "max_runs": 10},
+	}); code != http.StatusOK {
+		t.Fatalf("set operation budget: %d %s", code, b)
+	}
+	code, scopedOp := do(t, owner, "GET", ts.URL+"/v1/usage?fleet_id="+fq+"&period=calendar_week&operation_id="+opID, "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("scoped operation usage: %d %s", code, scopedOp)
+	}
+	if err := json.Unmarshal(scopedOp, &summary); err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.Operations) != 1 || summary.Operations[0].ID != opID || summary.Operations[0].Runs != 1 {
+		t.Fatalf("scoped operation = %+v", summary.Operations)
+	}
+	if summary.Operations[0].MaxRuns == nil || *summary.Operations[0].MaxRuns != 10 {
+		t.Fatalf("scoped operation max_runs = %+v", summary.Operations[0])
+	}
+	if len(summary.Missions) != 0 || len(summary.Pilots) != 0 {
+		t.Fatalf("scoped operation should omit other breakdowns: missions=%d pilots=%d", len(summary.Missions), len(summary.Pilots))
+	}
+	if summary.Fleet.Runs != 0 || summary.Fleet.TotalTokens != 0 {
+		t.Fatalf("scoped operation should omit fleet totals = %+v", summary.Fleet)
+	}
+
+	_, idleBody := do(t, owner, "POST", ts.URL+"/v1/operations", "", map[string]any{
+		"fleet_id": fq, "title": "capped idle", "mission_id": mission,
+	})
+	idleOp := field(t, idleBody, "id")
+	if code, b := do(t, owner, "PATCH", ts.URL+"/v1/operations/"+idleOp, "", map[string]any{
+		"budget": map[string]any{"period": "calendar_week", "max_runs": 3},
+	}); code != http.StatusOK {
+		t.Fatalf("set idle operation budget: %d %s", code, b)
+	}
+	code, idleUsage := do(t, owner, "GET", ts.URL+"/v1/usage?fleet_id="+fq+"&period=calendar_week&operation_id="+idleOp, "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("idle operation usage: %d %s", code, idleUsage)
+	}
+	if err := json.Unmarshal(idleUsage, &summary); err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.Operations) != 1 || summary.Operations[0].ID != idleOp || summary.Operations[0].Runs != 0 {
+		t.Fatalf("idle operation = %+v", summary.Operations)
+	}
+	if summary.Operations[0].MaxRuns == nil || *summary.Operations[0].MaxRuns != 3 {
+		t.Fatalf("idle operation max_runs = %+v", summary.Operations[0])
+	}
+
+	code, scopedMission := do(t, owner, "GET", ts.URL+"/v1/usage?fleet_id="+fq+"&period=calendar_week&mission_id="+mission, "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("scoped mission usage: %d %s", code, scopedMission)
+	}
+	if err := json.Unmarshal(scopedMission, &summary); err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.Missions) != 1 || summary.Missions[0].ID != mission || summary.Missions[0].Runs != 1 {
+		t.Fatalf("scoped mission = %+v", summary.Missions)
+	}
+	if summary.Fleet.Runs != 0 || summary.Fleet.TotalTokens != 0 {
+		t.Fatalf("scoped mission should omit fleet totals = %+v", summary.Fleet)
+	}
+	foundCapped, foundIdle := false, false
+	for _, o := range summary.Operations {
+		if o.ID == opID && o.MaxRuns != nil && *o.MaxRuns == 10 {
+			foundCapped = true
+		}
+		if o.ID == idleOp && o.Runs == 0 && o.MaxRuns != nil && *o.MaxRuns == 3 {
+			foundIdle = true
+		}
+	}
+	if !foundCapped || !foundIdle {
+		t.Fatalf("scoped mission operations = %+v", summary.Operations)
+	}
+
+	if code, b := do(t, owner, "GET", ts.URL+"/v1/usage?fleet_id="+fq+"&mission_id="+mission+"&operation_id="+opID, "", nil); code != http.StatusBadRequest {
+		t.Fatalf("both scope ids = %d %s", code, b)
+	}
+	if code, b := do(t, owner, "PATCH", ts.URL+"/v1/fleets/"+fq, "", map[string]any{
+		"metadata": map[string]any{"budget": map[string]any{"period": "rolling_5h", "max_runs": 1}},
+	}); code != http.StatusBadRequest {
+		t.Fatalf("invalid fleet budget period = %d %s", code, b)
+	}
+	if code, b := do(t, owner, "GET", ts.URL+"/v1/usage?fleet_id="+fq+"&operation_id=00000000-0000-0000-0000-000000000001", "", nil); code != http.StatusNotFound {
+		t.Fatalf("unknown operation usage = %d %s", code, b)
+	}
+	if code, b := do(t, owner, "GET", ts.URL+"/v1/usage?fleet_id="+fq+"&mission_id=00000000-0000-0000-0000-000000000001", "", nil); code != http.StatusNotFound {
+		t.Fatalf("unknown mission usage = %d %s", code, b)
+	}
+}
+
+func TestOperationBudgetPatchAndAcceptGate(t *testing.T) {
+	ts := newTestServer(t)
+	owner := signup(t, ts, "op-budget-owner")
+	member := signup(t, ts, "op-budget-member")
+	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Op budget fleet"})
+	fq := field(t, fb, "id")
+	joinFleet(t, ts, owner, member, fq, "member")
+	_, tb := do(t, owner, "POST", ts.URL+"/v1/enrollment-codes", "", map[string]any{"fleet_id": fq, "name": "r"})
+	_, eb := do(t, &http.Client{}, "POST", ts.URL+"/v1/rovers", field(t, tb, "code"), map[string]any{"name": "donor", "auto_tags": []string{"pilot:claude"}})
+	rover := field(t, eb, "token")
+	roverID := field(t, eb, "id")
+	if code, b := do(t, &http.Client{}, "PATCH", ts.URL+"/v1/rovers/"+roverID, rover, map[string]any{
+		"auto_tags": []string{"pilot:claude"},
+	}); code != http.StatusNoContent {
+		t.Fatalf("tags: %d %s", code, b)
+	}
+	_, mb := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fq, "name": "M", "key": "OB"})
+	mission := field(t, mb, "id")
+	_, ob := do(t, owner, "POST", ts.URL+"/v1/operations", "", map[string]any{
+		"fleet_id": fq, "title": "capped", "mission_id": mission,
+		"assignee_type": "pilot", "assignee_id": "claude",
+	})
+	opID := field(t, ob, "id")
+	if code, b := do(t, member, "PATCH", ts.URL+"/v1/operations/"+opID, "", map[string]any{
+		"budget": map[string]any{"period": "calendar_week", "max_runs": 1},
+	}); code != http.StatusForbidden {
+		t.Fatalf("member budget patch = %d %s", code, b)
+	}
+	code, patched := do(t, owner, "PATCH", ts.URL+"/v1/operations/"+opID, "", map[string]any{
+		"budget": map[string]any{"period": "calendar_week", "max_runs": 1},
+	})
+	if code != http.StatusOK {
+		t.Fatalf("owner budget patch = %d %s", code, patched)
+	}
+	var opBody struct {
+		Metadata map[string]any `json:"metadata"`
+	}
+	if err := json.Unmarshal(patched, &opBody); err != nil {
+		t.Fatal(err)
+	}
+	budget, _ := opBody.Metadata["budget"].(map[string]any)
+	if budget == nil {
+		t.Fatalf("operation metadata missing budget: %s", patched)
+	}
+
+	code, accept := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
+	if code != http.StatusOK {
+		t.Fatalf("first accept: %d %s", code, accept)
+	}
+	runID := field(t, accept, "id")
+	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+runID+"/result", rover, map[string]any{"status": "succeeded"}); code != http.StatusNoContent {
+		t.Fatalf("result: %d %s", code, b)
+	}
+	if code, b := do(t, owner, "PATCH", ts.URL+"/v1/operations/"+opID, "", map[string]any{"status": "todo", "assignee_type": "pilot", "assignee_id": "claude"}); code != http.StatusOK {
+		t.Fatalf("reopen: %d %s", code, b)
+	}
+	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil); code != http.StatusNoContent {
+		t.Fatalf("second accept after operation max_runs=1 = %d, want 204 (%s)", code, b)
+	}
+}
+
+func TestSpendBudgetWriteAuthzAndCreateValidation(t *testing.T) {
+	ts := newTestServer(t)
+	owner := signup(t, ts, "budget-write-owner")
+	member := signup(t, ts, "budget-write-member")
+	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Budget write fleet"})
+	fq := field(t, fb, "id")
+	joinFleet(t, ts, owner, member, fq, "member")
+	_, tb := do(t, owner, "POST", ts.URL+"/v1/enrollment-codes", "", map[string]any{"fleet_id": fq, "name": "r"})
+	_, eb := do(t, &http.Client{}, "POST", ts.URL+"/v1/rovers", field(t, tb, "code"), map[string]any{"name": "donor"})
+	rover := field(t, eb, "token")
+	roverID := field(t, eb, "id")
+	_, mb := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fq, "name": "M", "key": "BW"})
+	mission := field(t, mb, "id")
+
+	if code, b := do(t, member, "PATCH", ts.URL+"/v1/missions/"+mission, "", map[string]any{
+		"name": "M", "key": "BW",
+		"metadata": map[string]any{"budget": map[string]any{"period": "calendar_week", "max_runs": 1}},
+	}); code != http.StatusForbidden {
+		t.Fatalf("member mission budget = %d %s", code, b)
+	}
+	if code, b := do(t, owner, "PATCH", ts.URL+"/v1/missions/"+mission, "", map[string]any{
+		"name": "M", "key": "BW",
+		"metadata": map[string]any{"budget": map[string]any{"period": "calendar_week", "max_runs": 1}},
+	}); code != http.StatusOK {
+		t.Fatalf("owner mission budget = %d %s", code, b)
+	}
+	if code, b := do(t, &http.Client{}, "PATCH", ts.URL+"/v1/rovers/"+roverID, rover, map[string]any{
+		"metadata": map[string]any{"budget": map[string]any{"period": "calendar_week", "max_runs": 1}},
+	}); code != http.StatusForbidden {
+		t.Fatalf("rover self budget = %d %s", code, b)
+	}
+	if code, b := do(t, owner, "PATCH", ts.URL+"/v1/rovers/"+roverID, "", map[string]any{
+		"metadata": map[string]any{"budget": map[string]any{"period": "calendar_week", "max_runs": 1}},
+	}); code != http.StatusNoContent {
+		t.Fatalf("owner rover budget = %d %s", code, b)
+	}
+
+	if code, b := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]any{
+		"name":     "Bad fleet budget",
+		"metadata": map[string]any{"budget": map[string]any{"period": "rolling_5h", "max_runs": 1}},
+	}); code != http.StatusBadRequest {
+		t.Fatalf("create fleet invalid budget = %d %s", code, b)
+	}
+	if code, b := do(t, member, "POST", ts.URL+"/v1/missions", "", map[string]any{
+		"fleet_id": fq, "name": "Member cap", "key": "MBC",
+		"metadata": map[string]any{"budget": map[string]any{"period": "calendar_week", "max_runs": 1}},
+	}); code != http.StatusForbidden {
+		t.Fatalf("member create mission budget = %d %s", code, b)
+	}
+	if code, b := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]any{
+		"fleet_id": fq, "name": "Bad period", "key": "BAD",
+		"metadata": map[string]any{"budget": map[string]any{"period": "rolling_5h", "max_runs": 1}},
+	}); code != http.StatusBadRequest {
+		t.Fatalf("create mission invalid budget = %d %s", code, b)
+	}
+	code, created := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]any{
+		"fleet_id": fq, "name": "Capped", "key": "CAP",
+		"metadata": map[string]any{"budget": map[string]any{"period": "calendar_day", "max_runs": 2}},
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("create mission budget = %d %s", code, created)
+	}
+	var createdBody struct {
+		Metadata map[string]any `json:"metadata"`
+	}
+	if err := json.Unmarshal(created, &createdBody); err != nil {
+		t.Fatal(err)
+	}
+	budget, _ := createdBody.Metadata["budget"].(map[string]any)
+	if budget == nil || budget["period"] != "calendar_day" {
+		t.Fatalf("created mission budget = %+v", createdBody.Metadata)
+	}
+}
+
+func TestOperationForgeActionStatusOnDetail(t *testing.T) {
+	ts, srv := newTestServerWithNotifier(t)
+	owner := signup(t, ts, "forge-status")
+	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Forge status"})
+	fq := field(t, fb, "id")
+	_, tb := do(t, owner, "POST", ts.URL+"/v1/enrollment-codes", "", map[string]any{"fleet_id": fq, "name": "r"})
+	_, eb := do(t, &http.Client{}, "POST", ts.URL+"/v1/rovers", field(t, tb, "code"), map[string]any{"name": "forge-rover"})
+	rover := field(t, eb, "token")
+	roverID := field(t, eb, "id")
+	_, mb := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fq, "name": "M", "key": "FS"})
+	mission := field(t, mb, "id")
+	_, ob := do(t, owner, "POST", ts.URL+"/v1/operations", "", map[string]any{
+		"fleet_id": fq, "title": "ship", "mission_id": mission,
+	})
+	opID := field(t, ob, "id")
+
+	meta := []byte(`{"forge_key":"ufo-core","sync_attempts":2,"ci_wait_timeout_seconds":3600}`)
+	var actionID string
+	if err := srv.pool.QueryRow(context.Background(), `
+		INSERT INTO forge_actions (fleet_id, operation_id, kind, provider, repo, head_branch, base_branch, metadata)
+		SELECT f.id, o.id, 'sync_pull_request', 'github', 'acme/ufo', 'ufo/ship', 'orbit', $2::jsonb
+		FROM fleets f JOIN operations o ON o.fleet_id = f.id
+		WHERE f.public_id = $1 AND o.public_id = $3
+		RETURNING public_id`, fq, meta, opID).Scan(&actionID); err != nil {
+		t.Fatalf("insert forge action: %v", err)
+	}
+	code, detail := do(t, owner, "GET", ts.URL+"/v1/operations/"+opID, "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("operation detail: %d %s", code, detail)
+	}
+	var body struct {
+		ForgeActions []struct {
+			ID         string         `json:"id"`
+			Kind       string         `json:"kind"`
+			Status     string         `json:"status"`
+			Repo       string         `json:"repo"`
+			HeadBranch string         `json:"head_branch"`
+			Metadata   map[string]any `json:"metadata"`
+			RoverID    string         `json:"rover_id"`
+			AcceptedAt *string        `json:"accepted_at"`
+			FinishedAt *string        `json:"finished_at"`
+		} `json:"forge_actions"`
+	}
+	if err := json.Unmarshal(detail, &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.ForgeActions) != 1 || body.ForgeActions[0].ID != actionID || body.ForgeActions[0].Status != "queued" {
+		t.Fatalf("queued forge actions = %+v", body.ForgeActions)
+	}
+	if body.ForgeActions[0].Repo != "acme/ufo" || body.ForgeActions[0].HeadBranch != "ufo/ship" {
+		t.Fatalf("forge action repo = %+v", body.ForgeActions[0])
+	}
+	if body.ForgeActions[0].Metadata["forge_key"] != "ufo-core" {
+		t.Fatalf("forge metadata = %+v", body.ForgeActions[0].Metadata)
+	}
+	if attempts, _ := body.ForgeActions[0].Metadata["sync_attempts"].(float64); attempts != 2 {
+		t.Fatalf("sync_attempts = %v", body.ForgeActions[0].Metadata["sync_attempts"])
+	}
+
+	code, accepted := do(t, &http.Client{}, "POST", ts.URL+"/v1/forge-actions/accept", rover, nil)
+	if code != http.StatusOK {
+		t.Fatalf("accept: %d %s", code, accepted)
+	}
+	code, detail = do(t, owner, "GET", ts.URL+"/v1/operations/"+opID, "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("detail after accept: %d %s", code, detail)
+	}
+	if err := json.Unmarshal(detail, &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.ForgeActions) != 1 || body.ForgeActions[0].Status != "accepted" || body.ForgeActions[0].AcceptedAt == nil || body.ForgeActions[0].RoverID != roverID {
+		t.Fatalf("accepted forge action = %+v", body.ForgeActions)
+	}
+	if code, b := do(t, &http.Client{}, "PATCH", ts.URL+"/v1/forge-actions/"+actionID, rover, map[string]any{
+		"status": "failed", "message": "ci red",
+	}); code != http.StatusOK {
+		t.Fatalf("complete: %d %s", code, b)
+	}
+	code, detail = do(t, owner, "GET", ts.URL+"/v1/operations/"+opID, "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("detail after complete: %d %s", code, detail)
+	}
+	if err := json.Unmarshal(detail, &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.ForgeActions) != 1 || body.ForgeActions[0].Status != "failed" || body.ForgeActions[0].FinishedAt == nil {
+		t.Fatalf("failed forge action = %+v", body.ForgeActions)
 	}
 }

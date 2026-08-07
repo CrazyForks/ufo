@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useTheme } from "next-themes";
-import { Antenna, Archive, ArchiveRestore, ArrowLeft, ArrowUp, ArrowUpDown, Check, ChevronDown, ChevronRight, Clock, Download, GitBranch, GitPullRequest, Grid2x2, Grid3x3, Layers, Link2, List, Loader2, MessageCircleQuestion, Moon, Paperclip, Pencil, Plus, RefreshCw, Reply, RotateCcw, ScrollText, SmilePlus, Sun, Tags, Trash2, Users, X, BookOpen } from "lucide-react";
+import { Antenna, Archive, ArchiveRestore, ArrowLeft, ArrowUp, ArrowUpDown, Check, ChevronDown, ChevronRight, Clock, Download, GitBranch, GitPullRequest, Grid2x2, Grid3x3, Layers, Link2, List, Loader2, MessageCircleQuestion, Moon, Paperclip, Pencil, Plus, RefreshCw, Reply, RotateCcw, ScrollText, Ship, SmilePlus, Sun, Tags, Trash2, Users, Wallet, X, BookOpen } from "lucide-react";
 import { useApp } from "@/components/app-provider";
 import { del, getJSON, putJSON, withFleet } from "@/lib/api";
 import { AssetDeleteDialog } from "@/components/asset-delete-dialog";
@@ -36,7 +36,9 @@ import { monthLabel, priorityLabel, statusLabel, t as translate, useT, type Mess
 import { assigneeHasPilot, commentAuthor, memberLabel, pilotLabel, operationAssigneeValue, operationCode, operationWaitingOnSubOperations, PRIORITY_LEVELS, LABEL_COLOR, userLabel } from "@/lib/labels";
 import { elapsed } from "@/lib/timeline";
 import { DRAFT_SAVE_DELAY_SECONDS, formatTimestamp, useAssetPanelOpen, useAssetViewMode, useCommsOrder, useTimeFormat, type AssetViewMode, type TimeFormat } from "@/lib/view";
-import type { Asset, Comment, OperationReference, Operation, Reaction, Relation, Run, SourceAction, Skill } from "@/lib/types";
+import { BudgetEditor } from "@/components/budget-editor";
+import { OperationUsagePanel } from "@/components/usage-summary";
+import type { Asset, Comment, ForgeAction, OperationReference, Operation, Reaction, Relation, Run, SourceAction, Skill } from "@/lib/types";
 
 const ACTIVE = new Set(["queued", "accepted", "starting", "running"]);
 const isActive = (r: Run) => ACTIVE.has(r.status);
@@ -494,6 +496,9 @@ export function OperationDetail() {
       ? metadataStringValue(autoCommitMeta as Record<string, unknown>, "branch")
       : "";
   const pullRequests = d.pull_requests ?? [];
+  const forgeActions = d.forge_actions ?? [];
+  const showForgeActions = forgeActions.length > 0;
+  const canEditBudget = app.myRole === "owner" || app.myRole === "admin";
   const showSource = d.source_action_available || sourceActions.length > 0;
   const showPullRequests = showSource || pullRequests.length > 0;
   const loopNotice = loopNoticeFromMetadata(d.operation.metadata as Record<string, unknown> | undefined);
@@ -1063,6 +1068,18 @@ export function OperationDetail() {
                 {canManageSkills && <OperationSkills operationId={d.operation.id} fleetId={app.fleet} />}
 
                 <div className="p-4">
+                  <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium uppercase text-muted-foreground"><Wallet className="size-3.5" /> {t("op.budget")}</p>
+                  {app.fleet ? <OperationUsagePanel fleetId={app.fleet} operationId={d.operation.id} /> : null}
+                  <div className="mt-2">
+                    <BudgetEditor
+                      metadata={d.operation.metadata}
+                      disabled={!canEditBudget}
+                      onSave={(budget) => app.setOperationBudget(d.operation.id, budget)}
+                    />
+                  </div>
+                </div>
+
+                <div className="p-4">
                   <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium uppercase text-muted-foreground"><Antenna className="size-3.5" /> {t("op.dispatchRoverTags")}</p>
                   <div className="space-y-1.5">
                     <div className="flex items-start gap-2 text-xs">
@@ -1112,6 +1129,13 @@ export function OperationDetail() {
                   <div className="p-4">
                     <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium uppercase text-muted-foreground"><GitPullRequest className="size-3.5" /> {t("op.pullRequests")}</p>
                     <PullRequests operationId={d.operation.id} />
+                  </div>
+                )}
+
+                {showForgeActions && (
+                  <div className="p-4">
+                    <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium uppercase text-muted-foreground"><Ship className="size-3.5" /> {t("op.forgeActions")}</p>
+                    <ForgeActions actions={forgeActions} timeFormat={timeFormat} />
                   </div>
                 )}
 
@@ -2346,6 +2370,86 @@ const SOURCE_ACTION_STATUS_KEY: Record<SourceAction["status"], MessageKey> = {
   conflicted: "source.conflict",
 };
 const SOURCE_ACTION_VISIBLE_LIMIT = 3;
+const FORGE_ACTION_VISIBLE_LIMIT = 8;
+const FORGE_KIND_KEY: Record<string, MessageKey> = {
+  update_base_branch: "forge.update_base_branch",
+  push_head_branch: "forge.push_head_branch",
+  merge_head_into_base_branch: "forge.merge_head_into_base_branch",
+  open_pull_request: "forge.open_pull_request",
+  sync_pull_request: "forge.sync_pull_request",
+  merge_pull_request: "forge.merge_pull_request",
+  discover_pull_request: "forge.discover_pull_request",
+};
+const FORGE_STATUS_KEY: Record<string, MessageKey> = {
+  queued: "forge.queued",
+  accepted: "forge.accepted",
+  succeeded: "forge.succeeded",
+  failed: "forge.failed",
+  conflicted: "forge.conflicted",
+};
+
+function forgeMetaString(meta: Record<string, unknown> | undefined, key: string): string {
+  const v = meta?.[key];
+  return typeof v === "string" ? v : "";
+}
+function forgeMetaNumber(meta: Record<string, unknown> | undefined, key: string): number | null {
+  const v = meta?.[key];
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+function ForgeActions({ actions, timeFormat }: { actions: ForgeAction[]; timeFormat: TimeFormat }) {
+  const t = useT();
+  const visible = actions.slice(0, FORGE_ACTION_VISIBLE_LIMIT);
+  const hidden = actions.length - visible.length;
+  return (
+    <div className="space-y-1">
+      {visible.map((action) => {
+        const kindKey = FORGE_KIND_KEY[action.kind];
+        const statusKey = FORGE_STATUS_KEY[action.status];
+        const notBefore = forgeMetaString(action.metadata, "not_before");
+        const ciStarted = forgeMetaString(action.metadata, "ci_wait_started_at");
+        const attempts = forgeMetaNumber(action.metadata, "sync_attempts");
+        const href = safeHttpHref(action.remote_url);
+        const branch = [action.head_branch, action.base_branch].filter(Boolean).join(" → ");
+        const waiting = action.status === "queued" && notBefore && Date.parse(notBefore) > Date.now();
+        return (
+          <div key={action.id} className="space-y-0.5 rounded border border-border/70 bg-background/60 px-2 py-1.5 text-xs">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <Ship className="size-3 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate font-medium">{kindKey ? t(kindKey) : action.kind}</span>
+              <span className={cn("shrink-0 text-[11px]", action.status === "succeeded" ? "text-success" : action.status === "failed" || action.status === "conflicted" ? "text-destructive" : "text-warning")}>
+                {statusKey ? t(statusKey) : action.status}
+              </span>
+            </div>
+            {(action.repo || branch) && (
+              <div className="truncate font-mono text-[11px] text-muted-foreground">
+                {action.repo}{branch ? ` ${branch}` : ""}{action.commit_sha ? ` @ ${action.commit_sha.slice(0, 8)}` : ""}
+              </div>
+            )}
+            {action.remote_number != null && (
+              href ? (
+                <a href={href} target="_blank" rel="noreferrer" className="truncate text-[11px] text-foreground hover:underline">
+                  #{action.remote_number}
+                </a>
+              ) : (
+                <div className="truncate text-[11px] text-muted-foreground">#{action.remote_number}</div>
+              )
+            )}
+            {waiting && <div className="text-[11px] text-warning">{t("forge.waitingUntil", { at: formatTimestamp(notBefore, timeFormat) })}</div>}
+            {action.status === "accepted" && <div className="text-[11px] text-warning">{ciStarted ? t("forge.ciWaitSince", { at: formatTimestamp(ciStarted, timeFormat) }) : t("forge.leaseActive")}</div>}
+            {action.kind === "sync_pull_request" && action.status !== "accepted" && ciStarted && (
+              <div className="text-[11px] text-muted-foreground">{t("forge.ciWait")}</div>
+            )}
+            {attempts != null && attempts > 0 && <div className="text-[11px] text-muted-foreground">{t("forge.attempts", { count: attempts })}</div>}
+            {action.message && <div className="line-clamp-2 text-[11px] text-muted-foreground">{action.message}</div>}
+            <div className="text-[10px] text-muted-foreground">{formatTimestamp(action.finished_at ?? action.accepted_at ?? action.updated_at, timeFormat)}</div>
+          </div>
+        );
+      })}
+      {hidden > 0 && <div className="text-[10px] text-muted-foreground">{t("forge.olderHidden", { count: hidden, noun: hidden === 1 ? t("forge.action") : t("forge.actions") })}</div>}
+    </div>
+  );
+}
 
 function SourceActions({ operationId, worktreeEnabled, actionAvailable, actions, timeFormat }: { operationId: string; worktreeEnabled: boolean; actionAvailable: boolean; actions: SourceAction[]; timeFormat: TimeFormat }) {
   const app = useApp();

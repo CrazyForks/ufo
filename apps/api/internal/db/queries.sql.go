@@ -4618,6 +4618,93 @@ func (q *Queries) ListCrews(ctx context.Context, fleetID int64) ([]Crew, error) 
 	return items, nil
 }
 
+const listDayTerminalRunsInRange = `-- name: ListDayTerminalRunsInRange :many
+SELECT to_char(COALESCE(r.finalized_at, r.updated_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day,
+    COUNT(*)::bigint AS runs
+FROM runs r
+WHERE r.fleet_id = $1
+  AND r.status IN ('succeeded', 'failed', 'canceled')
+  AND COALESCE(r.finalized_at, r.updated_at) >= $2
+  AND COALESCE(r.finalized_at, r.updated_at) < $3
+GROUP BY 1
+ORDER BY 1
+`
+
+type ListDayTerminalRunsInRangeParams struct {
+	FleetID int64              `json:"fleet_id"`
+	StartAt pgtype.Timestamptz `json:"start_at"`
+	EndAt   pgtype.Timestamptz `json:"end_at"`
+}
+
+type ListDayTerminalRunsInRangeRow struct {
+	Day  string `json:"day"`
+	Runs int64  `json:"runs"`
+}
+
+func (q *Queries) ListDayTerminalRunsInRange(ctx context.Context, arg ListDayTerminalRunsInRangeParams) ([]ListDayTerminalRunsInRangeRow, error) {
+	rows, err := q.db.Query(ctx, listDayTerminalRunsInRange, arg.FleetID, arg.StartAt, arg.EndAt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDayTerminalRunsInRangeRow{}
+	for rows.Next() {
+		var i ListDayTerminalRunsInRangeRow
+		if err := rows.Scan(&i.Day, &i.Runs); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDayUsageFactsInRange = `-- name: ListDayUsageFactsInRange :many
+SELECT to_char(u.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day,
+    COALESCE(SUM(u.total_tokens), 0)::bigint AS total_tokens,
+    COALESCE(SUM(u.cost_micros), 0)::bigint AS cost_micros
+FROM run_usage u
+WHERE u.fleet_id = $1
+  AND u.created_at >= $2
+  AND u.created_at < $3
+GROUP BY 1
+ORDER BY 1
+`
+
+type ListDayUsageFactsInRangeParams struct {
+	FleetID int64              `json:"fleet_id"`
+	StartAt pgtype.Timestamptz `json:"start_at"`
+	EndAt   pgtype.Timestamptz `json:"end_at"`
+}
+
+type ListDayUsageFactsInRangeRow struct {
+	Day         string `json:"day"`
+	TotalTokens int64  `json:"total_tokens"`
+	CostMicros  int64  `json:"cost_micros"`
+}
+
+func (q *Queries) ListDayUsageFactsInRange(ctx context.Context, arg ListDayUsageFactsInRangeParams) ([]ListDayUsageFactsInRangeRow, error) {
+	rows, err := q.db.Query(ctx, listDayUsageFactsInRange, arg.FleetID, arg.StartAt, arg.EndAt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDayUsageFactsInRangeRow{}
+	for rows.Next() {
+		var i ListDayUsageFactsInRangeRow
+		if err := rows.Scan(&i.Day, &i.TotalTokens, &i.CostMicros); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDueRoutines = `-- name: ListDueRoutines :many
 SELECT id, public_id, fleet_id, mission_id, title, body, metadata, operation_metadata, created_by, created_at, updated_at, next_pulse_at, last_pulsed_at FROM routines
 WHERE next_pulse_at IS NOT NULL AND next_pulse_at <= $1
@@ -5076,6 +5163,101 @@ func (q *Queries) ListMissionForgesForFleet(ctx context.Context, fleetID int64) 
 			&i.ForgeID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMissionOperationUsageInRange = `-- name: ListMissionOperationUsageInRange :many
+SELECT
+    o.public_id,
+    o.title,
+    o.sequence,
+    o.metadata,
+    m.public_id AS mission_id,
+    m.key AS mission_key,
+    COALESCE(rc.runs, 0)::bigint AS runs,
+    COALESCE(uc.total_tokens, 0)::bigint AS total_tokens,
+    COALESCE(uc.cost_micros, 0)::bigint AS cost_micros
+FROM operations o
+JOIN missions m ON m.id = o.mission_id
+LEFT JOIN LATERAL (
+    SELECT COUNT(*)::bigint AS runs
+    FROM runs r
+    WHERE r.operation_id = o.id
+      AND r.status IN ('succeeded', 'failed', 'canceled')
+      AND COALESCE(r.finalized_at, r.updated_at) >= $1
+      AND COALESCE(r.finalized_at, r.updated_at) < $2
+) rc ON true
+LEFT JOIN LATERAL (
+    SELECT
+        COALESCE(SUM(u.total_tokens), 0)::bigint AS total_tokens,
+        COALESCE(SUM(u.cost_micros), 0)::bigint AS cost_micros
+    FROM run_usage u
+    WHERE u.operation_id = o.id
+      AND u.created_at >= $1
+      AND u.created_at < $2
+) uc ON true
+WHERE o.fleet_id = $3
+  AND o.mission_id = $4
+  AND (
+    COALESCE(rc.runs, 0) > 0
+    OR COALESCE(uc.total_tokens, 0) > 0
+    OR COALESCE(uc.cost_micros, 0) > 0
+    OR jsonb_typeof(o.metadata->'budget') = 'object'
+  )
+ORDER BY o.sequence, o.public_id
+`
+
+type ListMissionOperationUsageInRangeParams struct {
+	StartAt   pgtype.Timestamptz `json:"start_at"`
+	EndAt     pgtype.Timestamptz `json:"end_at"`
+	FleetID   int64              `json:"fleet_id"`
+	MissionID int64              `json:"mission_id"`
+}
+
+type ListMissionOperationUsageInRangeRow struct {
+	PublicID    pgtype.UUID `json:"public_id"`
+	Title       string      `json:"title"`
+	Sequence    int32       `json:"sequence"`
+	Metadata    []byte      `json:"metadata"`
+	MissionID   pgtype.UUID `json:"mission_id"`
+	MissionKey  string      `json:"mission_key"`
+	Runs        int64       `json:"runs"`
+	TotalTokens int64       `json:"total_tokens"`
+	CostMicros  int64       `json:"cost_micros"`
+}
+
+func (q *Queries) ListMissionOperationUsageInRange(ctx context.Context, arg ListMissionOperationUsageInRangeParams) ([]ListMissionOperationUsageInRangeRow, error) {
+	rows, err := q.db.Query(ctx, listMissionOperationUsageInRange,
+		arg.StartAt,
+		arg.EndAt,
+		arg.FleetID,
+		arg.MissionID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListMissionOperationUsageInRangeRow{}
+	for rows.Next() {
+		var i ListMissionOperationUsageInRangeRow
+		if err := rows.Scan(
+			&i.PublicID,
+			&i.Title,
+			&i.Sequence,
+			&i.Metadata,
+			&i.MissionID,
+			&i.MissionKey,
+			&i.Runs,
+			&i.TotalTokens,
+			&i.CostMicros,
 		); err != nil {
 			return nil, err
 		}
@@ -5581,6 +5763,94 @@ func (q *Queries) ListOperationsByStatus(ctx context.Context, arg ListOperations
 	return items, nil
 }
 
+const listPilotTerminalRunsInRange = `-- name: ListPilotTerminalRunsInRange :many
+SELECT r.pilot, COUNT(*)::bigint AS runs
+FROM runs r
+WHERE r.fleet_id = $1
+  AND r.pilot <> ''
+  AND r.status IN ('succeeded', 'failed', 'canceled')
+  AND COALESCE(r.finalized_at, r.updated_at) >= $2
+  AND COALESCE(r.finalized_at, r.updated_at) < $3
+GROUP BY r.pilot
+ORDER BY r.pilot
+`
+
+type ListPilotTerminalRunsInRangeParams struct {
+	FleetID int64              `json:"fleet_id"`
+	StartAt pgtype.Timestamptz `json:"start_at"`
+	EndAt   pgtype.Timestamptz `json:"end_at"`
+}
+
+type ListPilotTerminalRunsInRangeRow struct {
+	Pilot string `json:"pilot"`
+	Runs  int64  `json:"runs"`
+}
+
+func (q *Queries) ListPilotTerminalRunsInRange(ctx context.Context, arg ListPilotTerminalRunsInRangeParams) ([]ListPilotTerminalRunsInRangeRow, error) {
+	rows, err := q.db.Query(ctx, listPilotTerminalRunsInRange, arg.FleetID, arg.StartAt, arg.EndAt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPilotTerminalRunsInRangeRow{}
+	for rows.Next() {
+		var i ListPilotTerminalRunsInRangeRow
+		if err := rows.Scan(&i.Pilot, &i.Runs); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPilotUsageFactsInRange = `-- name: ListPilotUsageFactsInRange :many
+SELECT u.pilot,
+    COALESCE(SUM(u.total_tokens), 0)::bigint AS total_tokens,
+    COALESCE(SUM(u.cost_micros), 0)::bigint AS cost_micros
+FROM run_usage u
+WHERE u.fleet_id = $1
+  AND u.pilot <> ''
+  AND u.created_at >= $2
+  AND u.created_at < $3
+GROUP BY u.pilot
+ORDER BY 1
+`
+
+type ListPilotUsageFactsInRangeParams struct {
+	FleetID int64              `json:"fleet_id"`
+	StartAt pgtype.Timestamptz `json:"start_at"`
+	EndAt   pgtype.Timestamptz `json:"end_at"`
+}
+
+type ListPilotUsageFactsInRangeRow struct {
+	Pilot       string `json:"pilot"`
+	TotalTokens int64  `json:"total_tokens"`
+	CostMicros  int64  `json:"cost_micros"`
+}
+
+func (q *Queries) ListPilotUsageFactsInRange(ctx context.Context, arg ListPilotUsageFactsInRangeParams) ([]ListPilotUsageFactsInRangeRow, error) {
+	rows, err := q.db.Query(ctx, listPilotUsageFactsInRange, arg.FleetID, arg.StartAt, arg.EndAt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPilotUsageFactsInRangeRow{}
+	for rows.Next() {
+		var i ListPilotUsageFactsInRangeRow
+		if err := rows.Scan(&i.Pilot, &i.TotalTokens, &i.CostMicros); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPullRequestsForOperation = `-- name: ListPullRequestsForOperation :many
 SELECT id, public_id, fleet_id, operation_id, routine_id, provider, base_url, repo, head_branch,
     base_branch, url, title, status, number, created_by_ufo, head_sha, mergeable, ci_status,
@@ -6045,6 +6315,101 @@ func (q *Queries) ListRoutines(ctx context.Context, fleetID int64) ([]Routine, e
 			&i.UpdatedAt,
 			&i.NextPulseAt,
 			&i.LastPulsedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRoverTerminalRunsInRange = `-- name: ListRoverTerminalRunsInRange :many
+SELECT rv.public_id, COALESCE(rv.name, '') AS name, COUNT(*)::bigint AS runs
+FROM runs r
+JOIN rovers rv ON rv.id = r.rover_id AND rv.fleet_id = $1
+WHERE r.fleet_id = $1
+  AND r.status IN ('succeeded', 'failed', 'canceled')
+  AND COALESCE(r.finalized_at, r.updated_at) >= $2
+  AND COALESCE(r.finalized_at, r.updated_at) < $3
+GROUP BY rv.public_id, rv.name
+ORDER BY COALESCE(rv.name, ''), rv.public_id
+`
+
+type ListRoverTerminalRunsInRangeParams struct {
+	FleetID int64              `json:"fleet_id"`
+	StartAt pgtype.Timestamptz `json:"start_at"`
+	EndAt   pgtype.Timestamptz `json:"end_at"`
+}
+
+type ListRoverTerminalRunsInRangeRow struct {
+	PublicID pgtype.UUID `json:"public_id"`
+	Name     string      `json:"name"`
+	Runs     int64       `json:"runs"`
+}
+
+func (q *Queries) ListRoverTerminalRunsInRange(ctx context.Context, arg ListRoverTerminalRunsInRangeParams) ([]ListRoverTerminalRunsInRangeRow, error) {
+	rows, err := q.db.Query(ctx, listRoverTerminalRunsInRange, arg.FleetID, arg.StartAt, arg.EndAt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRoverTerminalRunsInRangeRow{}
+	for rows.Next() {
+		var i ListRoverTerminalRunsInRangeRow
+		if err := rows.Scan(&i.PublicID, &i.Name, &i.Runs); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRoverUsageFactsInRange = `-- name: ListRoverUsageFactsInRange :many
+SELECT rv.public_id, COALESCE(rv.name, '') AS name,
+    COALESCE(SUM(u.total_tokens), 0)::bigint AS total_tokens,
+    COALESCE(SUM(u.cost_micros), 0)::bigint AS cost_micros
+FROM run_usage u
+JOIN rovers rv ON rv.id = u.rover_id AND rv.fleet_id = $1
+WHERE u.fleet_id = $1
+  AND u.created_at >= $2
+  AND u.created_at < $3
+GROUP BY rv.public_id, rv.name
+ORDER BY COALESCE(rv.name, ''), rv.public_id
+`
+
+type ListRoverUsageFactsInRangeParams struct {
+	FleetID int64              `json:"fleet_id"`
+	StartAt pgtype.Timestamptz `json:"start_at"`
+	EndAt   pgtype.Timestamptz `json:"end_at"`
+}
+
+type ListRoverUsageFactsInRangeRow struct {
+	PublicID    pgtype.UUID `json:"public_id"`
+	Name        string      `json:"name"`
+	TotalTokens int64       `json:"total_tokens"`
+	CostMicros  int64       `json:"cost_micros"`
+}
+
+func (q *Queries) ListRoverUsageFactsInRange(ctx context.Context, arg ListRoverUsageFactsInRangeParams) ([]ListRoverUsageFactsInRangeRow, error) {
+	rows, err := q.db.Query(ctx, listRoverUsageFactsInRange, arg.FleetID, arg.StartAt, arg.EndAt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRoverUsageFactsInRangeRow{}
+	for rows.Next() {
+		var i ListRoverUsageFactsInRangeRow
+		if err := rows.Scan(
+			&i.PublicID,
+			&i.Name,
+			&i.TotalTokens,
+			&i.CostMicros,
 		); err != nil {
 			return nil, err
 		}

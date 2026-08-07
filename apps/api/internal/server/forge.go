@@ -421,7 +421,7 @@ func (s *Server) completeForgeAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, s.forgeActionDTO(action))
+	writeJSON(w, http.StatusOK, s.forgeActionDTO(ctx, action))
 }
 
 func (s *Server) heartbeatForgeAction(w http.ResponseWriter, r *http.Request) {
@@ -455,17 +455,48 @@ func (s *Server) heartbeatForgeAction(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) forgeActionDTO(a db.ForgeAction) map[string]any {
+func (s *Server) forgeActionDTO(ctx context.Context, a db.ForgeAction) map[string]any {
+	return s.forgeActionDTOs(ctx, []db.ForgeAction{a})[0]
+}
+
+func (s *Server) forgeActionDTOs(ctx context.Context, actions []db.ForgeAction) []map[string]any {
+	roverIDs := make([]int64, 0, len(actions))
+	for _, a := range actions {
+		if a.RoverID.Valid {
+			roverIDs = append(roverIDs, a.RoverID.Int64)
+		}
+	}
+	roverMap := s.mapRovers(ctx, roverIDs)
+	out := make([]map[string]any, 0, len(actions))
+	for _, a := range actions {
+		out = append(out, forgeActionDTO(a, roverMap))
+	}
+	return out
+}
+
+func forgeActionDTO(a db.ForgeAction, roverMap map[int64]string) map[string]any {
 	out := map[string]any{
 		"id": uuidStr(a.PublicID), "kind": a.Kind, "status": a.Status,
 		"provider": a.Provider, "base_url": a.BaseUrl, "repo": a.Repo,
 		"head_branch": a.HeadBranch, "base_branch": a.BaseBranch,
 		"commit_sha": a.CommitSha, "title": a.Title, "body": a.Body,
 		"remote_url": a.RemoteUrl, "result_sha": a.ResultSha, "message": a.Message,
+		"metadata":   metadataJSON(a.Metadata),
 		"created_at": a.CreatedAt.Time.UTC(), "updated_at": a.UpdatedAt.Time.UTC(),
 	}
 	if a.RemoteNumber.Valid {
 		out["remote_number"] = a.RemoteNumber.Int32
+	}
+	if a.AcceptedAt.Valid {
+		out["accepted_at"] = a.AcceptedAt.Time.UTC()
+	}
+	if a.FinishedAt.Valid {
+		out["finished_at"] = a.FinishedAt.Time.UTC()
+	}
+	if a.RoverID.Valid {
+		if roverID := roverMap[a.RoverID.Int64]; roverID != "" {
+			out["rover_id"] = roverID
+		}
 	}
 	return out
 }

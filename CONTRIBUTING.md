@@ -56,7 +56,7 @@ Equivalent manual commands:
 (cd apps/rover && cargo fmt --check && cargo clippy -- -D warnings && cargo test && cargo build)
 
 # protocol (if you changed an endpoint)
-npx --yes @redocly/cli@2.43.2 lint apps/api/internal/spec/openapi.yaml
+npx --yes @redocly/cli@2.46.0 lint apps/api/internal/spec/openapi.yaml
 ```
 
 CI runs the same class of checks on protected branches.

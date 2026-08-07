@@ -193,7 +193,7 @@ func clientIP(r *http.Request, trustProxy bool) string {
 }
 
 const (
-	currentRoverVersion     = "0.7.6"
+	currentRoverVersion     = "0.7.7"
 	minProtocolRoverVersion = "0.7.3"
 	roverVersionHeader      = "X-UFO-Rover-Version"
 	maxRoverUnits           = 100
@@ -1080,6 +1080,11 @@ func (s *Server) createFleet(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
+		metadata, ok = stampSpendBudgetInMetadata(metadata)
+		if !ok {
+			httpError(w, http.StatusBadRequest, "invalid budget")
+			return
+		}
 	}
 	ctx := r.Context()
 	tx, err := s.pool.Begin(ctx)
@@ -1146,6 +1151,11 @@ func (s *Server) updateFleet(w http.ResponseWriter, r *http.Request) {
 		var ok bool
 		metadata, ok = jsonObjectBytes(w, req.Metadata, "metadata")
 		if !ok {
+			return
+		}
+		metadata, ok = stampSpendBudgetInMetadata(metadata)
+		if !ok {
+			httpError(w, http.StatusBadRequest, "invalid budget")
 			return
 		}
 	}
@@ -1303,6 +1313,10 @@ func (s *Server) patchRover(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
+			if metadataTouchesBudget(metadata) {
+				httpError(w, http.StatusForbidden, "only owners/admins can change rover spend limits")
+				return
+			}
 			if err := s.q.MergeRoverMetadata(r.Context(), db.MergeRoverMetadataParams{ID: rover.ID, Metadata: metadata}); err != nil {
 				serverError(w, err)
 				return
@@ -1358,6 +1372,11 @@ func (s *Server) patchRover(w http.ResponseWriter, r *http.Request) {
 	if raw, ok := patch["metadata"]; ok {
 		metadata, ok := jsonObjectBytes(w, raw, "metadata")
 		if !ok {
+			return
+		}
+		metadata, ok = stampSpendBudgetInMetadata(metadata)
+		if !ok {
+			httpError(w, http.StatusBadRequest, "invalid budget")
 			return
 		}
 		if err := s.q.MergeRoverMetadata(r.Context(), db.MergeRoverMetadataParams{ID: rover.ID, Metadata: metadata}); err != nil {
@@ -2192,6 +2211,24 @@ func operationMetadataWithWorktreeEnabled(raw []byte, enabled *bool) []byte {
 		m[metadataWorktreeEnabled] = json.RawMessage("false")
 	}
 	return metadataBytes(m)
+}
+
+func operationMetadataWithBudget(raw []byte, budget json.RawMessage) ([]byte, bool) {
+	m := metadataMap(raw)
+	if len(budget) == 0 || string(budget) == "null" {
+		delete(m, "budget")
+		return metadataBytes(m), true
+	}
+	next, ok := normalizeSpendBudgetRaw(budget)
+	if !ok {
+		return raw, false
+	}
+	if string(next) == "null" {
+		delete(m, "budget")
+		return metadataBytes(m), true
+	}
+	m["budget"] = next
+	return metadataBytes(m), true
 }
 
 func operationSubOperationsEnabled(op db.Operation) bool {
@@ -3338,10 +3375,7 @@ func (s *Server) getOperation(w http.ResponseWriter, r *http.Request) {
 	relations, _ := s.q.ListRelationsForOperation(ctx, op.ID)
 	sourceActions, _ := s.q.ListSourceActionsForOperation(ctx, op.ID)
 	forgeActions, _ := s.q.ListForgeActionsForOperation(ctx, pgtype.Int8{Int64: op.ID, Valid: true})
-	forgeActionDTOs := make([]map[string]any, 0, len(forgeActions))
-	for _, a := range forgeActions {
-		forgeActionDTOs = append(forgeActionDTOs, s.forgeActionDTO(a))
-	}
+	forgeActionDTOs := s.forgeActionDTOs(ctx, forgeActions)
 	sourceRun, sourceActionErr := s.q.LatestSourceRunForOperation(ctx, db.LatestSourceRunForOperationParams{OperationID: op.ID, FleetID: op.FleetID})
 	var sourceRoverID *string
 	if sourceActionErr == nil && sourceRun.RoverID.Valid {
@@ -3883,6 +3917,23 @@ func (s *Server) patchOperation(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		op.Metadata = operationMetadataWithWorktreeEnabled(op.Metadata, enabled)
+		if err := qtx.SetOperationMetadata(ctx, db.SetOperationMetadataParams{ID: op.ID, FleetID: wid, Metadata: op.Metadata}); err != nil {
+			serverError(w, err)
+			return
+		}
+	}
+
+	if raw, ok := patch["budget"]; ok {
+		if !isOwnerOrAdmin(s.memberRole(r, wid)) {
+			httpError(w, http.StatusForbidden, "only owners/admins can change operation spend limits")
+			return
+		}
+		next, ok := operationMetadataWithBudget(op.Metadata, raw)
+		if !ok {
+			httpError(w, http.StatusBadRequest, "invalid budget")
+			return
+		}
+		op.Metadata = next
 		if err := qtx.SetOperationMetadata(ctx, db.SetOperationMetadataParams{ID: op.ID, FleetID: wid, Metadata: op.Metadata}); err != nil {
 			serverError(w, err)
 			return
@@ -9784,6 +9835,15 @@ func (s *Server) createMission(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
+		if metadataTouchesBudget(metadata) && !isOwnerOrAdmin(s.memberRole(r, wid)) {
+			httpError(w, http.StatusForbidden, "only owners/admins can change mission spend limits")
+			return
+		}
+		metadata, ok = stampSpendBudgetInMetadata(metadata)
+		if !ok {
+			httpError(w, http.StatusBadRequest, "invalid budget")
+			return
+		}
 		if _, hasLearning := metadataMap(metadata)[metadataLearning]; hasLearning {
 			httpError(w, http.StatusBadRequest, "mission learning is server-managed")
 			return
@@ -9839,6 +9899,15 @@ func (s *Server) updateMission(w http.ResponseWriter, r *http.Request) {
 		var ok bool
 		metadataPatch, ok = jsonObjectBytes(w, req.Metadata, "metadata")
 		if !ok {
+			return
+		}
+		if metadataTouchesBudget(metadataPatch) && !isOwnerOrAdmin(s.memberRole(r, mission.FleetID)) {
+			httpError(w, http.StatusForbidden, "only owners/admins can change mission spend limits")
+			return
+		}
+		metadataPatch, ok = stampSpendBudgetInMetadata(metadataPatch)
+		if !ok {
+			httpError(w, http.StatusBadRequest, "invalid budget")
 			return
 		}
 		patch := metadataMap(metadataPatch)
